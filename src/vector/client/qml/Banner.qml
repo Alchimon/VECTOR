@@ -1,0 +1,22 @@
+import QtQuick
+import QtQuick.Layouts
+
+Rectangle {
+    id: bn
+    property string tone: "info"
+    property string text: ""
+    property string iconName: tone === "danger" ? "circle-x" : tone === "warning" ? "triangle-alert" : tone === "success" ? "circle-check" : "info"
+    readonly property var t: Theme.tone(tone)
+    visible: text !== ""
+    Layout.fillWidth: true
+    implicitHeight: row.implicitHeight + 20
+    radius: Theme.radius
+    color: t.bg
+    RowLayout {
+        id: row
+        anchors.fill: parent; anchors.margins: 10; anchors.leftMargin: 12
+        spacing: 10
+        Icon { name: bn.iconName; color: bn.t.fg; size: 16; Layout.alignment: Qt.AlignTop }
+        Text { text: bn.text; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; wrapMode: Text.Wrap; Layout.fillWidth: true }
+    }
+}
