@@ -160,3 +160,58 @@ def test_tls_server_serves_and_requires_tls(setup):
         proc.terminate()
         out = proc.communicate(timeout=20)[0]
     assert PWD not in out
+
+
+# ====================================================================== тестовый стенд: demo-seed и сертификат
+DEMO_PWD = "Демо-стенд-пароль-1"
+
+
+def test_demo_seed_only_into_fresh_db(setup):
+    """demo-seed наполняет новую базу через обычные команды; повторно и в рабочую базу — отказ, без изменений."""
+    tmp, cfg, _, _ = setup
+    run(["init", "--config", str(cfg)], env={"VECTOR_ADMIN_PASSWORD": PWD})
+    # Неверный пароль администратора и слабый демо-пароль отсекаются ДО создания данных.
+    r = run(["demo-seed", "--config", str(cfg)], env={"VECTOR_ADMIN_PASSWORD": "wrong-wrong-wrong", "VECTOR_DEMO_PASSWORD": DEMO_PWD}, ok=False)
+    assert r.returncode == 1 and "Вход администратора не выполнен" in r.stderr
+    r = run(["demo-seed", "--config", str(cfg)], env={"VECTOR_ADMIN_PASSWORD": PWD, "VECTOR_DEMO_PASSWORD": "short"}, ok=False)
+    assert r.returncode == 1 and "Демо-пароль не подходит" in r.stderr
+    r = run(["demo-seed", "--config", str(cfg)], env={"VECTOR_ADMIN_PASSWORD": PWD, "VECTOR_DEMO_PASSWORD": DEMO_PWD})
+    assert "a.smirnova" in r.stdout and "ВЫМЫШЛЕННЫЕ" in r.stdout
+    assert DEMO_PWD not in r.stdout + r.stderr and PWD not in r.stdout + r.stderr
+    # Данные настоящие: РП входит демо-паролем и видит проект; действия записаны в аудит с устройством demo-seed.
+    import sqlalchemy as sa
+    from vector.server import db
+    from vector.server.service import Service
+    eng = db.make_engine(f"sqlite:///{tmp / 'vector.sqlite'}")
+    svc = Service(eng)
+    lg = svc.handle({"type": "login", "login": "a.smirnova", "password": DEMO_PWD, "device_id": "t"}, "t")
+    assert lg["status"] == "accepted" and lg["must_change_password"] is False
+    pull = svc.handle({"type": "query", "token": lg["token"], "query": "pull"}, "t")["result"]
+    assert any(p["code"] == "П-2026-014" for p in pull["projects"])
+    n = svc.handle({"type": "login", "login": "n.sokolov", "password": DEMO_PWD, "device_id": "t"}, "t")
+    assert n["must_change_password"] is True
+    with eng.connect() as c:
+        assert c.execute(sa.select(sa.func.count()).select_from(db.audit_log).where(db.audit_log.c.device_id == "demo-seed")).scalar() > 20
+        before = c.execute(sa.select(sa.func.count()).select_from(db.customers)).scalar()
+    eng.dispose()
+    # Повторный запуск: база уже не новая — отказ, ничего не добавлено.
+    r = run(["demo-seed", "--config", str(cfg)], env={"VECTOR_ADMIN_PASSWORD": PWD, "VECTOR_DEMO_PASSWORD": DEMO_PWD}, ok=False)
+    assert r.returncode == 1 and "только в новую пустую базу" in r.stderr
+    eng = db.make_engine(f"sqlite:///{tmp / 'vector.sqlite'}")
+    with eng.connect() as c:
+        assert c.execute(sa.select(sa.func.count()).select_from(db.customers)).scalar() == before
+    eng.dispose()
+
+
+def test_dev_cert_covers_several_names(tmp_path):
+    from cryptography import x509
+    run(["dev-cert", "--dir", str(tmp_path / "c"), "--host", "VECTOR-PC", "--host", "192.168.1.20"])
+    cert = x509.load_pem_x509_certificate((tmp_path / "c" / "server.pem").read_bytes())
+    san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert set(san.get_values_for_type(x509.DNSName)) == {"VECTOR-PC", "localhost"}
+    assert {str(i) for i in san.get_values_for_type(x509.IPAddress)} == {"192.168.1.20", "127.0.0.1"}
+    # Повторный запуск в тот же каталог: понятный отказ, и НИ ОДИН файл не перезаписан (ключ и сертификат совпадают).
+    before = {p.name: p.read_bytes() for p in (tmp_path / "c").iterdir()}
+    r = run(["dev-cert", "--dir", str(tmp_path / "c"), "--host", "x"], ok=False)
+    assert r.returncode == 1 and "уже существуют" in r.stderr and "Traceback" not in r.stderr
+    assert {p.name: p.read_bytes() for p in (tmp_path / "c").iterdir()} == before

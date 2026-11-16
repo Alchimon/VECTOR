@@ -20,6 +20,7 @@ from vector import __version__
 from . import backup as bk
 from . import db
 from .config import ConfigError, load_config
+from .demo import DemoError
 
 
 def _keys(args) -> bk.KeySource:
@@ -114,10 +115,45 @@ def cmd_check(args):
 
 def cmd_devcert(args):
     from .devcert import make_dev_ca_and_cert
-    paths = make_dev_ca_and_cert(Path(args.dir), args.host)
+    paths = make_dev_ca_and_cert(Path(args.dir), args.host or ["localhost"])
     print("Создан ТЕСТОВЫЙ CA и сертификат (только для пилота/разработки):")
     for k, v in paths.items():
         print(f"  {k}: {v}")
+
+
+def cmd_demo(args):
+    """Тестовый стенд: наполнить НОВУЮ базу вымышленными данными (заказчики, тендеры, проект, документы, задачи).
+
+    Пароли не принимаются аргументами: VECTOR_ADMIN_PASSWORD / VECTOR_DEMO_PASSWORD или ввод без эха.
+    До начала проверяется всё, что можно проверить заранее (база пустая, пароль администратора верный,
+    демо-пароль проходит политику), — чтобы не оставить базу заполненной наполовину.
+    """
+    from . import demo, security
+    from .service import Service
+    cfg = load_config(Path(args.config))
+    svc = Service(db.make_engine(cfg.db_url), sec=cfg.security)
+    demo.check_empty(svc)
+    admin_pwd = os.environ.get("VECTOR_ADMIN_PASSWORD") or getpass.getpass(f"Пароль администратора «{args.admin_login}»: ")
+    demo_pwd = os.environ.get("VECTOR_DEMO_PASSWORD")
+    if not demo_pwd:
+        demo_pwd = getpass.getpass("Пароль для всех демо-учёток (не короче 12 символов): ")
+        if demo_pwd != getpass.getpass("Повторите пароль: "):
+            raise SystemExit("Пароли не совпадают.")
+    for lg, *_ in demo.ACCOUNTS:
+        problems = security.password_problems(demo_pwd, lg, cfg.security)
+        if problems:
+            raise demo.DemoError("Демо-пароль не подходит: " + " ".join(problems))
+    r = svc.handle({"type": "login", "login": args.admin_login, "password": admin_pwd, "device_id": demo.DEVICE}, demo.DEVICE)
+    if r.get("status") != "accepted":
+        raise demo.DemoError(f"Вход администратора не выполнен: {r.get('message_ru') or r.get('status')}")
+    svc.handle({"type": "logout", "token": r["token"]})
+    try:
+        demo.seed_demo(svc, args.admin_login, admin_pwd, demo_pwd)
+    except demo.DemoError as e:
+        raise demo.DemoError(f"{e}. База заполнена частично: удалите тестовую базу и повторите init и demo-seed.")
+    print("Демо-данные созданы (ВЫМЫШЛЕННЫЕ, только для теста). Учётные записи — пароль тот, что вы задали:")
+    for lg, name, _role, label in demo.ACCOUNTS:
+        print(f"  {lg:<12} {name:<18} {label}")
 
 
 def main(argv=None):
@@ -136,11 +172,15 @@ def main(argv=None):
     s.add_argument("file"); s.add_argument("--key-file"); s.add_argument("--target-url-env", default="VECTOR_RESTORE_DB_URL"); s.set_defaults(fn=cmd_restore)
     s = sub.add_parser("gen-backup-key", help="создать файл ключа резервных копий"); s.add_argument("path"); s.set_defaults(fn=cmd_genkey)
     s = sub.add_parser("dev-cert", help="тестовый CA и TLS-сертификат для пилота")
-    s.add_argument("--dir", required=True); s.add_argument("--host", default="localhost"); s.set_defaults(fn=cmd_devcert)
+    s.add_argument("--dir", required=True)
+    s.add_argument("--host", action="append", help="имя или IP сервера; можно несколько раз (localhost добавляется всегда)")
+    s.set_defaults(fn=cmd_devcert)
+    s = sub.add_parser("demo-seed", help="ТОЛЬКО ДЛЯ ТЕСТА: вымышленные демо-данные в новую пустую БД")
+    s.add_argument("--config", required=True); s.add_argument("--admin-login", default="admin"); s.set_defaults(fn=cmd_demo)
     args = p.parse_args(argv)
     try:
         args.fn(args)
-    except (ConfigError, bk.BackupError, RuntimeError, ValueError) as e:
+    except (ConfigError, bk.BackupError, RuntimeError, ValueError, DemoError, FileExistsError) as e:
         print(f"Ошибка: {e}", file=sys.stderr)
         raise SystemExit(1)
 
