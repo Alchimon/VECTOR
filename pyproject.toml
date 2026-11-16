@@ -19,7 +19,7 @@ server = [
   "argon2-cffi>=23,<26",
   "cryptography>=42,<51",
   "psycopg2-binary>=2.9,<3",   # PostgreSQL
-  # MS SQL: pyodbc + Microsoft ODBC Driver 18 устанавливаются на сервере отдельно (см. docs/ops/deployment.md)
+  # MS SQL: pyodbc + Microsoft ODBC Driver 18 устанавливаются на сервере отдельно (см. docs/ops/install.md, § 3.2)
 ]
 client = [
   # 6.12.0 исключён: ошибка счётчика ссылок в Signal.emit/QVariant (True/False/None) роняет процесс

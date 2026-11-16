@@ -1,0 +1,12 @@
+# ВЕКТОР — расписание резервного копирования: каждый день в 02:30 (время сервера).
+# Persistent=yes — если сервер был выключен в это время, копия будет сделана после включения.
+[Unit]
+Description=Daily VECTOR backup
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=10m
+Persistent=yes
+
+[Install]
+WantedBy=timers.target
