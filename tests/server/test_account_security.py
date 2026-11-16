@@ -42,6 +42,8 @@ def test_admin_reset_unlocks(world):
     world.admin.ok("admin.reset_password", {"user_id": world.users["rp1"], "temporary_password": "Временный-пароль-1", "reason": "звонок"})
     r = world.raw_login("rp1", "Временный-пароль-1")
     assert r["status"] == "accepted" and r["must_change_password"] is True
+    # Предел размера файла сообщается клиенту при входе (issue #9) — подсказка для интерфейса, проверяет сервер.
+    assert r["max_file_bytes"] == world.svc.sec.max_file_mb * 1024 * 1024
 
 
 def test_rate_limit_per_address(world):

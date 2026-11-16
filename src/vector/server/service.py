@@ -205,7 +205,10 @@ class Service(WorkMixin):
             self._audit(conn, now, u["id"], device, addr, None, "auth.login", "user", u["id"], None, None, None, "accepted", {})
             return {"status": "accepted", "token": token, "user_id": u["id"], "display_name": u["display_name"],
                     "login": u["login"], "must_change_password": bool(u["must_change_password"]), "expires_at": iso(exp),
-                    "idle_timeout_minutes": self.sec.session_idle_minutes}
+                    "idle_timeout_minutes": self.sec.session_idle_minutes,
+                    # Предел размера файла — чтобы клиент отказал понятно ДО отправки (issue #9). Только подсказка
+                    # для интерфейса: сервер проверяет размер сам при каждой загрузке и клиенту не доверяет.
+                    "max_file_bytes": self.sec.max_file_mb * 1024 * 1024}
         return self._tx(tx)
 
     def _logout(self, req: dict) -> dict:

@@ -444,6 +444,30 @@ def test_lost_replies_in_file_flow_lose_nothing_and_duplicate_nothing(world, tea
     assert rp.download_document_version(did, 1, dest).status == "accepted" and dest.read_bytes() == data
 
 
+def test_file_over_server_limit_refused_before_sending(world, team, tmp_path):
+    """Issue #9: предел приходит с сервера при входе; файл больше предела отклоняется понятно и без отправки."""
+    pid, kit, rp, eng = team
+    assert eng.max_file_bytes == world.svc.sec.max_file_mb * 1024 * 1024
+    did = new_id()
+    eng.execute("document.create", {"id": did, "kit_id": kit, "code": "АТХ-7", "title": "Схема"})
+    calls = []
+    orig = eng.t.upload
+    eng.t.upload = lambda *a, **k: calls.append(1) or orig(*a, **k)
+    eng.max_file_bytes = 512 * 1024                 # имитируем сервер с пределом 0,5 МБ, не создавая гигабайтный файл
+    big = tmp_path / "big.dwg"
+    big.write_bytes(b"x" * (512 * 1024 + 1))
+    r = eng.add_document_version(did, big, big.name, None, expected_version=1)
+    assert r.status == "rejected" and r.response["code"] == "file_too_large" and "0,5 МБ" in r.message_ru
+    assert calls == []
+    # Ровно на пределе — отправляется (граница включительная, как на сервере).
+    ok = tmp_path / "ok.dwg"
+    ok.write_bytes(b"y" * (512 * 1024))
+    assert eng.add_document_version(did, ok, ok.name, None, expected_version=1).status == "accepted" and calls == [1]
+    # Сервер старой версии без поля — клиент не проверяет сам, решает сервер.
+    eng.max_file_bytes = None
+    assert eng.add_document_version(did, big, big.name, None, expected_version=2).status == "accepted"
+
+
 def test_concurrent_version_is_conflict_on_client(world, team):
     pid, kit, rp, eng = team
     did = new_id()

@@ -104,6 +104,7 @@ class SyncClient:
         self.user_id: Optional[str] = None
         self.login_name: Optional[str] = None
         self.must_change_password = False
+        self.max_file_bytes: Optional[int] = None   # предел размера файла с сервера (из ответа входа)
         self.db: Optional[sqlite3.Connection] = None
         self.vault: Optional[Vault] = None
         self.ov: Optional[OpenVault] = None
@@ -168,6 +169,9 @@ class SyncClient:
             self.logout()
         self.token, self.user_id, self.login_name = r["token"], r["user_id"], r["login"]
         self.must_change_password = bool(r.get("must_change_password"))
+        # Предел размера файла с сервера (issue #9); None — сервер старой версии, тогда проверяет только он.
+        mfb = r.get("max_file_bytes")
+        self.max_file_bytes = mfb if isinstance(mfb, int) and not isinstance(mfb, bool) and mfb > 0 else None
         self._remember_account(login, r["user_id"])
         self.vault = Vault(profile_dir(self.base_dir, self.server_url, r["user_id"]), self.store, self.max_days)
         ov = self.vault.unlock_after_online_login(password, self.now(), self.kdf)
@@ -404,6 +408,14 @@ class SyncClient:
         except OSError:
             return LocalResult("error", message_ru="Файл не найден или недоступен для чтения.")
         try:
+            limit = self.max_file_bytes
+            if limit is not None and _remaining_size(src) > limit:
+                # Понятный отказ без отправки (issue #9). Без этой проверки сервер всё равно откажет, но на медленной
+                # сети он может закрыть соединение раньше, чем клиент дошлёт тело, — и пользователь увидел бы
+                # «исход неизвестен» вместо причины.
+                src.close()
+                return LocalResult("rejected", message_ru=f"Файл больше допустимого размера ({_fmt_mb(limit)} МБ). "
+                                                          "Версия не добавлена.", response={"code": "file_too_large"})
             sha, size = _sha256_of(src)
             src.seek(0)
             up = self.t.upload(self.token, doc["project_id"], src, sha, size)
@@ -660,3 +672,20 @@ def _fsync_dir(path: Path) -> None:
         pass
     finally:
         os.close(fd)
+
+
+def _remaining_size(f) -> int:
+    """Размер файлового объекта от текущей позиции (без чтения содержимого)."""
+    try:
+        return os.fstat(f.fileno()).st_size - f.tell()
+    except (AttributeError, OSError, io.UnsupportedOperation):
+        pos = f.tell()
+        end = f.seek(0, io.SEEK_END)
+        f.seek(pos)
+        return end - pos
+
+
+def _fmt_mb(n: int) -> str:
+    """Байты → «200» или «0,5» (МБ) для сообщений пользователю."""
+    mb = n / (1024 * 1024)
+    return str(int(mb)) if mb == int(mb) else f"{mb:.1f}".replace(".", ",")
