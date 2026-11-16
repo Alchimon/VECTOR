@@ -4,9 +4,11 @@
 
 | Документ | О чём |
 |---|---|
+| [test-pc.md](test-pc.md) | **Тестовый стенд на ПК**: сервер + клиент + демо-данные за 15 минут (Windows, Linux), сценарии проверки |
 | [install.md](install.md) | Требования, СУБД (PostgreSQL, MS SQL), установка сервера, секреты и TLS, служба systemd, клиент |
 | [backup-restore.md](backup-restore.md) | Ключ копий, создание, расписание, хранение 3-2-1, проверка, восстановление, коды ошибок |
 | [restore-drill.md](restore-drill.md) | Регламент учебного восстановления и журнал результатов |
+| [`deploy/test-stand/`](../../deploy/test-stand) | Скрипты тестового стенда: `windows/setup.cmd`, `linux/setup-test-stand.sh` |
 | [`deploy/systemd/`](../../deploy/systemd) | Готовые юниты: сервер, ежедневная копия (таймер) |
 | [`config/vector-server.example.toml`](../../config/vector-server.example.toml) | Все параметры сервера с пояснениями |
 

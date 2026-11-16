@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]  # 77+: лицензия в формате PEP 639 (без предупреждений сборки)
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,7 @@ name = "vector"
 version = "0.2.0.dev0"
 description = "ВЕКТОР / VECTOR — рабочая среда инженерной компании (desktop-клиент + on-premises сервер)"
 requires-python = ">=3.11"
-license = { text = "Proprietary" }
+license = "LicenseRef-Proprietary"
 # Версии зафиксированы диапазонами; точные версии сборки фиксируются в requirements-lock (этап выпуска).
 dependencies = []
 
@@ -30,7 +30,7 @@ client = [
   "cryptography>=42,<51",
   "keyring>=25,<26",
 ]
-dev = ["pytest>=8", "pgserver>=0.1.4"]
+dev = ["pytest>=8", "pgserver>=0.1.4", "packaging>=23"]
 
 [project.scripts]
 vector-server = "vector.server.cli:main"
