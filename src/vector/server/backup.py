@@ -343,7 +343,8 @@ def create_backup(engine: sa.Engine, out_path: Path, keys: KeySource,
                       "installation_id": meta.get("installation_id"), "source_dialect": engine.dialect.name,
                       "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
                       "cipher": "AES-256-GCM", "compression": "gzip", "kdf": kdf, "tables": order}
-            with open(tmp, "xb") as raw:
+            # Только владелец (0600): копия зашифрована, но лишние права на файл с данными компании не нужны.
+            with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600), "wb") as raw:
                 w = _Writer(raw, key, header)
                 gz = gzip.GzipFile(fileobj=_Sink(w), mode="wb", mtime=0)
                 for name in order:

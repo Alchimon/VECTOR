@@ -254,3 +254,17 @@ def test_migrate_cli_v3_to_v4(setup):
     assert len(list((tmp / "backups").glob("vector-premigrate-v3-*.vbak"))) == 1
     assert "совместима" in run(["check", "--config", str(cfg)]).stdout
     assert "миграция не нужна" in run(["migrate", "--config", str(cfg), "--key-file", str(tmp / "backup.key")]).stdout
+
+
+def test_relative_paths_resolve_from_config_folder(tmp_path, monkeypatch):
+    """url_file / tls / backup.dir относительно папки конфигурации, а не текущего каталога."""
+    from vector.server.config import load_config
+    d = tmp_path / "stand"
+    d.mkdir()
+    (d / "db.url").write_text("sqlite:///x.sqlite")
+    (d / "db.url").chmod(0o600)
+    (d / "server.toml").write_text('[database]\nurl_file = "db.url"\n[server]\ndev_insecure_localhost = true\nhost = "127.0.0.1"\n'
+                                   '[backup]\ndir = "backups"\n', encoding="utf-8")
+    monkeypatch.chdir(tmp_path)          # запускаем «не из той папки»
+    cfg = load_config(d / "server.toml")
+    assert cfg.db_url == "sqlite:///x.sqlite" and cfg.backup_dir == d / "backups"

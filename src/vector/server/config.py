@@ -60,6 +60,13 @@ def load_config(path: Path) -> ServerConfig:
     except (OSError, tomllib.TOMLDecodeError) as e:
         raise ConfigError(f"Не удалось прочитать конфигурацию {path}: {e}")
     warnings: list[str] = []
+    base = Path(path).resolve().parent
+
+    def rel(value) -> Path:
+        """Относительные пути конфигурации — от папки самого файла конфигурации, а не от текущего каталога:
+        `vector-server check --config /etc/vector/server.toml` работает одинаково, откуда бы его ни запустили."""
+        q = Path(value)
+        return q if q.is_absolute() else base / q
     dbc = data.get("database", {})
     if "url" in dbc:
         raise ConfigError("Строку подключения нельзя хранить в конфигурации (секрет). Используйте database.url_env или database.url_file.")
@@ -68,7 +75,7 @@ def load_config(path: Path) -> ServerConfig:
         if not url:
             raise ConfigError(f"Переменная окружения {dbc['url_env']} не задана.")
     elif "url_file" in dbc:
-        p = Path(dbc["url_file"])
+        p = rel(dbc["url_file"])
         _check_private_file(p, "Строка подключения", warnings)
         url = p.read_text(encoding="utf-8").strip()
     else:
@@ -78,8 +85,8 @@ def load_config(path: Path) -> ServerConfig:
         warnings.append("SQLite допустим только для тестов и пилота на одном рабочем месте; для работы — PostgreSQL или MS SQL.")
     srv = data.get("server", {})
     cfg = ServerConfig(db_url=url, host=srv.get("host", "0.0.0.0"), port=int(srv.get("port", 8443)),
-                       tls_cert=Path(srv["tls_cert"]) if srv.get("tls_cert") else None,
-                       tls_key=Path(srv["tls_key"]) if srv.get("tls_key") else None,
+                       tls_cert=rel(srv["tls_cert"]) if srv.get("tls_cert") else None,
+                       tls_key=rel(srv["tls_key"]) if srv.get("tls_key") else None,
                        dev_insecure_localhost=bool(srv.get("dev_insecure_localhost", False)), warnings=warnings)
     if cfg.dev_insecure_localhost:
         if cfg.host not in ("127.0.0.1", "::1", "localhost"):
@@ -97,6 +104,6 @@ def load_config(path: Path) -> ServerConfig:
     cfg.security.validate()
     b = data.get("backup", {})
     if b:
-        cfg.backup_dir = Path(b["dir"]) if b.get("dir") else None
+        cfg.backup_dir = rel(b["dir"]) if b.get("dir") else None
         cfg.backup_keep = int(b["keep"]) if b.get("keep") else None
     return cfg
