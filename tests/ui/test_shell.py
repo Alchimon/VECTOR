@@ -91,3 +91,20 @@ def test_history_uses_human_labels(ui):
     assert ui.backend.commandLabel("tender.transition") == "Сменить статус тендера"
     assert ui.backend.authorityLabel("global_role:rp#grant:2") == "роль «РП» (выдача №2)"
     assert ui.backend.authorityLabel("project_role:gip#assignment:7") == "«ГИП проекта» (назначение №7)"
+
+
+def test_test_stand_prefills_server_and_ca(monkeypatch):
+    """Ярлык тестового стенда задаёт VECTOR_SERVER_URL / VECTOR_CA_FILE — форма входа заполнена ими.
+    Пароль переменными не подставляется никогда (полей для этого нет)."""
+    monkeypatch.setenv("VECTOR_SERVER_URL", "https://vector-test.local:8443")
+    monkeypatch.setenv("VECTOR_CA_FILE", r"C:\VECTOR-test\certs\ca.pem")
+    from ui_harness import Harness
+    h = Harness("light")
+    try:
+        h.pump(0.5)
+        assert h.backend.savedServer == "https://vector-test.local:8443"
+        assert h.backend.savedCa == r"C:\VECTOR-test\certs\ca.pem"
+        texts = {i.property("text") for i in h.items("text")}
+        assert "https://vector-test.local:8443" in texts and r"C:\VECTOR-test\certs\ca.pem" in texts
+    finally:
+        h.close()

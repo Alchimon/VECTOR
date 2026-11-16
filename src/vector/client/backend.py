@@ -195,9 +195,12 @@ class Backend(QObject):
     def version(self):
         return __version__
 
+    # Поля входа можно заполнить заранее переменными окружения VECTOR_SERVER_URL и VECTOR_CA_FILE — так делает
+    # ярлык тестового стенда (deploy/test-stand). Переменная важнее сохранённого значения: ярлык стенда — источник
+    # истины о его адресе и сертификате. Это только подстановка в форму: пароль так не передаётся никогда.
     @Property(str, notify=changed)
     def savedServer(self):
-        return self._settings.value("server/url", "")
+        return os.environ.get("VECTOR_SERVER_URL") or self._settings.value("server/url", "")
 
     @Property(str, notify=changed)
     def savedLogin(self):
@@ -205,7 +208,7 @@ class Backend(QObject):
 
     @Property(str, notify=changed)
     def savedCa(self):
-        return self._settings.value("server/ca", "")
+        return os.environ.get("VECTOR_CA_FILE") or self._settings.value("server/ca", "")
 
     @Property("QVariantMap", notify=changed)
     def me(self):
