@@ -179,6 +179,11 @@ class Harness:
         self.backend.shutdown()
 
 
+def _plain(v):
+    """Свойство QML → обычное значение Python (QJSValue приходит не всегда — зависит от типа свойства)."""
+    return v.toVariant() if hasattr(v, "toVariant") else v
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
@@ -201,6 +206,34 @@ def main():
         h.wait_idle()
         h.scroll_detail_to(kw)
         h.shot(out / f"{theme}-10-kit-documents.png")
+        # Расчёт комплекта (С3): сводка, позиции, сравнение с зафиксированной версией; редактор; итог проекта.
+        kw.setProperty("tab", "calc")
+        h.wait_idle()
+        h.scroll_detail_to(kw)
+        h.shot(out / f"{theme}-11-kit-calc.png")
+        from PySide6.QtCore import QMetaObject, QObject, Q_ARG
+        kc = next(i for i in h.items("freezeBlocker") if i.isVisible())
+        h.scroll_detail_to(h.find("calcDiffSummary"))
+        h.shot(out / f"{theme}-12-kit-calc-diff.png")
+        ed = next(o for o in h.win.findChildren(QObject) if o.objectName() == "calcEditor")
+        QMetaObject.invokeMethod(ed, "openFor", Q_ARG("QVariant", _plain(kc.property("kit"))),
+                                 Q_ARG("QVariant", _plain(kc.property("v"))))
+        QMetaObject.invokeMethod(ed, "setCell", Q_ARG("QVariant", 1), Q_ARG("QVariant", "qty"), Q_ARG("QVariant", "1,5"))
+        h.wait_idle()
+        h.shot(out / f"{theme}-13-calc-editor.png")
+        ed.setProperty("visible", False)
+        h.wait_idle()
+        h.backend.logout()
+        h.wait_idle()
+        h.login("o.nikitina")
+        h.go("finance")
+        fp = next(i for i in h.items("all") if i.isVisible() and i.property("selectedId") is not None)
+        fp.setProperty("selectedId", h.ids["project"])
+        h.wait_idle()
+        h.shot(out / f"{theme}-14-project-totals.png")
+        h.backend.logout()
+        h.wait_idle()
+        h.login()
         h.go("customers", h.ids["customers"]["АО «Энергомаш»"])
         h.shot(out / f"{theme}-05-customer.png")
         # Офлайн: правка без связи + конфликт с коллегой

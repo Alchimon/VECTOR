@@ -10,6 +10,9 @@ MasterDetail {
     readonly property var sel: backend.projects.find(p => p.id === selectedId) || null
     readonly property var selKits: sel ? backend.kits.filter(k => k.project_id === sel.id) : []
     readonly property var team: sel ? backend.assignments.filter(a => a.project_id === sel.id) : []
+    // Итог проекта видят ГИП/РП проекта и бухгалтерия (A-18); сервер всё равно не пришлёт ревизии остальным.
+    readonly property bool canSeeTotal: sel !== null && ((backend.me.roles || []).indexOf("accountant") >= 0
+        || team.some(a => a.user_id === backend.me.user_id && (a.project_role === "gip" || a.project_role === "rp")))
     // Выбранный комплект: его задачи и документы показываются ниже сетки комплектов (KitWork).
     // Если комплект один — выбираем его сразу, чтобы не заставлять делать лишний щелчок.
     property string selectedKitId: ""
@@ -81,7 +84,7 @@ MasterDetail {
             delegate: VCard {
                 id: kitCard
                 readonly property bool current: page.selKit !== null && page.selKit.id === modelData.id
-                Layout.fillWidth: true; implicitHeight: 88
+                Layout.fillWidth: true; implicitHeight: 104
                 border.color: current ? Theme.primary : Theme.border
                 border.width: current ? 2 : 1
                 activeFocusOnTab: true
@@ -98,7 +101,8 @@ MasterDetail {
                                   onClicked: { kitForm.editId = modelData.id; kitForm.editVersion = modelData.version; kCode.text = modelData.code; kTitle.text = modelData.title; kitForm.open() } } }
                     Text { text: modelData.title; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; elide: Text.ElideRight; Layout.fillWidth: true }
                     Text { text: "Задачи: " + modelData.open_task_count + " откр. из " + modelData.task_count + "  ·  Документы: " + modelData.doc_count
-                           color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs } }
+                           color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs }
+                    Text { text: modelData.calc_label || ""; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs } }
             }
         }
     }
@@ -106,6 +110,10 @@ MasterDetail {
     Text { visible: page.selKits.length > 1 && page.selKit === null; text: "Выберите комплект, чтобы увидеть его задачи и документы."
            color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
     KitWork { Layout.fillWidth: true; kit: page.selKit; team: page.team }
+
+    // ---------- официальный итог проекта: только из зафиксированных версий расчётов комплектов (R-12)
+    ProjectTotal { Layout.fillWidth: true; Layout.topMargin: 6; projectId: page.selectedId
+                   visible: page.sel !== null && page.canSeeTotal }
     HistoryList { objectType: "project"; objectId: page.selectedId }
 
     // ---------- формы

@@ -40,6 +40,8 @@ Item {
                 NavItem { text: "Заказчики"; iconName: "building-2"; active: shellRoot.page === "customers"; onClicked: shellRoot.go("customers"); visible: backend.hint("customer.read", backend.permRevision) }
                 NavItem { text: "Тендеры и ТКП"; iconName: "gavel"; active: shellRoot.page === "tenders"; onClicked: shellRoot.go("tenders"); visible: backend.hint("tender.read", backend.permRevision) }
                 NavItem { text: "Проекты"; iconName: "folder-kanban"; active: shellRoot.page === "projects"; onClicked: shellRoot.go("projects") }
+                NavItem { text: "Итоги проектов"; iconName: "wallet"; active: shellRoot.page === "finance"; onClicked: shellRoot.go("finance")
+                          visible: (backend.me.roles || []).indexOf("accountant") >= 0 || backend.financeOverview.length > 0 }
                 Text { text: "СИСТЕМА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
                 NavItem { text: "Синхронизация"; iconName: "refresh-cw"; active: shellRoot.page === "sync"; onClicked: shellRoot.go("sync")
                           badge: backend.problemCount > 0 ? backend.problemCount : backend.pendingCount; badgeTone: backend.problemCount > 0 ? "danger" : "warning" }
@@ -63,13 +65,14 @@ Item {
 
         Loader {
             Layout.fillWidth: true; Layout.fillHeight: true
-            sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC })[shellRoot.page]
+            sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC, finance: financeC })[shellRoot.page]
         }
     }
     Component { id: customersC; CustomersPage { shell: shellRoot } }
     Component { id: tendersC; TendersPage { shell: shellRoot } }
     Component { id: projectsC; ProjectsPage { shell: shellRoot } }
     Component { id: syncC; SyncPage {} }
+    Component { id: financeC; FinancePage { shell: shellRoot } }
     Component { id: adminC; AdminPage {} }
 
     FormDialog {

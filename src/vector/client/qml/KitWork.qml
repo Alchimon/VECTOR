@@ -3,7 +3,7 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Dialogs
 
-// Работа внутри комплекта: задачи и документы с версиями файлов (issue #1).
+// Работа внутри комплекта: задачи, документы с версиями файлов (issue #1) и расчёт (KitCalc.qml, С3).
 //
 // Что важно для понимания поведения:
 //  * Задачи и карточки документов создаются/меняются и БЕЗ связи — команда ложится в офлайн-очередь
@@ -16,7 +16,7 @@ ColumnLayout {
     id: kw
     property var kit: null                  // выбранный комплект (объект из backend.kits)
     property var team: []                   // назначения проекта (для выбора исполнителя)
-    property string tab: "tasks"            // tasks | documents
+    property string tab: "tasks"            // tasks | documents | calc
     readonly property var kitTasks: kit ? backend.tasks.filter(t => t.kit_id === kit.id) : []
     readonly property var kitDocs: kit ? backend.documents.filter(d => d.kit_id === kit.id) : []
     // Исполнителем может быть только участник проекта (сервер проверит: assignee_not_in_project).
@@ -54,7 +54,8 @@ ColumnLayout {
                 id: segRow; anchors.centerIn: parent; spacing: 2
                 Repeater {
                     model: [{ id: "tasks", label: "Задачи (" + kw.kitTasks.length + ")", icon: "list-checks" },
-                            { id: "documents", label: "Документы (" + kw.kitDocs.length + ")", icon: "file-text" }]
+                            { id: "documents", label: "Документы (" + kw.kitDocs.length + ")", icon: "file-text" },
+                            { id: "calc", label: "Расчёт", icon: "calculator" }]
                     delegate: Rectangle {
                         required property var modelData
                         width: segIn.implicitWidth + 22; height: 28; radius: 8
@@ -74,10 +75,14 @@ ColumnLayout {
             }
         }
         VButton {
+            visible: kw.tab !== "calc"
             text: kw.tab === "tasks" ? "Новая задача" : "Новый документ"; kind: "soft"; compact: true; iconName: "plus"
             onClicked: kw.tab === "tasks" ? taskForm.openNew() : docForm.openNew()
         }
     }
+
+    // ================================================================== расчёт (С3)
+    KitCalc { visible: kw.tab === "calc"; kit: kw.tab === "calc" ? kw.kit : null; Layout.fillWidth: true }
 
     // ================================================================== задачи
     Repeater {
