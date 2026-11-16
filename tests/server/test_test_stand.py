@@ -18,7 +18,7 @@ LINUX = STAND / "linux"
 def test_windows_cmd_files_are_ascii_crlf():
     """cmd.exe читает пакетные файлы в кодовой странице OEM: только ASCII; переводы строк — CRLF."""
     files = sorted(WIN.glob("*.cmd"))
-    assert {f.name for f in files} == {"setup.cmd", "start-server.cmd", "start-client.cmd", "backup.cmd"}
+    assert {f.name for f in files} == {"setup.cmd", "start-server.cmd", "start-client.cmd", "backup.cmd", "update.cmd"}
     for f in files:
         raw = f.read_bytes()
         raw.decode("ascii")
@@ -100,3 +100,12 @@ def test_constraints_fit_project_ranges():
         name = r.name.lower().replace("_", "-")
         assert name in pins, f"{name} не зафиксирован в constraints.txt"
         assert pins[name] in r.specifier, f"{name}=={pins[name]} вне диапазона {r.specifier}"
+
+
+def test_update_scripts_back_up_and_migrate_before_check():
+    """Обновление стенда: новая версия в тот же venv → migrate (копия с проверкой) → check; данные не пересоздаются."""
+    for text in ((WIN / "update.cmd").read_text(encoding="ascii"), (LINUX / "update-test-stand.sh").read_text(encoding="utf-8")):
+        i_pip, i_mig, i_chk = text.index("pip install"), text.index("migrate --config"), text.index("check --config")
+        assert i_pip < i_mig < i_chk
+        assert "constraints.txt" in text and "--key-file backup.key" in text
+        assert " init " not in text and "demo-seed" not in text     # обновление не создаёт базу заново
