@@ -8,7 +8,9 @@
 """
 from __future__ import annotations
 
+import io
 import json
+import os
 import ssl
 from typing import Optional
 
@@ -25,6 +27,33 @@ class ResponseLost(Exception):
 
 class TlsError(Exception):
     """Сертификат сервера не прошёл проверку."""
+
+
+# Блок потоковой передачи файлов. В памяти клиента одновременно — порядка одного блока.
+FILE_BLOCK = 1024 * 1024
+
+
+def _as_reader(source):
+    """bytes → BytesIO; файловый объект возвращается как есть."""
+    return io.BytesIO(bytes(source)) if isinstance(source, (bytes, bytearray, memoryview)) else source
+
+
+def _remaining(f) -> int:
+    """Сколько байтов осталось прочитать из файлового объекта (позиция не меняется)."""
+    try:
+        return os.fstat(f.fileno()).st_size - f.tell()
+    except (AttributeError, OSError, io.UnsupportedOperation):
+        pos = f.tell()
+        end = f.seek(0, io.SEEK_END)
+        f.seek(pos)
+        return end - pos
+
+
+def _seekable(f):
+    """Сервис читает источник дважды (хэш, затем запись): ему нужен файл с seek от начала."""
+    if f.tell() == 0:
+        return f
+    return io.BytesIO(f.read())
 
 
 _ROUTES = {"login": "/api/v1/auth/login", "logout": "/api/v1/auth/logout", "command": "/api/v1/command", "query": "/api/v1/query"}
@@ -95,10 +124,27 @@ class HttpTransport:
         self.online = True
         return r
 
-    def upload(self, token: str, project_id: str, data: bytes, sha256: str) -> dict:
-        r = self._guard(lambda: self._http.post("/api/v1/files", params={"project_id": project_id}, content=data,
+    def upload(self, token: str, project_id: str, source, sha256: str, size: Optional[int] = None) -> dict:
+        """Отправить содержимое файла потоком (issue #8).
+
+        source — двоичный файловый объект (открытый файл, BytesIO) или bytes. Читается блоками по FILE_BLOCK,
+        в памяти держится один блок. Content-Length передаём явно: сервер отказывает в слишком большом файле
+        ещё до приёма тела.
+        """
+        src = _as_reader(source)
+        if size is None:
+            size = _remaining(src)
+
+        def body():
+            while True:
+                b = src.read(FILE_BLOCK)
+                if not b:
+                    return
+                yield b
+        r = self._guard(lambda: self._http.post("/api/v1/files", params={"project_id": project_id}, content=body(),
                                                 headers={"Authorization": f"Bearer {token}", "X-Content-SHA256": sha256,
-                                                         "Content-Type": "application/octet-stream"},
+                                                         "Content-Type": "application/octet-stream",
+                                                         "Content-Length": str(size)},
                                                 timeout=self._FILE_TIMEOUT))
         try:
             out = r.json()
@@ -106,15 +152,29 @@ class HttpTransport:
             raise ResponseLost()
         return out if isinstance(out, dict) else {"status": "error", "message_ru": "Некорректный ответ сервера."}
 
-    def download(self, token: str, document_id: str, version_no: int) -> tuple[dict, Optional[bytes]]:
-        r = self._guard(lambda: self._http.get(f"/api/v1/files/{document_id}/{int(version_no)}",
-                                               headers={"Authorization": f"Bearer {token}"}, timeout=self._FILE_TIMEOUT))
-        if r.status_code == 200 and r.headers.get("content-type", "").startswith("application/octet-stream"):
-            return {"status": "accepted", "sha256": r.headers.get("x-content-sha256", "")}, r.content
-        try:
-            return r.json(), None
-        except ValueError:
-            raise ResponseLost()
+    def download(self, token: str, document_id: str, version_no: int, sink) -> dict:
+        """Скачать файл версии потоком в sink (двоичный файловый объект для записи). Возвращает ответ сервера.
+
+        При успехе ответ {"status": "accepted", "sha256": <заголовок сервера>, "size_bytes": n}; байты уже в sink.
+        Иначе — JSON-ответ сервера (отказ/ошибка), в sink ничего не пишется. Проверка SHA-256 — забота
+        вызывающего (SyncClient): транспорт только доставляет байты. Обрыв посреди передачи → ResponseLost.
+        """
+        def fetch():
+            with self._http.stream("GET", f"/api/v1/files/{document_id}/{int(version_no)}",
+                                   headers={"Authorization": f"Bearer {token}"}, timeout=self._FILE_TIMEOUT) as r:
+                if r.status_code == 200 and r.headers.get("content-type", "").startswith("application/octet-stream"):
+                    n = 0
+                    for b in r.iter_bytes(FILE_BLOCK):
+                        sink.write(b)
+                        n += len(b)
+                    return {"status": "accepted", "sha256": r.headers.get("x-content-sha256", ""), "size_bytes": n}
+                r.read()   # ответ-ошибка небольшой (JSON); дочитываем, чтобы соединение вернулось в пул
+                try:
+                    out = r.json()
+                except ValueError:
+                    raise ResponseLost()
+                return out if isinstance(out, dict) else {"status": "error", "message_ru": "Некорректный ответ сервера."}
+        return self._guard(fetch)
 
     def ping(self) -> bool:
         try:
@@ -155,24 +215,30 @@ class LoopbackTransport:
             raise ResponseLost()
         return resp
 
-    def upload(self, token: str, project_id: str, data: bytes, sha256: str) -> dict:
+    def upload(self, token: str, project_id: str, source, sha256: str, size: Optional[int] = None) -> dict:
         if not self.online:
             raise Offline()
-        resp = self._svc.put_file(token, project_id, bytes(data), sha256, self._addr)
+        resp = self._svc.put_file_stream(token, project_id, _seekable(_as_reader(source)), sha256, self._addr)
         if self.drop_next_response:
             self.drop_next_response = False
             raise ResponseLost()
         return json.loads(json.dumps(resp, ensure_ascii=False))
 
-    def download(self, token: str, document_id: str, version_no: int) -> tuple[dict, Optional[bytes]]:
+    def download(self, token: str, document_id: str, version_no: int, sink) -> dict:
         if not self.online:
             raise Offline()
-        resp, content = self._svc.get_file(token, document_id, version_no, self._addr)
-        if content is not None and self.corrupt_next_download:
-            # Инъекция порчи «в пути» для тестов: клиент обязан заметить несовпадение SHA-256.
-            self.corrupt_next_download = False
-            content = content[:-1] + bytes([content[-1] ^ 0xFF]) if content else b"x"
-        return json.loads(json.dumps(resp, ensure_ascii=False)), content
+        # Сервис собирает проверенный файл во временный буфер (как HTTP-слой), затем «передаёт» его в sink.
+        buf = io.BytesIO()
+        resp = self._svc.get_file_to(token, document_id, version_no, buf, self._addr)
+        if resp.get("status") == "accepted":
+            content = buf.getvalue()
+            if self.corrupt_next_download:
+                # Инъекция порчи «в пути» для тестов: клиент обязан заметить несовпадение SHA-256.
+                self.corrupt_next_download = False
+                content = content[:-1] + bytes([content[-1] ^ 0xFF]) if content else b"x"
+            sink.write(content)
+            resp = {"status": "accepted", "sha256": resp["sha256"], "size_bytes": len(content)}
+        return json.loads(json.dumps(resp, ensure_ascii=False))
 
     def ping(self) -> bool:
         return self.online

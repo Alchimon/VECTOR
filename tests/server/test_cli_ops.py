@@ -142,8 +142,10 @@ def test_tls_server_serves_and_requires_tls(setup):
             import hashlib, uuid as _uuid
             up = t.upload(r["token"], str(_uuid.uuid4()), b"data", hashlib.sha256(b"data").hexdigest())
             assert up["status"] == "denied"
-            resp, content = t.download(r["token"], str(_uuid.uuid4()), 1)
-            assert resp["status"] == "denied" and content is None
+            import io as _io
+            sink = _io.BytesIO()
+            resp = t.download(r["token"], str(_uuid.uuid4()), 1, sink)
+            assert resp["status"] == "denied" and sink.getvalue() == b""
         finally:
             t.close()
         t = HttpTransport(base)

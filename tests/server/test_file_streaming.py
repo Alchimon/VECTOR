@@ -7,9 +7,13 @@
 * посторонний получает отказ ДО приёма тела (предварительная проверка), отказ — в аудите;
 * если файл изменился между проходом хэширования и записью — ничего не записывается;
 * повреждённый в хранилище файл не отдаётся ни байтом: HTTP-ответ — JSON-ошибка, в аудите — error;
+* настоящий HTTP-сервер (uvicorn) + клиентский HttpTransport: поток в обе стороны, проверка SHA у клиента.
 """
 import hashlib
 import io
+import socket
+import threading
+import time
 import tracemalloc
 
 import pytest
@@ -216,3 +220,58 @@ def test_service_memory_does_not_grow_with_file_size(world, proj, tmp_path):
     # Порог с запасом: несколько блоков по 1 МиБ (yield_per=4 у PostgreSQL), но далеко от 24 МиБ.
     assert up_peak < 8 * MiB, f"upload peak {up_peak / MiB:.1f} MiB"
     assert down_peak < 10 * MiB, f"download peak {down_peak / MiB:.1f} MiB"
+
+
+# ====================================================================== настоящий HTTP-сервер + клиентский транспорт
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.fixture
+def live(world):
+    import uvicorn
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(create_app(world.svc), host="127.0.0.1", port=port, log_level="warning",
+                                           lifespan="off"))
+    th = threading.Thread(target=server.run, daemon=True)
+    th.start()
+    for _ in range(200):
+        if server.started:
+            break
+        time.sleep(0.02)
+    assert server.started
+    yield f"http://127.0.0.1:{port}"
+    server.should_exit = True
+    th.join(10)
+
+
+def test_http_transport_streams_both_ways(world, proj, live, tmp_path):
+    from vector.client.transport import HttpTransport
+    data = _pattern(3 * db.FILE_CHUNK + 999)
+    sha = hashlib.sha256(data).hexdigest()
+    src = tmp_path / "src.bin"
+    src.write_bytes(data)
+    t = HttpTransport(live)
+    try:
+        with open(src, "rb") as f:
+            up = t.upload(proj.eng.token, proj.pid, f, sha)
+        assert up["status"] == "accepted" and up["size_bytes"] == len(data)
+        did = make_doc(proj)
+        proj.eng.ok("document.add_version", {"id": did, "sha256": sha, "file_name": "s.bin"}, expected_version=1)
+        sink = io.BytesIO()
+        resp = t.download(proj.gip.token, did, 1, sink)
+        assert resp == {"status": "accepted", "sha256": sha, "size_bytes": len(data)} and sink.getvalue() == data
+        # Отказ приходит JSON-ом и в приёмник ничего не пишется.
+        sink2 = io.BytesIO()
+        assert t.download(proj.lead.token, did, 1, sink2)["status"] == "denied" and sink2.getvalue() == b""
+        # Честный файл сверх предела: сервер отказывает по Content-Length, не читая тело.
+        big = tmp_path / "big.bin"
+        with open(big, "wb") as f:
+            f.truncate(LIMIT_MB * MiB + 1)
+        with open(big, "rb") as f:
+            r = t.upload(proj.eng.token, proj.pid, f, "0" * 64)
+        assert r["code"] == "file_too_large"
+    finally:
+        t.close()

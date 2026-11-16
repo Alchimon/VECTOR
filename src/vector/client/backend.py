@@ -547,8 +547,9 @@ class Backend(QObject):
         self._run(job, done)
 
     # ------------------------------------------------------------ файлы документов
-    # Ограничение клиента «на всякий случай»: файл читается в память целиком (потоковая передача — issue #8),
-    # поэтому заведомо неприемлемые размеры отсекаем до чтения. Реальный предел задаёт сервер (max_file_mb, A-16).
+    # Ограничение клиента «на всякий случай»: заведомо неприемлемые размеры отсекаем до чтения файла.
+    # Сам файл передаётся потоком (issue #8) и в память целиком не читается. Реальный предел задаёт сервер
+    # (max_file_mb, A-16) — он же отказывает по заявленному размеру ещё до приёма тела.
     _CLIENT_FILE_CAP = 2048 * 1024 * 1024
 
     @Slot(str, str, str, str, int)
@@ -563,8 +564,7 @@ class Backend(QObject):
                 return {"status": "error", "message_ru": "Файл не найден или недоступен для чтения."}
             if size > self._CLIENT_FILE_CAP:
                 return {"status": "rejected", "message_ru": "Файл слишком большой для загрузки."}
-            data = path.read_bytes()
-            r = self.client.add_document_version(document_id, data, path.name, comment.strip() or None, expected_version)
+            r = self.client.add_document_version(document_id, path, path.name, comment.strip() or None, expected_version)
             return {"result": r.__dict__, "snap": self._snapshot(False)}
 
         self._run(job, lambda res: self._file_done(tag, res, "Новая версия загружена и проверена."))

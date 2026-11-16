@@ -364,6 +364,50 @@ def test_corrupted_download_is_not_saved(world, team, tmp_path):
     assert not dest.exists() and not list(tmp_path.glob("*.vector-partial"))
 
 
+def test_add_version_from_path_streams_file_object(world, team, tmp_path):
+    """Файл с диска передаётся транспорту открытым файлом (поток), а не байтами в памяти (issue #8)."""
+    pid, kit, rp, eng = team
+    did = new_id()
+    eng.execute("document.create", {"id": did, "kit_id": kit, "code": "АТХ-4", "title": "Схема"})
+    src = tmp_path / "Схема АТХ-4.dwg"
+    data = bytes(range(256)) * 9000       # ~2.2 МБ: больше двух блоков
+    src.write_bytes(data)
+    seen = []
+    orig = eng.t.upload
+
+    def spy(token, project_id, source, sha256, size=None):
+        seen.append((type(source).__name__, size))
+        return orig(token, project_id, source, sha256, size)
+    eng.t.upload = spy
+    r = eng.add_document_version(did, src, src.name, None, expected_version=1)
+    assert r.status == "accepted", r
+    assert seen == [("BufferedReader", len(data))]
+    dest = tmp_path / "out.dwg"
+    assert eng.download_document_version(did, 1, dest).status == "accepted" and dest.read_bytes() == data
+    # Нечитаемый путь — понятная ошибка, ничего не отправлено.
+    r = eng.add_document_version(did, tmp_path / "нет такого.dwg", "x.dwg", None, expected_version=2)
+    assert r.status == "error" and len(seen) == 1
+
+
+def test_interrupted_download_leaves_nothing(world, team, tmp_path):
+    """Обрыв посреди скачивания: ни целевого файла, ни «.vector-partial» (недокачанное не примут за чертёж)."""
+    pid, kit, rp, eng = team
+    did = new_id()
+    eng.execute("document.create", {"id": did, "kit_id": kit, "code": "АТХ-5", "title": "Схема"})
+    assert eng.add_document_version(did, b"0123456789" * 1000, "a.pdf", None, expected_version=1).status == "accepted"
+    from vector.client.transport import ResponseLost
+
+    def broken(token, document_id, version_no, sink):
+        sink.write(b"01234")
+        raise ResponseLost()
+    eng.t.download = broken
+    dest = tmp_path / "a.pdf"
+    dest.write_bytes(b"old file stays")   # уже существующий файл с тем же именем не портится
+    r = eng.download_document_version(did, 1, dest)
+    assert r.status == "refused_offline"
+    assert dest.read_bytes() == b"old file stays" and not list(tmp_path.glob("*.vector-partial"))
+
+
 def test_concurrent_version_is_conflict_on_client(world, team):
     pid, kit, rp, eng = team
     did = new_id()

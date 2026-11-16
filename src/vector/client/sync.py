@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import sqlite3
@@ -26,7 +27,7 @@ from typing import Any, Optional
 
 from vector.core.contracts import Contracts
 
-from .transport import Offline, ResponseLost, TlsError
+from .transport import FILE_BLOCK, Offline, ResponseLost, TlsError
 from .vault import DeviceSecretStore, OpenVault, Vault, VaultError, profile_dir, server_dir
 
 LOCAL_SCHEMA = """
@@ -377,9 +378,13 @@ class SyncClient:
         """Версии документа из локального кэша (метаданные: номер, имя, размер, SHA-256), по возрастанию номера."""
         return [v for v in (self.get_meta("document_versions") or []) if v["document_id"] == document_id]
 
-    def add_document_version(self, document_id: str, data: bytes, file_name: str, comment: Optional[str],
+    def add_document_version(self, document_id: str, data, file_name: str, comment: Optional[str],
                              expected_version: int) -> LocalResult:
         """Загрузить файл и создать новую версию документа — два шага, оба онлайн.
+
+        data — путь к файлу (Path) или bytes. Файл с диска читается потоком дважды (SHA-256, затем отправка),
+        целиком в память не загружается (issue #8). Если файл изменят между этими проходами, сервер
+        увидит несовпадение хэша и отклонит загрузку — «смешанная» версия не появится.
 
         1) upload: байты + SHA-256, посчитанный здесь; сервер пересчитывает и выдаёт квитанцию загрузки.
            Повтор после обрыва безопасен: содержимое адресуется хэшем и не дублируется.
@@ -394,9 +399,16 @@ class SyncClient:
         if not self.token:
             return LocalResult("refused_offline", message_ru="Новая версия документа (файл) добавляется только при связи с сервером. "
                                                              "Ничего не поставлено в очередь.")
-        sha = hashlib.sha256(data).hexdigest()
         try:
-            up = self.t.upload(self.token, doc["project_id"], data, sha)
+            src = open(data, "rb") if isinstance(data, (str, os.PathLike)) else io.BytesIO(bytes(data))
+        except OSError:
+            return LocalResult("error", message_ru="Файл не найден или недоступен для чтения.")
+        try:
+            sha, size = _sha256_of(src)
+            src.seek(0)
+            up = self.t.upload(self.token, doc["project_id"], src, sha, size)
+        except OSError:
+            return LocalResult("error", message_ru="Не удалось прочитать файл. Версия не добавлена.")
         except Offline:
             return LocalResult("refused_offline", message_ru="Связь пропала до загрузки файла. Версия не добавлена.")
         except ResponseLost:
@@ -404,6 +416,8 @@ class SyncClient:
                                                              "повторная загрузка того же файла безопасна.")
         except TlsError as e:
             return LocalResult("error", message_ru=str(e))
+        finally:
+            src.close()
         if up.get("status") != "accepted":
             if up.get("status") == "unauthenticated":
                 self.token = None
@@ -428,28 +442,43 @@ class SyncClient:
         if not self.token:
             return LocalResult("refused_offline", message_ru="Скачивание файла доступно при связи с сервером.")
         meta = next((v for v in self.document_versions(document_id) if v["version_no"] == version_no), None)
-        try:
-            resp, content = self.t.download(self.token, document_id, version_no)
-        except (Offline, ResponseLost):
-            return LocalResult("refused_offline", message_ru="Нет связи с сервером — файл не скачан.")
-        except TlsError as e:
-            return LocalResult("error", message_ru=str(e))
-        if content is None:
-            if resp.get("status") == "unauthenticated":
-                self.token = None
-            return LocalResult(resp.get("status", "error"), message_ru=resp.get("message_ru", "Файл не получен."), response=resp)
-        actual = hashlib.sha256(content).hexdigest()
-        expected = {resp.get("sha256")} | ({meta["sha256"]} if meta else set())
-        if expected != {actual}:
-            return LocalResult("error", message_ru="Файл повреждён при передаче (контрольная сумма не совпала) и не сохранён. "
-                                                   "Повторите скачивание; если ошибка повторяется — сообщите администратору.")
         dest = Path(dest)
         tmp = dest.with_name(dest.name + ".vector-partial")
-        with open(tmp, "wb") as f:
-            f.write(content)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, dest)
+        # Байты пишутся сразу во временный файл рядом с целевым, хэш считается по ходу (issue #8):
+        # в памяти — один блок, сколько бы ни весил чертёж. Целевое имя появляется только после сверки.
+        saved = False
+        try:
+            with open(tmp, "wb") as f:
+                sink = _HashingWriter(f)
+                try:
+                    resp = self.t.download(self.token, document_id, version_no, sink)
+                except (Offline, ResponseLost):
+                    return LocalResult("refused_offline", message_ru="Нет связи с сервером — файл не скачан.")
+                except TlsError as e:
+                    return LocalResult("error", message_ru=str(e))
+                if resp.get("status") != "accepted":
+                    if resp.get("status") == "unauthenticated":
+                        self.token = None
+                    return LocalResult(resp.get("status", "error"), message_ru=resp.get("message_ru", "Файл не получен."),
+                                       response=resp)
+                actual = sink.hexdigest()
+                expected = {resp.get("sha256")} | ({meta["sha256"]} if meta else set())
+                if expected != {actual}:
+                    return LocalResult("error", message_ru="Файл повреждён при передаче (контрольная сумма не совпала) и не сохранён. "
+                                                           "Повторите скачивание; если ошибка повторяется — сообщите администратору.")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, dest)
+            saved = True
+        except OSError as e:
+            return LocalResult("error", message_ru=f"Не удалось записать файл на диск: {e.strerror or e}.")
+        finally:
+            if not saved:
+                # Недокачанный или непроверенный файл не оставляем: его можно было бы принять за настоящий.
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
         return LocalResult("accepted", message_ru=f"Файл сохранён: {dest.name}", response={"sha256": actual, "path": str(dest)})
 
     # ------------------------------------------------------------ конфликты и отказы
@@ -585,3 +614,28 @@ class SyncClient:
             j = self._open("cache", f"{otype}/{oid}/s", row[0])
             self.db.execute("UPDATE cache SET data_enc=?, pending=0 WHERE object_type=? AND id=?",
                             (self._seal("cache", f"{otype}/{oid}/d", j), otype, oid))
+
+
+def _sha256_of(f) -> tuple[str, int]:
+    """SHA-256 и размер файлового объекта, прочитанного блоками от текущей позиции до конца."""
+    h, n = hashlib.sha256(), 0
+    while True:
+        b = f.read(FILE_BLOCK)
+        if not b:
+            return h.hexdigest(), n
+        h.update(b)
+        n += len(b)
+
+
+class _HashingWriter:
+    """Обёртка файла для записи: считает SHA-256 записанных байтов по ходу скачивания."""
+
+    def __init__(self, f):
+        self._f, self._h = f, hashlib.sha256()
+
+    def write(self, b) -> int:
+        self._h.update(b)
+        return self._f.write(b)
+
+    def hexdigest(self) -> str:
+        return self._h.hexdigest()
