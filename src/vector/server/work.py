@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from typing import Any, Optional
 
 import sqlalchemy as sa
@@ -33,6 +34,10 @@ _SHA_RE_LEN = 64
 # Символы, недопустимые в имени файла на Windows, плюс разделители путей: имя файла хранится как
 # метка версии и при скачивании предлагается пользователю — путь из него не должен «выпрыгнуть» из папки.
 _BAD_NAME_CHARS = set('<>:"/\\|?*') | {chr(c) for c in range(32)}
+
+
+class _SourceChanged(Exception):
+    """Источник загрузки изменился между проходом хэширования и записью — транзакция отменяется."""
 
 
 def _check_sha256(v: object) -> str:
@@ -287,30 +292,31 @@ class WorkMixin:
         except Denied:
             return None
 
-    def put_file(self, token: Optional[str], project_id: object, data: bytes, claimed_sha256: object,
-                 client_addr: Optional[str] = None) -> dict:
-        """Загрузка содержимого файла. Возвращает SHA-256 и размер; создаёт квитанцию загрузки.
+    # ------------------------------------------------------------ файлы: потоковая передача
+    # Память не зависит от размера файла (issue #8): содержимое всегда идёт через файловые объекты
+    # блоками по FILE_CHUNK. HTTP-слой сначала сохраняет входящий поток во временный файл (с контролем
+    # предела размера), а при скачивании — собирает проверенный файл во временный файл и только потом
+    # отдаёт его. Источник и приёмник должны поддерживать seek: транзакцию при конфликте сериализации
+    # повторяют целиком (Service._tx), и каждая попытка начинает чтение/запись с начала.
 
-        * Нужно право document.add_version в указанном проекте — иначе посторонний мог бы заполнять БД.
-        * claimed_sha256 считает клиент ДО отправки; сервер пересчитывает. Несовпадение = повреждение в пути.
-        * Повторная загрузка того же содержимого не дублирует данные (дедупликация), но квитанция создаётся.
-        * Операция идемпотентна по содержимому: её безопасно повторять после обрыва связи.
+    def _file_limit_reply(self) -> dict:
+        return {"status": "rejected", "code": "file_too_large",
+                "message_ru": f"Файл больше допустимого размера ({self.sec.max_file_mb} МБ)."}
+
+    def precheck_upload(self, token: Optional[str], project_id: object, declared_size: Optional[int],
+                        client_addr: Optional[str] = None) -> Optional[dict]:
+        """Быстрая проверка ДО приёма тела загрузки: вход, право в проекте, заявленный размер.
+
+        Зачем: не принимать гигабайты от постороннего или сверх предела. Возвращает ответ-отказ или None,
+        если можно принимать тело. Это лишь предварительная проверка — окончательная (в той же транзакции,
+        что и запись) выполняется в put_file_stream. Отказ по правам записывается в аудит здесь.
         """
-        if not isinstance(data, (bytes, bytearray)):
-            return {"status": "rejected", "code": "bad_file", "message_ru": "Нет содержимого файла."}
-        limit = self.sec.max_file_mb * 1024 * 1024
-        if len(data) > limit:
-            return {"status": "rejected", "code": "file_too_large",
-                    "message_ru": f"Файл больше допустимого размера ({self.sec.max_file_mb} МБ)."}
+        if declared_size is not None and declared_size > self.sec.max_file_mb * 1024 * 1024:
+            return self._file_limit_reply()
         try:
-            claimed = _check_sha256(claimed_sha256)
             pid = req_uuid({"project_id": project_id}, "project_id")
         except Rejected as e:
             return {"status": "rejected", "code": e.code, "message_ru": e.message_ru}
-        actual = hashlib.sha256(data).hexdigest()
-        if actual != claimed:
-            return {"status": "rejected", "code": "hash_mismatch",
-                    "message_ru": "Файл повреждён при передаче (контрольная сумма не совпала). Повторите загрузку."}
 
         def tx(conn):
             now = self.now()
@@ -319,35 +325,106 @@ class WorkMixin:
                 if self._get(conn, projects, pid) is not None else None
             if authority is None:
                 self._audit(conn, now, user["id"], device, client_addr, None, "file.upload", "project", pid, None, None, None,
-                            "denied", {"sha256": actual, "size_bytes": len(data)})
+                            "denied", {"stage": "precheck", "declared_size": declared_size})
+                return {"status": "denied", "code": "no_authority",
+                        "message_ru": "Нет права добавлять файлы в документы этого проекта."}
+            return None
+        return self._guarded_tx(tx)
+
+    def put_file_stream(self, token: Optional[str], project_id: object, source, claimed_sha256: object,
+                        client_addr: Optional[str] = None) -> dict:
+        """Загрузка содержимого файла из файлового объекта source (двоичный, с seek). Создаёт квитанцию.
+
+        * Нужно право document.add_version в указанном проекте — иначе посторонний мог бы заполнять БД.
+        * claimed_sha256 клиент считает ДО отправки; сервер пересчитывает. Несовпадение = повреждение в пути
+          (или файл изменился у пользователя во время загрузки).
+        * Если такое содержимое уже есть (дедупликация по SHA-256), байты повторно не записываются, но
+          квитанция выдаётся: пользователь доказал, что у него есть файл, — он прислал его целиком.
+        * Операция идемпотентна по содержимому: её безопасно повторять после обрыва связи.
+        """
+        limit = self.sec.max_file_mb * 1024 * 1024
+        try:
+            claimed = _check_sha256(claimed_sha256)
+            pid = req_uuid({"project_id": project_id}, "project_id")
+        except Rejected as e:
+            return {"status": "rejected", "code": e.code, "message_ru": e.message_ru}
+        # Проход 1 — хэш и размер (вне транзакции: чтение диска не держит блокировки БД).
+        h, size = hashlib.sha256(), 0
+        source.seek(0)
+        while True:
+            block = source.read(FILE_CHUNK)
+            if not block:
+                break
+            size += len(block)
+            if size > limit:
+                return self._file_limit_reply()
+            h.update(block)
+        actual = h.hexdigest()
+        if actual != claimed:
+            return {"status": "rejected", "code": "hash_mismatch",
+                    "message_ru": "Файл повреждён при передаче или изменился во время загрузки (контрольная сумма "
+                                  "не совпала). Повторите загрузку."}
+        chunk_count = max(1, -(-size // FILE_CHUNK))   # пустой файл хранится одним пустым блоком
+
+        def tx(conn):
+            now = self.now()
+            user, device, _ = self._auth(conn, token, now)
+            authority = self._authority_for(conn, user["id"], "document.add_version", now, pid) \
+                if self._get(conn, projects, pid) is not None else None
+            if authority is None:
+                self._audit(conn, now, user["id"], device, client_addr, None, "file.upload", "project", pid, None, None, None,
+                            "denied", {"sha256": actual, "size_bytes": size})
                 return {"status": "denied", "code": "no_authority",
                         "message_ru": "Нет права добавлять файлы в документы этого проекта."}
             dedup = self._get(conn, file_blobs, actual, "sha256") is not None
             if not dedup:
-                chunks = [bytes(data[i:i + FILE_CHUNK]) for i in range(0, len(data), FILE_CHUNK)] or [b""]
-                conn.execute(file_blobs.insert().values(sha256=actual, size_bytes=len(data), chunk_count=len(chunks),
+                conn.execute(file_blobs.insert().values(sha256=actual, size_bytes=size, chunk_count=chunk_count,
                                                         uploaded_by=user["id"], uploaded_at=now))
-                conn.execute(file_chunks.insert(), [{"sha256": actual, "idx": i, "data": c} for i, c in enumerate(chunks)])
+                # Проход 2 — запись блоков по одному: в памяти не больше одного блока.
+                # Каждый блок перепроверяется общим хэшем: если файл подменили на диске между проходами,
+                # итоговый хэш не совпадёт и транзакция будет отменена (ничего не запишется).
+                source.seek(0)
+                h2 = hashlib.sha256()
+                for idx in range(chunk_count):
+                    block = source.read(FILE_CHUNK)
+                    h2.update(block)
+                    conn.execute(file_chunks.insert().values(sha256=actual, idx=idx, data=block))
+                if h2.hexdigest() != actual or source.read(1):
+                    raise _SourceChanged()
             conn.execute(file_uploads.insert().values(sha256=actual, user_id=user["id"], project_id=pid, uploaded_at=now))
             self._audit(conn, now, user["id"], device, client_addr, None, "file.upload", "project", pid, authority, None, None,
-                        "accepted", {"sha256": actual, "size_bytes": len(data), "deduplicated": dedup})
-            return {"status": "accepted", "sha256": actual, "size_bytes": len(data), "deduplicated": dedup}
-        return self._guarded_tx(tx)
+                        "accepted", {"sha256": actual, "size_bytes": size, "deduplicated": dedup})
+            return {"status": "accepted", "sha256": actual, "size_bytes": size, "deduplicated": dedup}
+        try:
+            return self._guarded_tx(tx)
+        except _SourceChanged:
+            return {"status": "rejected", "code": "hash_mismatch",
+                    "message_ru": "Файл изменился во время загрузки. Повторите загрузку."}
 
-    def get_file(self, token: Optional[str], document_id: object, version_no: object,
-                 client_addr: Optional[str] = None) -> tuple[dict, Optional[bytes]]:
-        """Скачивание файла конкретной версии документа: (ответ, байты или None).
+    def put_file(self, token: Optional[str], project_id: object, data: bytes, claimed_sha256: object,
+                 client_addr: Optional[str] = None) -> dict:
+        """То же, что put_file_stream, для содержимого в памяти (тесты, небольшие файлы)."""
+        if not isinstance(data, (bytes, bytearray)):
+            return {"status": "rejected", "code": "bad_file", "message_ru": "Нет содержимого файла."}
+        if len(data) > self.sec.max_file_mb * 1024 * 1024:
+            return self._file_limit_reply()
+        return self.put_file_stream(token, project_id, io.BytesIO(bytes(data)), claimed_sha256, client_addr)
 
-        Права — document.read в проекте документа. Содержимое собирается из блоков и сверяется с SHA-256
-        версии; при расхождении файл НЕ отдаётся (код file_corrupted) и событие пишется в аудит —
-        администратор восстанавливает файл из резервной копии.
+    def get_file_to(self, token: Optional[str], document_id: object, version_no: object, dest,
+                    client_addr: Optional[str] = None) -> dict:
+        """Записать файл версии в dest (двоичный файловый объект с seek/truncate) и проверить его.
+
+        Права — document.read в проекте документа. Блоки читаются из БД потоком и пишутся в dest с
+        пересчётом SHA-256; при расхождении ответ — file_corrupted, и вызывающий ОБЯЗАН выбросить dest
+        (HTTP-слой так и делает: клиенту ничего не отдаётся). Событие пишется в аудит в обоих случаях —
+        администратор восстанавливает повреждённый файл из резервной копии.
         """
         try:
             did = req_uuid({"document_id": document_id}, "document_id")
             if isinstance(version_no, bool) or not isinstance(version_no, int) or version_no < 1:
                 raise Rejected("bad_version_no", "Номер версии — целое число от 1.")
         except Rejected as e:
-            return {"status": "rejected", "code": e.code, "message_ru": e.message_ru}, None
+            return {"status": "rejected", "code": e.code, "message_ru": e.message_ru}
 
         def tx(conn):
             now = self.now()
@@ -358,35 +435,46 @@ class WorkMixin:
                 # Не различаем «нет документа» и «нет доступа» — не раскрываем существование.
                 self._audit(conn, now, user["id"], device, client_addr, None, "file.download", "document", did, None,
                             None, None, "denied", {"version_no": version_no})
-                return {"status": "denied", "code": "no_authority", "message_ru": "Документ не найден или нет доступа."}, None
+                return {"status": "denied", "code": "no_authority", "message_ru": "Документ не найден или нет доступа."}
             v = conn.execute(sa.select(document_versions).where(document_versions.c.document_id == did,
                                                                document_versions.c.version_no == version_no)).first()
             if v is None:
-                return {"status": "rejected", "code": "version_not_found", "message_ru": "Такой версии документа нет."}, None
+                return {"status": "rejected", "code": "version_not_found", "message_ru": "Такой версии документа нет."}
             v = dict(v._mapping)
-            h, parts = hashlib.sha256(), []
-            for row in conn.execute(sa.select(file_chunks.c.data).where(file_chunks.c.sha256 == v["sha256"])
-                                    .order_by(file_chunks.c.idx)):
+            dest.seek(0)
+            dest.truncate()
+            h, size = hashlib.sha256(), 0
+            q = (sa.select(file_chunks.c.data).where(file_chunks.c.sha256 == v["sha256"])
+                 .order_by(file_chunks.c.idx).execution_options(yield_per=4))
+            for row in conn.execute(q):
                 b = bytes(row.data)
                 h.update(b)
-                parts.append(b)
-            content = b"".join(parts)
-            ok = h.hexdigest() == v["sha256"] and len(content) == v["size_bytes"]
+                size += len(b)
+                dest.write(b)
+            dest.flush()
+            ok = h.hexdigest() == v["sha256"] and size == v["size_bytes"]
             self._audit(conn, now, user["id"], device, client_addr, None, "file.download", "document", did, authority, None, None,
                         "accepted" if ok else "error", {"version_no": version_no, "sha256": v["sha256"], "intact": ok})
             if not ok:
                 return {"status": "error", "code": "file_corrupted",
                         "message_ru": "Файл на сервере повреждён (контрольная сумма не совпала) и не будет выдан. "
-                                      "Сообщите администратору: нужно восстановление из резервной копии."}, None
-            return {"status": "accepted", "file_name": v["file_name"], "sha256": v["sha256"], "size_bytes": v["size_bytes"]}, content
-        return self._guarded_tx(tx, wrap=lambda resp: (resp, None))
+                                      "Сообщите администратору: нужно восстановление из резервной копии."}
+            return {"status": "accepted", "file_name": v["file_name"], "sha256": v["sha256"], "size_bytes": v["size_bytes"]}
+        return self._guarded_tx(tx)
+
+    def get_file(self, token: Optional[str], document_id: object, version_no: object,
+                 client_addr: Optional[str] = None) -> tuple[dict, Optional[bytes]]:
+        """То же, что get_file_to, с результатом в памяти: (ответ, байты или None). Для тестов и малых файлов."""
+        buf = io.BytesIO()
+        resp = self.get_file_to(token, document_id, version_no, buf, client_addr)
+        return resp, (buf.getvalue() if resp.get("status") == "accepted" else None)
 
     def _guarded_tx(self, fn, wrap=lambda resp: resp):
         """Транзакция для операций вне конвейера команд (файлы).
 
         Ошибка входа (сеанс истёк, отозван, нужна смена пароля) превращается в обычный ответ
         с кодом, а не в исключение; `wrap` приводит его к форме ответа операции
-        (для get_file — пара «ответ, байты=None»).
+        (по умолчанию — сам ответ).
         """
         from vector.core.errors import Unauthenticated
 

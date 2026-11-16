@@ -10,14 +10,21 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 from urllib.parse import quote
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
+from .db import FILE_CHUNK
 from .service import Service
+
+# Файлы до этого размера временно держатся в памяти, крупнее — во временном файле на диске.
+FILE_SPOOL_IN_MEMORY = 1024 * 1024
+# Порция записи входящего потока во временный файл (меньше вызовов пула потоков).
+FILE_SPOOL_WRITE = 1024 * 1024
 
 MAX_BODY = 1 << 20
 log = logging.getLogger("vector.api")
@@ -85,37 +92,83 @@ def create_app(service: Service) -> Starlette:
     async def file_upload(request: Request):
         """POST /api/v1/files?project_id=<uuid>  +  X-Content-SHA256: <hex>  +  тело — байты файла.
 
-        Тело читается потоком с контролем размера: при превышении предела чтение прекращается сразу,
-        а не после загрузки гигабайтов в память.
+        Поток, а не буфер (issue #8): тело пишется во временный файл блоками, память сервера не зависит
+        от размера файла. Порядок защиты:
+          1) заявленный Content-Length больше предела → отказ сразу, тело не читается;
+          2) вход и право в проекте проверяются ДО чтения тела — посторонний не может занять диск;
+          3) при чтении считается фактический размер: превышение → чтение прекращается, временный файл удаляется;
+          4) окончательные проверки (хэш, право, квитанция, аудит) — в одной транзакции в put_file_stream.
+        Временный файл — в системном каталоге временных файлов (меняется переменной окружения TMPDIR / TEMP);
+        он анонимный (на Linux удаляется из каталога сразу при создании) и закрывается в finally.
         """
         from starlette.concurrency import run_in_threadpool
         limit = service.sec.max_file_mb * 1024 * 1024
         cl = request.headers.get("content-length")
-        if cl is not None and (not cl.isdigit() or int(cl) > limit):
-            return reply({"status": "rejected", "code": "file_too_large",
-                          "message_ru": f"Файл больше допустимого размера ({service.sec.max_file_mb} МБ)."})
-        buf = bytearray()
-        async for chunk in request.stream():
-            buf += chunk
-            if len(buf) > limit:
-                return reply({"status": "rejected", "code": "file_too_large",
-                              "message_ru": f"Файл больше допустимого размера ({service.sec.max_file_mb} МБ)."})
-        return reply(await run_in_threadpool(service.put_file, bearer(request), request.query_params.get("project_id"),
-                                             bytes(buf), request.headers.get("x-content-sha256"), addr(request)))
+        if cl is not None and not cl.isdigit():
+            return bad()
+        token, project_id, sha = bearer(request), request.query_params.get("project_id"), request.headers.get("x-content-sha256")
+        pre = await run_in_threadpool(service.precheck_upload, token, project_id, int(cl) if cl is not None else None,
+                                      addr(request))
+        if pre is not None:
+            return reply(pre)
+        spool = tempfile.SpooledTemporaryFile(max_size=FILE_SPOOL_IN_MEMORY)
+        try:
+            size, pending = 0, bytearray()
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > limit:
+                    return reply({"status": "rejected", "code": "file_too_large",
+                                  "message_ru": f"Файл больше допустимого размера ({service.sec.max_file_mb} МБ)."})
+                pending += chunk
+                if len(pending) >= FILE_SPOOL_WRITE:
+                    # Запись на диск — блокирующая операция; уводим её из цикла событий крупными порциями.
+                    await run_in_threadpool(spool.write, bytes(pending))
+                    pending.clear()
+            if pending:
+                await run_in_threadpool(spool.write, bytes(pending))
+            return reply(await run_in_threadpool(service.put_file_stream, token, project_id, spool, sha, addr(request)))
+        finally:
+            spool.close()
 
     async def file_download(request: Request):
-        """GET /api/v1/files/{document_id}/{version_no} → байты; имя файла в Content-Disposition (RFC 6266/5987)."""
+        """GET /api/v1/files/{document_id}/{version_no} → байты; имя файла в Content-Disposition (RFC 6266/5987).
+
+        Fail-closed и без файла целиком в памяти (issue #8): сервис собирает файл из блоков БД во временный
+        файл, проверяя SHA-256 и размер; только после успешной проверки начинается отдача клиенту
+        (StreamingResponse, блоками). Повреждённый файл не отдаётся ни байтом — клиент получает JSON-ошибку.
+        """
         from starlette.concurrency import run_in_threadpool
         try:
             version_no = int(request.path_params["version_no"])
         except ValueError:
             return bad()
-        resp, content = await run_in_threadpool(service.get_file, bearer(request), request.path_params["document_id"],
-                                                version_no, addr(request))
-        if content is None:
+        spool = tempfile.SpooledTemporaryFile(max_size=FILE_SPOOL_IN_MEMORY)
+        try:
+            resp = await run_in_threadpool(service.get_file_to, bearer(request), request.path_params["document_id"],
+                                           version_no, spool, addr(request))
+        except BaseException:
+            spool.close()
+            raise
+        if resp.get("status") != "accepted":
+            spool.close()
             return reply(resp)
-        return Response(content, media_type="application/octet-stream", headers={
+        spool.seek(0)
+
+        def blocks():
+            # Синхронный генератор: Starlette выполняет его в пуле потоков. finally закрывает временный файл
+            # и при обрыве связи клиентом (генератор закрывается сборщиком мусора).
+            try:
+                while True:
+                    b = spool.read(FILE_CHUNK)
+                    if not b:
+                        break
+                    yield b
+            finally:
+                spool.close()
+
+        return StreamingResponse(blocks(), media_type="application/octet-stream", headers={
             "Cache-Control": "no-store",
+            "Content-Length": str(resp["size_bytes"]),
             "X-Content-SHA256": resp["sha256"],
             # filename* — UTF-8 (кириллица в именах файлов); filename — запасной ASCII-вариант.
             "Content-Disposition": f"attachment; filename=\"document.bin\"; filename*=UTF-8''{quote(resp['file_name'])}",
