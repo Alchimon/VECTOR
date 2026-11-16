@@ -319,8 +319,15 @@ def _snapshot_conn(engine: sa.Engine):
     return engine.connect()
 
 
-def create_backup(engine: sa.Engine, out_path: Path, keys: KeySource) -> BackupReport:
+def create_backup(engine: sa.Engine, out_path: Path, keys: KeySource,
+                  tables: Optional[list[str]] = None) -> BackupReport:
+    """Зашифрованная копия всех таблиц (tables=None) или указанных — в порядке зависимостей.
+
+    tables задаёт миграция схемы: копия ПЕРЕД миграцией содержит только таблицы старой версии схемы
+    (новых ещё нет в БД) и восстанавливается той версией программы, с которой была сделана.
+    """
     out_path = Path(out_path)
+    order = list(db.BACKUP_TABLE_ORDER) if tables is None else [t for t in db.BACKUP_TABLE_ORDER if t in set(tables)]
     if out_path.exists():
         raise BackupError(f"Файл {out_path} уже существует — перезапись запрещена.")
     kdf, key = keys.new_kdf()
@@ -335,11 +342,11 @@ def create_backup(engine: sa.Engine, out_path: Path, keys: KeySource) -> BackupR
             header = {"product": "VECTOR", "app_version": __version__, "schema_version": int(meta["schema_version"]),
                       "installation_id": meta.get("installation_id"), "source_dialect": engine.dialect.name,
                       "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-                      "cipher": "AES-256-GCM", "compression": "gzip", "kdf": kdf, "tables": db.BACKUP_TABLE_ORDER}
+                      "cipher": "AES-256-GCM", "compression": "gzip", "kdf": kdf, "tables": order}
             with open(tmp, "xb") as raw:
                 w = _Writer(raw, key, header)
                 gz = gzip.GzipFile(fileobj=_Sink(w), mode="wb", mtime=0)
-                for name in db.BACKUP_TABLE_ORDER:
+                for name in order:
                     t = db.metadata.tables[name]
                     cols = [c.name for c in t.columns]
                     gz.write(_line({"type": "table", "name": name, "columns": cols}))

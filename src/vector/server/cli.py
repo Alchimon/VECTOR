@@ -134,6 +134,25 @@ def cmd_check(args):
     print(f"Схема БД: v{v} — совместима")
 
 
+def cmd_migrate(args):
+    """Обновить схему БД до версии программы: сначала проверенная копия, затем все шаги одной транзакцией."""
+    from . import migrate as mg
+    cfg = load_config(Path(args.config))
+    eng = db.make_engine(cfg.db_url)
+    v = mg.current_version(eng)
+    if v == db.SCHEMA_VERSION:
+        print(f"Схема БД уже v{v} — миграция не нужна.")
+        return
+    bdir = Path(args.backup_dir) if args.backup_dir else (cfg.backup_dir or Path(args.config).resolve().parent / "backups")
+    print(f"Миграция схемы v{v} → v{db.SCHEMA_VERSION}. Сервер должен быть остановлен.")
+    print(f"Сначала — резервная копия текущей БД в {bdir} (с проверкой).")
+    rep = mg.migrate(eng, bdir, _keys(args))
+    print(f"Копия до миграции: {rep.backup_path} — проверена.")
+    print(f"Создано таблиц: {len(rep.created_tables)} ({', '.join(rep.created_tables)}).")
+    print(f"Готово: схема v{rep.to_version}. Откат — восстановление копии до миграции в пустую БД той версией "
+          "программы, с которой она сделана (см. docs/ops/backup-restore.md).")
+
+
 def cmd_devcert(args):
     from .devcert import make_dev_ca_and_cert
     paths = make_dev_ca_and_cert(Path(args.dir), args.host or ["localhost"])
@@ -189,6 +208,9 @@ def main(argv=None):
     s.add_argument("file"); s.add_argument("--key-file"); s.set_defaults(fn=cmd_verify)
     s = sub.add_parser("restore", help="восстановить копию в ПУСТУЮ БД (любой поддерживаемой СУБД)")
     s.add_argument("file"); s.add_argument("--key-file"); s.add_argument("--target-url-env", default="VECTOR_RESTORE_DB_URL"); s.set_defaults(fn=cmd_restore)
+    s = sub.add_parser("migrate", help="обновить схему БД до версии программы (сначала проверенная копия)")
+    s.add_argument("--config", required=True); s.add_argument("--key-file"); s.add_argument("--backup-dir")
+    s.set_defaults(fn=cmd_migrate)
     s = sub.add_parser("gen-backup-key", help="создать файл ключа резервных копий"); s.add_argument("path"); s.set_defaults(fn=cmd_genkey)
     s = sub.add_parser("dev-cert", help="тестовый CA и TLS-сертификат для пилота")
     s.add_argument("--dir", required=True)
@@ -202,7 +224,7 @@ def main(argv=None):
     except Rejected as e:
         print(f"Ошибка: {e.message_ru}", file=sys.stderr)
         raise SystemExit(1)
-    except (ConfigError, bk.BackupError, RuntimeError, ValueError, DemoError, FileExistsError) as e:
+    except (ConfigError, bk.BackupError, RuntimeError, ValueError, DemoError, FileExistsError) as e:   # MigrationError ⊂ RuntimeError
         print(f"Ошибка: {e}", file=sys.stderr)
         raise SystemExit(1)
 

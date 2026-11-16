@@ -229,3 +229,28 @@ def test_init_checks_password_before_creating_anything(setup):
     # Повторный init в уже созданную базу — понятный отказ без трассировки.
     r = run(["init", "--config", str(cfg)], env={"VECTOR_ADMIN_PASSWORD": PWD}, ok=False)
     assert r.returncode == 1 and "Traceback" not in r.stderr
+
+
+def test_migrate_cli_v3_to_v4(setup):
+    """vector-server migrate: check отказывает на старой схеме, migrate делает проверенную копию и обновляет схему."""
+    import uuid
+    from datetime import datetime, timezone
+
+    from vector.server import db
+    from vector.server import migrate as mg
+    tmp, cfg, _, _ = setup
+    eng = db.make_engine(f"sqlite:///{tmp / 'vector.sqlite'}")
+    with eng.begin() as c:
+        db.metadata.create_all(c, tables=[db.metadata.tables[n] for n in mg.tables_of_version(3)])
+        c.execute(db.schema_meta.insert(), [{"key": "schema_version", "value": "3"},
+                                            {"key": "installation_id", "value": str(uuid.uuid4())},
+                                            {"key": "created_at", "value": datetime.now(timezone.utc).isoformat()}])
+    eng.dispose()
+    r = run(["check", "--config", str(cfg)], ok=False)
+    assert r.returncode == 1 and "vector-server migrate" in r.stderr
+    run(["gen-backup-key", str(tmp / "backup.key")])
+    r = run(["migrate", "--config", str(cfg), "--key-file", str(tmp / "backup.key")])
+    assert "схема v4" in r.stdout and "проверена" in r.stdout
+    assert len(list((tmp / "backups").glob("vector-premigrate-v3-*.vbak"))) == 1
+    assert "совместима" in run(["check", "--config", str(cfg)]).stdout
+    assert "миграция не нужна" in run(["migrate", "--config", str(cfg), "--key-file", str(tmp / "backup.key")]).stdout
