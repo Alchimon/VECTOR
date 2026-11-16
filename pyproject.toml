@@ -22,7 +22,10 @@ server = [
   # MS SQL: pyodbc + Microsoft ODBC Driver 18 устанавливаются на сервере отдельно (см. docs/ops/deployment.md)
 ]
 client = [
-  "PySide6-Essentials>=6.8,<7",
+  # 6.12.0 исключён: ошибка счётчика ссылок в Signal.emit/QVariant (True/False/None) роняет процесс
+  # после нескольких тысяч сигналов. Верхнюю границу поднимаем только после прохождения
+  # tests/client/test_qt_binding_refcounts.py на новой версии (см. CHANGELOG, D-21).
+  "PySide6-Essentials>=6.11.3,<6.12",
   "httpx>=0.27,<1",
   "cryptography>=42,<51",
   "keyring>=25,<26",
