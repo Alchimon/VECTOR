@@ -187,15 +187,20 @@ def test_failed_restore_leaves_db_unstartable(world, tmp_path, keyfile, monkeypa
     target.dispose()
 
 
-def test_prune_keeps_newest(tmp_path):
-    for i in range(5):
-        p = tmp_path / f"b{i}.vbak"
+def test_prune_keeps_newest_automatic_copies_only(tmp_path):
+    names = [f"vector-2026111{i}T020000Z.vbak" for i in range(5)]
+    for i, n in enumerate(names):
+        p = tmp_path / n
         p.write_bytes(b"x")
-        os.utime(p, (1000 + i, 1000 + i))
+        os.utime(p, (5000 - i, 5000 - i))        # mtime «наоборот»: порядок должен браться из имени
     (tmp_path / "keep.txt").write_text("не трогать")
+    manual = tmp_path / "перед-обновлением.vbak"  # ручная копия под своим именем
+    manual.write_bytes(b"x")
+    os.utime(manual, (1, 1))                      # самая «старая» по времени файла
     removed = bk.prune_backups(tmp_path, 2)
-    assert sorted(p.name for p in removed) == ["b0.vbak", "b1.vbak", "b2.vbak"]
-    assert (tmp_path / "keep.txt").exists()
+    assert sorted(p.name for p in removed) == names[:3]
+    assert (tmp_path / "keep.txt").exists() and manual.exists()
+    assert sorted(p.name for p in tmp_path.glob("vector-*.vbak")) == names[3:]
     with pytest.raises(bk.BackupError):
         bk.prune_backups(tmp_path, 0)
 

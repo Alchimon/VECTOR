@@ -22,6 +22,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import secrets
 import struct
 from dataclasses import dataclass, field
@@ -311,7 +312,11 @@ def _snapshot_conn(engine: sa.Engine):
     name = engine.dialect.name
     if name == "postgresql":
         return engine.connect().execution_options(isolation_level="REPEATABLE READ", postgresql_readonly=True)
-    return engine.connect()  # MS SQL: SERIALIZABLE (или SNAPSHOT, если включён в БД); SQLite: BEGIN IMMEDIATE
+    # MS SQL: уровень SERIALIZABLE задан для всего движка (db.make_engine) — копия согласованна, но на время
+    # копирования запись в прочитанные таблицы ждёт её завершения (копировать ночью). Режим SNAPSHOT
+    # (без блокировок) не используется, пока не проверен на настоящем MS SQL — issue #3.
+    # SQLite: BEGIN IMMEDIATE (db.make_engine) — запись других процессов ждёт окончания копирования.
+    return engine.connect()
 
 
 def create_backup(engine: sa.Engine, out_path: Path, keys: KeySource) -> BackupReport:
@@ -553,11 +558,22 @@ def _reset_sequences(conn) -> None:
                                  f"COALESCE((SELECT MAX({pk[0].name}) FROM {t.name}), 0) + 1, false)"))
 
 
+# Имя копии, которую создаёт `vector-server backup` без --out: vector-20261116T123021Z.vbak.
+# Ротация удаляет ТОЛЬКО такие файлы: копию, сделанную вручную под своим именем (например,
+# «перед-обновлением.vbak»), положенную в тот же каталог, ротация не тронет.
+AUTO_BACKUP_NAME = re.compile(r"^vector-\d{8}T\d{6}Z\.vbak$")
+
+
 def prune_backups(directory: Path, keep: int) -> list[Path]:
-    """Удаляет самые старые .vbak сверх keep. Не трогает файлы других форматов."""
+    """Удалить самые старые автоматические копии сверх keep (по имени-метке времени, не по mtime).
+
+    Порядок — по метке времени в имени: она задаётся программой при создании и не меняется при
+    копировании файлов между хранилищами (в отличие от времени изменения файла).
+    """
     if keep < 1:
         raise BackupError("Нужно хранить хотя бы одну копию.")
-    files = sorted(Path(directory).glob("*.vbak"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = sorted((p for p in Path(directory).glob("vector-*.vbak") if AUTO_BACKUP_NAME.match(p.name)),
+                   key=lambda p: p.name, reverse=True)
     removed = files[keep:]
     for p in removed:
         p.unlink()
