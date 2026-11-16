@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import sys
 import tempfile
@@ -99,14 +100,54 @@ def seed(svc):
     cmd(gip, "project.assign", {"project_id": pid, "user_id": people["a.smirnova"], "project_role": "rp", "reason": "Приказ № 112"})
     cmd(rp, "project.assign", {"project_id": pid, "user_id": people["d.kuznetsov"], "project_role": "participant", "reason": "Распределение работ"})
     cmd(rp, "project.assign", {"project_id": pid, "user_id": people["m.lebedev"], "project_role": "participant", "reason": "Распределение работ"})
+    kits = {}
     for code, title in [("АТХ", "Автоматизация технологических процессов"), ("ЭМ", "Силовое электрооборудование"),
                         ("КИП", "Контрольно-измерительные приборы"), ("СС", "Сети связи и диспетчеризация")]:
-        cmd(rp, "kit.create", {"id": str(uuid.uuid4()), "project_id": pid, "code": code, "title": title})
+        kits[code] = str(uuid.uuid4())
+        cmd(rp, "kit.create", {"id": kits[code], "project_id": pid, "code": code, "title": title})
+
+    # Документы комплекта АТХ: файл загружается отдельно (put_file → квитанция), затем add_version.
+    # Содержимое — синтетические байты (это демо-данные интерфейса, а не настоящие чертежи).
+    eng = login("d.kuznetsov")
+    docs = {}
+
+    def doc(tok, code, title, versions):
+        did = str(uuid.uuid4())
+        cmd(tok, "document.create", {"id": did, "kit_id": kits["АТХ"], "code": code, "title": title})
+        for n, (fname, size, comment) in enumerate(versions, start=1):
+            data = (code + fname).encode() * (size // len((code + fname).encode()) + 1)
+            data = data[:size]
+            sha = hashlib.sha256(data).hexdigest()
+            assert svc.put_file(tok, pid, data, sha, "seed")["status"] == "accepted"
+            cmd(tok, "document.add_version", {"id": did, "sha256": sha, "file_name": fname, **({"comment": comment} if comment else {})}, n)
+        docs[code] = did
+        return did
+
+    doc(eng, "АТХ-001", "Схема автоматизации функциональная",
+        [("АТХ-001_схема_ФСА.pdf", 1_840_000, "Первая выдача"), ("АТХ-001_схема_ФСА_изм1.pdf", 1_910_500, "Замечания ГИП учтены"),
+         ("АТХ-001_схема_ФСА_изм2.pdf", 1_925_120, "Изм. 2: добавлены датчики давления")])
+    doc(eng, "АТХ-002", "Перечень входных/выходных сигналов", [("АТХ-002_перечень_сигналов.xlsx", 86_400, None)])
+    doc(rp, "АТХ-003", "Пояснительная записка", [])
+
+    def task(title, who, status_path, due=None, document=None, desc=None):
+        tid = str(uuid.uuid4())
+        cmd(rp, "task.create", {"id": tid, "kit_id": kits["АТХ"], "title": title, **({"assignee_user_id": people[who]} if who else {}),
+                                **({"due_date": due} if due else {}), **({"document_id": docs[document]} if document else {}),
+                                **({"description": desc} if desc else {})})
+        for v, st in enumerate(status_path, start=1):
+            cmd(rp, "task.transition", {"id": tid, "to": st, **({"reason": "Объединено с задачей по ФСА"} if st == "cancelled" else {})}, v)
+
+    task("Разработать функциональную схему автоматизации", "d.kuznetsov", ["in_progress"], "2026-11-28", "АТХ-001",
+         "По опросным листам заказчика; учесть резервирование контроллеров.")
+    task("Сверить перечень сигналов с поставщиком КИП", "m.lebedev", [], "2026-12-03", "АТХ-002")
+    task("Подготовить пояснительную записку", "d.kuznetsov", [], "2026-12-15", "АТХ-003")
+    task("Согласовать опросные листы с заказчиком", "m.lebedev", ["in_progress", "done"], "2026-11-10")
+    task("Отдельная схема питания шкафов", None, ["cancelled"])
     pid2 = str(uuid.uuid4())
     cmd(rp, "project.start_rkd", {"id": pid2, "tender_id": t_won2, "code": "П-2026-011", "title": "ПАЗ цеха № 5"})
     cmd(adm, "project.assign", {"project_id": pid2, "user_id": people["a.smirnova"], "project_role": "rp", "reason": "Приказ № 98"})
     cmd(rp, "kit.create", {"id": str(uuid.uuid4()), "project_id": pid2, "code": "ПАЗ", "title": "Противоаварийная защита"})
-    return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub}
+    return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs}
 
 
 class Harness:
@@ -158,7 +199,22 @@ class Harness:
     def items(self, prop):
         """Все видимые и скрытые QQuickItem, у которых есть свойство prop (для поиска элементов по тексту)."""
         from PySide6.QtQuick import QQuickItem
-        return [i for i in self.win.findChildren(QQuickItem) if i.property(prop) is not None]
+        # findChildren идёт по дереву QObject и не видит делегаты Repeater (их QObject-родитель — не окно),
+        # поэтому дополнительно обходим визуальное дерево (childItems) и объединяем результаты без повторов.
+        found, seen = [], set()
+
+        def add(i):
+            if id(i) not in seen and i.property(prop) is not None:
+                seen.add(id(i))
+                found.append(i)
+        for i in self.win.findChildren(QQuickItem):
+            add(i)
+        stack = [self.win.contentItem()]
+        while stack:
+            it = stack.pop()
+            add(it)
+            stack.extend(it.childItems())
+        return found
 
     def nav(self):
         """{текст пункта меню: виден ли} — NavItem узнаём по паре свойств text+iconName+active."""
@@ -188,6 +244,28 @@ class Harness:
         from PySide6.QtCore import QMetaObject, Q_ARG
         QMetaObject.invokeMethod(sh, "go", Q_ARG("QVariant", page), Q_ARG("QVariant", oid))
         self.wait_idle()
+
+    def kit_work(self, kit_id: str, tab: str = "tasks"):
+        """Открыть на странице проекта комплект kit_id и вкладку tasks|documents (как щелчком пользователя)."""
+        page = next(i for i in self.items("selectedKitId") if i.isVisible())
+        page.setProperty("selectedKitId", kit_id)
+        self.wait_idle()
+        kw = next(i for i in self.items("kitTasks") if i.isVisible())
+        kw.setProperty("tab", tab)
+        self.wait_idle()
+        return kw
+
+    def scroll_detail_to(self, item):
+        """Прокрутить карточку справа так, чтобы item оказался вверху видимой области (для скриншотов)."""
+        from PySide6.QtCore import QPointF
+        from PySide6.QtQuick import QQuickItem
+        p = item
+        while p is not None and p.property("contentY") is None:
+            p = p.parentItem()
+        if p is not None:
+            y = item.mapToItem(p.property("contentItem"), QPointF(0, 0)).y()
+            p.setProperty("contentY", max(0.0, y - 20))
+            self.pump(0.2)
 
     def shot(self, path: Path):
         self.pump(0.4)
@@ -225,6 +303,13 @@ def main():
         h.shot(out / f"{theme}-03-tender-tkp.png")
         h.go("projects", h.ids["project"])
         h.shot(out / f"{theme}-04-project.png")
+        kw = h.kit_work(h.ids["kits"]["АТХ"], "tasks")
+        h.scroll_detail_to(kw)
+        h.shot(out / f"{theme}-09-kit-tasks.png")
+        kw.setProperty("tab", "documents")
+        h.wait_idle()
+        h.scroll_detail_to(kw)
+        h.shot(out / f"{theme}-10-kit-documents.png")
         h.go("customers", h.ids["customers"]["АО «Энергомаш»"])
         h.shot(out / f"{theme}-05-customer.png")
         # Офлайн: правка без связи + конфликт с коллегой

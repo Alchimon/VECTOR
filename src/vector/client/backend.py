@@ -17,7 +17,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from PySide6.QtCore import Property, QObject, QSettings, QTimer, Signal, Slot
+from PySide6.QtCore import Property, QObject, QSettings, QTimer, QUrl, Signal, Slot
 
 from vector import __version__
 from vector.core.contracts import Contracts
@@ -44,12 +44,32 @@ def default_data_dir() -> Path:
     return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "vector" / "profiles"
 
 
+def qml_safe(value: Any) -> Any:
+    """Подготовить данные для передачи в QML: убрать None из словарей и списков (рекурсивно).
+
+    Зачем: PySide6 6.12 при преобразовании dict → QVariantMap теряет одну ссылку на None за каждое
+    поле со значением None (проверено: sys.getrefcount(None) убывает при каждом чтении свойства).
+    При частых обновлениях счётчик None доходит до нуля и процесс аварийно завершается
+    («Fatal Python error: none_dealloc»). Это ошибка привязки, а не нашего кода, но защищаться
+    приходится нам.
+
+    Семантика не теряется: в QML отсутствующий ключ даёт undefined, и интерфейс трактует его так же,
+    как null, — «значение не задано». Различия «ноль / пусто / неизвестно» мы показываем через
+    подготовленные Python-подписи (amount_label и т. п.), а не через null в QML.
+    """
+    if isinstance(value, dict):
+        return {k: qml_safe(v) for k, v in value.items() if v is not None}
+    if isinstance(value, (list, tuple)):
+        return [qml_safe(v) for v in value if v is not None]
+    return value
+
+
 def _ro(attr: str, typ, notify):
     return Property(typ, lambda self: getattr(self, attr), notify=notify)
 
 
 def _lst(kind: str, notify):
-    return Property("QVariantList", lambda self: self._decorate(kind), notify=notify)
+    return Property("QVariantList", lambda self: qml_safe(self._decorate(kind)), notify=notify)
 
 
 class Backend(QObject):
@@ -78,7 +98,10 @@ class Backend(QObject):
         self._pending = 0
         self._problems = 0
         self._me: dict = {}
-        self._data: dict[str, list] = {"customer": [], "tender": [], "tkp": [], "project": [], "kit": []}
+        self._data: dict[str, list] = {"customer": [], "tender": [], "tkp": [], "project": [], "kit": [], "task": [], "document": []}
+        # Метаданные версий документов (номер, имя файла, размер, SHA-256) из зашифрованного кэша клиента.
+        # Сами файлы в кэш не попадают: их скачивают по явной команде пользователя.
+        self._doc_versions: list = []
         self._people: dict[str, str] = {}
         self._last_pull = ""
         self._theme = self._settings.value("ui/theme", "light")
@@ -137,6 +160,13 @@ class Backend(QObject):
             self._busy = v
             self.changed.emit()
 
+    # Все данные для QML уходят через qml_safe (см. её описание): сигналы — тоже.
+    def _command_done(self, tag: str, result: Any) -> None:
+        self.commandDone.emit(tag, qml_safe(result))
+
+    def _query_done(self, tag: str, result: Any) -> None:
+        self.queryDone.emit(tag, qml_safe(result))
+
     def shutdown(self):
         self._exec.shutdown(wait=True)
 
@@ -180,14 +210,16 @@ class Backend(QObject):
     @Property("QVariantMap", notify=changed)
     def me(self):
         roles = self._me.get("roles", [])
-        return {**self._me, "role_labels": [ROLE_LABELS.get(r, r) for r in roles],
-                "initials": "".join(w[:1] for w in (self._me.get("display_name") or "?").split()[:2]).upper()}
+        return qml_safe({**self._me, "role_labels": [ROLE_LABELS.get(r, r) for r in roles],
+                "initials": "".join(w[:1] for w in (self._me.get("display_name") or "?").split()[:2]).upper()})
 
     customers = _lst("customer", dataChanged)
     tenders = _lst("tender", dataChanged)
     tkps = _lst("tkp", dataChanged)
     projects = _lst("project", dataChanged)
     kits = _lst("kit", dataChanged)
+    tasks = _lst("task", dataChanged)
+    documents = _lst("document", dataChanged)
 
     @Property("QVariantList", notify=dataChanged)
     def people(self):
@@ -195,8 +227,8 @@ class Backend(QObject):
 
     @Property("QVariantList", notify=dataChanged)
     def assignments(self):
-        return [{**a, "user_name": self._people.get(a["user_id"], "—"), "role_label": PROJECT_ROLE_LABELS.get(a["project_role"], a["project_role"])}
-                for a in self._assignments]
+        return qml_safe([{**a, "user_name": self._people.get(a["user_id"], "—"), "role_label": PROJECT_ROLE_LABELS.get(a["project_role"], a["project_role"])}
+                         for a in self._assignments])
 
     @Property("QVariantList", constant=True)
     def roleOptions(self):
@@ -228,9 +260,68 @@ class Backend(QObject):
                 d["status_label"] = wf["project"]["labels_ru"].get(o.get("status"), o.get("status") or "—")
                 d["tender_title"] = self._name("tender", o.get("tender_id"), "title")
                 d["kit_count"] = sum(1 for k in self._data["kit"] if k.get("project_id") == o["id"])
+            if kind == "kit":
+                # Счётчики для карточки комплекта: «открытые» = ещё не выполненные и не отменённые задачи.
+                ks = [t for t in self._data["task"] if t.get("kit_id") == o["id"]]
+                d["task_count"] = len(ks)
+                d["open_task_count"] = sum(1 for t in ks if t.get("status") in ("open", "in_progress"))
+                d["doc_count"] = sum(1 for x in self._data["document"] if x.get("kit_id") == o["id"])
+            if kind == "task":
+                d.update(self._decorate_task(o))
+            if kind == "document":
+                d.update(self._decorate_document(o))
             out.append(d)
-        key = {"customer": "name", "tender": "title", "tkp": "label", "project": "code", "kit": "code"}[kind]
+        if kind == "task":
+            # Сначала то, что требует работы (в работе → открытые → выполненные → отменённые), внутри — по названию.
+            order = {"in_progress": 0, "open": 1, "done": 2, "cancelled": 3}
+            return sorted(out, key=lambda d: (order.get(d.get("status"), 9), str(d.get("title") or "").lower()))
+        key = {"customer": "name", "tender": "title", "tkp": "label", "project": "code", "kit": "code", "document": "code"}[kind]
         return sorted(out, key=lambda d: (str(d.get(key) or "")).lower())
+
+    def _decorate_task(self, o: dict) -> dict:
+        """Поля задачи для интерфейса: подписи статуса и исполнителя, доступные переходы.
+
+        Переходы — ПОДСКАЗКА, а не право: ГИП/РП (по глобальной роли) видят все переходы из workflows,
+        исполнитель — только «свои» (own_transitions, A-13). Роли в проекте клиенту известны не всегда,
+        поэтому при сомнении кнопка показывается, а окончательное решение принимает сервер
+        (отказ придёт понятным сообщением и попадёт в аудит).
+        """
+        wf = self.contracts.workflows["task"]
+        st = o.get("status")
+        mine = bool(o.get("assignee_user_id")) and o.get("assignee_user_id") == self._me.get("user_id")
+        if self.hint("task.transition", 0) or self._has_project_role(o.get("project_id"), ("gip", "rp")):
+            allowed = wf["transitions"].get(st, [])
+        elif mine:
+            allowed = wf["own_transitions"].get(st, [])
+        else:
+            allowed = []
+        nxt = []
+        for to in allowed:
+            reopen = st == "done" and to == "open"
+            need_reason = to in wf["reason_required_for"] or (reopen and "reopen" in wf["reason_required_for"])
+            label = {"in_progress": "Взять в работу", "done": "Выполнено", "cancelled": "Отменить",
+                     "open": "Открыть заново" if reopen else "Вернуть в открытые"}.get(to, wf["labels_ru"].get(to, to))
+            nxt.append({"id": to, "label": label, "reason": need_reason})
+        doc = next((x for x in self._data["document"] if x["id"] == o.get("document_id")), None)
+        return {"status_label": wf["labels_ru"].get(st, st or "—"),
+                "assignee_name": self._people.get(o.get("assignee_user_id") or "", "") if o.get("assignee_user_id") else "",
+                "mine": mine, "next": nxt, "terminal": st in wf["terminal"],
+                "document_code": doc["code"] if doc else ""}
+
+    def _decorate_document(self, o: dict) -> dict:
+        """Поля документа: список версий из кэша (новые сверху) и подпись текущей версии."""
+        vs = sorted((v for v in self._doc_versions if v.get("document_id") == o["id"]),
+                    key=lambda v: v["version_no"], reverse=True)
+        vs = [{**v, "size_label": format_size(v.get("size_bytes")), "author_name": self._people.get(v.get("created_by") or "", ""),
+               "created_label": (v.get("created_at") or "")[:16].replace("T", " ")} for v in vs]
+        cur = o.get("current_version_no") or 0
+        return {"versions": vs, "current_label": f"версия {cur}" if cur else "файла ещё нет"}
+
+    def _has_project_role(self, project_id, roles) -> bool:
+        """Есть ли у меня действующее назначение в проекте с одной из ролей (по кэшу назначений)."""
+        uid = self._me.get("user_id")
+        return any(a.get("project_id") == project_id and a.get("user_id") == uid and a.get("project_role") in roles
+                   for a in self._assignments)
 
     def _name(self, kind, oid, field="name"):
         return next((o.get(field) for o in self._data[kind] if o["id"] == oid), "")
@@ -240,10 +331,13 @@ class Backend(QObject):
     def permRevision(self):
         return self._perm_rev
 
+    # События журнала, которые не являются командами каталога (файловые маршруты, вход и т. п.).
+    _EVENT_LABELS = {"file.upload": "Загрузка файла", "file.download": "Скачивание файла"}
+
     @Slot(str, result=str)
     def commandLabel(self, command: str) -> str:
         meta = self.contracts.catalog["commands"].get(command) or {}
-        return meta.get("label_ru") or command
+        return meta.get("label_ru") or self._EVENT_LABELS.get(command) or command
 
     @Slot(str, result=str)
     def authorityLabel(self, authority: str) -> str:
@@ -354,7 +448,7 @@ class Backend(QObject):
         if pull and c.token:
             rep = c.sync()
         data = {k: c.list_local(k) for k in self._data}
-        return {"data": data, "me": c.get_meta("me") or c.get_meta("session") or {}, "people": c.get_meta("people") or [], "assignments": c.get_meta("assignments") or [],
+        return {"data": data, "doc_versions": c.get_meta("document_versions") or [], "me": c.get_meta("me") or c.get_meta("session") or {}, "people": c.get_meta("people") or [], "assignments": c.get_meta("assignments") or [],
                 "pending": c.pending_count(), "problems": c.problem_count(), "last_pull": c.get_meta("last_pull") or "",
                 "online": c.t.online and c.token is not None, "token": c.token is not None, "rep": rep.__dict__ if rep else None}
 
@@ -364,6 +458,7 @@ class Backend(QObject):
                 self.toast.emit("error", s["message_ru"])
             return
         self._data = s["data"]
+        self._doc_versions = s.get("doc_versions", [])
         if s["me"] != self._me:
             self._perm_rev += 1
         self._me = s["me"]
@@ -430,7 +525,7 @@ class Backend(QObject):
         def done(res):
             if "result" not in res:
                 self.toast.emit("error", res.get("message_ru", "Ошибка"))
-                self.commandDone.emit(tag, res)
+                self._command_done(tag, res)
                 return
             r = res["result"]
             self._apply_snapshot(res["snap"])
@@ -445,11 +540,70 @@ class Backend(QObject):
                 self.toast.emit("warning", r["message_ru"])
             else:
                 self.toast.emit("error", r.get("message_ru") or "Действие не выполнено.")
-            self.commandDone.emit(tag, {"status": st, "code": (r.get("response") or {}).get("code", ""),
+            self._command_done(tag, {"status": st, "code": (r.get("response") or {}).get("code", ""),
                                         "message_ru": r.get("message_ru", ""), "operation_id": r.get("operation_id") or "",
                                         "details": (r.get("response") or {}).get("details") or {},
                                         "result": (r.get("response") or {}).get("result") or {}})
         self._run(job, done)
+
+    # ------------------------------------------------------------ файлы документов
+    # Ограничение клиента «на всякий случай»: файл читается в память целиком (потоковая передача — issue #8),
+    # поэтому заведомо неприемлемые размеры отсекаем до чтения. Реальный предел задаёт сервер (max_file_mb, A-16).
+    _CLIENT_FILE_CAP = 2048 * 1024 * 1024
+
+    @Slot(str, str, str, str, int)
+    def addDocumentVersion(self, tag: str, document_id: str, file_url: str, comment: str, expected_version: int):
+        """Загрузить выбранный файл новой версией документа (только онлайн; в очередь не ставится)."""
+        path = Path(QUrl(file_url).toLocalFile() if "://" in file_url else file_url)
+
+        def job():
+            try:
+                size = path.stat().st_size
+            except OSError:
+                return {"status": "error", "message_ru": "Файл не найден или недоступен для чтения."}
+            if size > self._CLIENT_FILE_CAP:
+                return {"status": "rejected", "message_ru": "Файл слишком большой для загрузки."}
+            data = path.read_bytes()
+            r = self.client.add_document_version(document_id, data, path.name, comment.strip() or None, expected_version)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+
+        self._run(job, lambda res: self._file_done(tag, res, "Новая версия загружена и проверена."))
+
+    @Slot(str, str, int, str)
+    def downloadDocumentVersion(self, tag: str, document_id: str, version_no: int, dest_url: str):
+        """Скачать файл версии в выбранное место; файл сохраняется только после сверки SHA-256."""
+        dest = Path(QUrl(dest_url).toLocalFile() if "://" in dest_url else dest_url)
+
+        def job():
+            r = self.client.download_document_version(document_id, version_no, dest)
+            return {"result": r.__dict__, "snap": None}
+
+        self._run(job, lambda res: self._file_done(tag, res, f"Файл сохранён и проверен: {dest.name}."))
+
+    def _file_done(self, tag: str, res: dict, ok_text: str):
+        """Общий итог файловых операций: тост + commandDone в том же формате, что и execute()."""
+        if "result" not in res:
+            self.toast.emit("error", res.get("message_ru", "Ошибка"))
+            self._command_done(tag, {"status": res.get("status", "error"), "message_ru": res.get("message_ru", "")})
+            return
+        r = res["result"]
+        if res.get("snap"):
+            self._apply_snapshot(res["snap"])
+        st = r["status"]
+        if st == "accepted":
+            self.toast.emit("success", ok_text)
+        elif st in ("conflict", "refused_offline", "unknown_outcome"):
+            self.toast.emit("warning", r.get("message_ru", ""))
+        else:
+            self.toast.emit("error", r.get("message_ru") or "Действие не выполнено.")
+        self._command_done(tag, {"status": st, "message_ru": r.get("message_ru", ""),
+                                    "code": (r.get("response") or {}).get("code", "")})
+
+    @Slot(str, int, result=str)
+    def suggestedFileName(self, document_id: str, version_no: int) -> str:
+        """Имя файла версии для диалога «Сохранить как» (как его загрузил автор)."""
+        v = next((v for v in self._doc_versions if v.get("document_id") == document_id and v.get("version_no") == version_no), None)
+        return v.get("file_name", "") if v else ""
 
     @Slot(result=str)
     def newId(self) -> str:
@@ -480,7 +634,7 @@ class Backend(QObject):
     # ------------------------------------------------------------ очередь и конфликты
     @Property("QVariantList", notify=dataChanged)
     def queueItems(self):
-        return self._queue
+        return qml_safe(self._queue)
 
     @Slot()
     def loadQueue(self):
@@ -527,7 +681,7 @@ class Backend(QObject):
     # ------------------------------------------------------------ запросы
     @Slot(str, str, str)
     def history(self, tag: str, object_type: str, object_id: str):
-        self._run(lambda: self.client.query("history", object_type=object_type, object_id=object_id), lambda r: self.queryDone.emit(tag, r))
+        self._run(lambda: self.client.query("history", object_type=object_type, object_id=object_id), lambda r: self._query_done(tag, r))
 
     @Slot(str)
     def loadUsers(self, tag: str):
@@ -537,8 +691,19 @@ class Backend(QObject):
                     u["role_labels"] = [ROLE_LABELS.get(g["role"], g["role"]) for g in u["grants"] if g["active"]]
                     for g in u["grants"]:
                         g["label"] = ROLE_LABELS.get(g["role"], g["role"])
-            self.queryDone.emit(tag, r)
+            self._query_done(tag, r)
         self._run(lambda: self.client.query("users"), done)
+
+
+def format_size(n: Optional[int]) -> str:
+    """Размер файла по-русски: 1 536 → «1,5 КБ». Неизвестный размер — «—», а не «0 Б»."""
+    if n is None:
+        return "—"
+    units = ["Б", "КБ", "МБ", "ГБ"]
+    v, i = float(n), 0
+    while v >= 1024 and i < len(units) - 1:
+        v, i = v / 1024, i + 1
+    return (f"{int(v)} {units[i]}" if i == 0 else f"{v:.1f} {units[i]}".replace(".", ","))
 
 
 def format_money(amount: Optional[str], currency: Optional[str]) -> str:

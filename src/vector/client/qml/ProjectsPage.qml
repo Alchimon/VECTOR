@@ -10,6 +10,11 @@ MasterDetail {
     readonly property var sel: backend.projects.find(p => p.id === selectedId) || null
     readonly property var selKits: sel ? backend.kits.filter(k => k.project_id === sel.id) : []
     readonly property var team: sel ? backend.assignments.filter(a => a.project_id === sel.id) : []
+    // Выбранный комплект: его задачи и документы показываются ниже сетки комплектов (KitWork).
+    // Если комплект один — выбираем его сразу, чтобы не заставлять делать лишний щелчок.
+    property string selectedKitId: ""
+    readonly property var selKit: selKits.find(k => k.id === selectedKitId) || (selKits.length === 1 ? selKits[0] : null)
+    onSelectedIdChanged: selectedKitId = ""
     title: "Проекты"
     subtitle: backend.projects.length + " доступно вам"
     hasSelection: sel !== null
@@ -74,7 +79,17 @@ MasterDetail {
         Repeater {
             model: page.selKits
             delegate: VCard {
+                id: kitCard
+                readonly property bool current: page.selKit !== null && page.selKit.id === modelData.id
                 Layout.fillWidth: true; implicitHeight: 88
+                border.color: current ? Theme.primary : Theme.border
+                border.width: current ? 2 : 1
+                activeFocusOnTab: true
+                Accessible.role: Accessible.Button; Accessible.name: "Комплект " + modelData.code
+                Keys.onReturnPressed: page.selectedKitId = modelData.id
+                Keys.onSpacePressed: page.selectedKitId = modelData.id
+                // Щелчок по карточке выбирает комплект; кнопка «изменить» поверх обрабатывает свой щелчок сама.
+                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: page.selectedKitId = modelData.id }
                 ColumnLayout { anchors.fill: parent; anchors.margins: 14; spacing: 4
                     RowLayout { Layout.fillWidth: true
                         Text { text: modelData.code; color: Theme.primary; font.family: Theme.family; font.pixelSize: Theme.fsM; font.weight: Font.Bold; Layout.fillWidth: true }
@@ -82,11 +97,15 @@ MasterDetail {
                         VButton { kind: "ghost"; compact: true; iconName: "pencil"; Accessible.name: "Изменить комплект"; enabled: modelData.version > 0
                                   onClicked: { kitForm.editId = modelData.id; kitForm.editVersion = modelData.version; kCode.text = modelData.code; kTitle.text = modelData.title; kitForm.open() } } }
                     Text { text: modelData.title; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; elide: Text.ElideRight; Layout.fillWidth: true }
-                    Text { text: "Документы и задачи — следующий срез"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs } }
+                    Text { text: "Задачи: " + modelData.open_task_count + " откр. из " + modelData.task_count + "  ·  Документы: " + modelData.doc_count
+                           color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs } }
             }
         }
     }
     Text { visible: page.selKits.length === 0; text: "Комплектов пока нет. Создать комплект может РП проекта."; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
+    Text { visible: page.selKits.length > 1 && page.selKit === null; text: "Выберите комплект, чтобы увидеть его задачи и документы."
+           color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
+    KitWork { Layout.fillWidth: true; kit: page.selKit; team: page.team }
     HistoryList { objectType: "project"; objectId: page.selectedId }
 
     // ---------- формы
