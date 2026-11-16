@@ -22,6 +22,7 @@ from PySide6.QtCore import Property, QObject, QSettings, QTimer, QUrl, Signal, S
 from vector import __version__
 from vector.core.contracts import Contracts
 
+from . import calc_view
 from .sync import SyncClient
 from .transport import HttpTransport
 from .vault import KeyringStore, MemoryStore, VaultError
@@ -34,7 +35,8 @@ ROLE_LABELS = {"admin": "Администратор", "gip": "ГИП", "rp": "Р
 FIELD_LABELS = {"name": "Наименование", "short_name": "Краткое наименование", "inn": "ИНН", "kpp": "КПП", "note": "Примечание",
                 "contact": "Контакт", "title": "Название", "deadline": "Срок подачи", "customer_id": "Заказчик", "tender_id": "Тендер",
                 "amount": "Сумма", "currency": "Валюта", "number": "Номер", "code": "Шифр", "status": "Статус", "reason": "Основание",
-                "channel": "Канал", "sent_at": "Дата отправки", "responsible_id": "Ответственный", "valid_until": "Действует до"}
+                "channel": "Канал", "sent_at": "Дата отправки", "responsible_id": "Ответственный", "valid_until": "Действует до",
+                "lines": "Позиции расчёта"}
 PROJECT_ROLE_LABELS = {"gip": "ГИП проекта", "rp": "РП проекта", "participant": "Участник"}
 
 
@@ -62,6 +64,39 @@ def qml_safe(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [qml_safe(v) for v in value if v is not None]
     return value
+
+
+def _clean_lines(lines) -> list[dict]:
+    """Позиции расчёта из формы QML → payload: пустые поля = «не задано» (None), числа — строками как введены.
+
+    Числа из полей ввода не превращаются во float: «1 234,5» → «1234.5» (пробелы убираются, запятая → точка),
+    дальше строгая проверка vector.core.calc (не больше 4 знаков после запятой, без округления).
+    """
+    out = []
+    for raw in lines or []:
+        ln = {}
+        for k in ("line_id", "code", "name", "unit", "qty", "unit_price", "note"):
+            v = raw.get(k) if isinstance(raw, dict) else None
+            if isinstance(v, str):
+                v = v.strip()
+                if k in ("qty", "unit_price"):
+                    v = v.replace(" ", "").replace("\u00a0", "").replace(",", ".")
+            if v in ("", None):
+                v = None
+            if v is not None or k in ("name", "unit", "qty", "unit_price"):
+                ln[k] = v
+        out.append(ln)
+    return out
+
+
+def _conflict_value(field: str, value, obj) -> str:
+    """Значение поля для экрана конфликта. Позиции расчёта — кратко (число позиций и итог), а не сырой список."""
+    if value is None:
+        return ""
+    if field == "lines" and isinstance(value, list):
+        pv = calc_view.preview(_clean_lines(value), (obj or {}).get("currency"))
+        return f"{len(value)} поз. · {pv['total_label']}"
+    return str(value)
 
 
 def _ro(attr: str, typ, notify):
@@ -98,10 +133,15 @@ class Backend(QObject):
         self._pending = 0
         self._problems = 0
         self._me: dict = {}
-        self._data: dict[str, list] = {"customer": [], "tender": [], "tkp": [], "project": [], "kit": [], "task": [], "document": []}
+        self._data: dict[str, list] = {"customer": [], "tender": [], "tkp": [], "project": [], "kit": [], "task": [], "document": [],
+                                       "calc_draft": []}
         # Метаданные версий документов (номер, имя файла, размер, SHA-256) из зашифрованного кэша клиента.
         # Сами файлы в кэш не попадают: их скачивают по явной команде пользователя.
         self._doc_versions: list = []
+        # Расчёт: зафиксированные версии комплектов и ревизии проектного итога (неизменяемые, из meta кэша).
+        self._calc_versions: list = []
+        self._calc_revisions: list = []
+        self._data_rev = 0
         self._people: dict[str, str] = {}
         self._last_pull = ""
         self._theme = self._settings.value("ui/theme", "light")
@@ -269,6 +309,11 @@ class Backend(QObject):
                 d["task_count"] = len(ks)
                 d["open_task_count"] = sum(1 for t in ks if t.get("status") in ("open", "in_progress"))
                 d["doc_count"] = sum(1 for x in self._data["document"] if x.get("kit_id") == o["id"])
+                vs = [v["version_no"] for v in self._calc_versions if v.get("kit_id") == o["id"]]
+                dr = next((x for x in self._data["calc_draft"] if x["id"] == o["id"]), None)
+                d["calc_label"] = (f"расчёт v{max(vs)}" if vs else "расчёт не зафиксирован") + \
+                    (" · есть правки" if dr and vs and (dr.get("_pending") or dr.get("version", 0) >
+                                                        max(v["draft_version"] for v in self._calc_versions if v.get("kit_id") == o["id"])) else "")
             if kind == "task":
                 d.update(self._decorate_task(o))
             if kind == "document":
@@ -328,6 +373,56 @@ class Backend(QObject):
 
     def _name(self, kind, oid, field="name"):
         return next((o.get(field) for o in self._data[kind] if o["id"] == oid), "")
+
+    # ------------------------------------------------------------ расчёт комплекта и проектный итог (С3)
+    @Property(int, notify=dataChanged)
+    def dataRevision(self):
+        """Счётчик обновлений данных: QML передаёт его в слоты-вычисления, чтобы привязки пересчитывались."""
+        return self._data_rev
+
+    @Slot(str, int, int, result="QVariantMap")
+    def kitCalc(self, kit_id: str, compare_no: int = 0, _rev: int = 0) -> dict:
+        """Вкладка «Расчёт»: черновик (с неотправленными правками), версии, сравнение, подсказки прав."""
+        kit = next((k for k in self._data["kit"] if k["id"] == kit_id), None)
+        if kit is None:
+            return {}
+        draft = next((x for x in self._data["calc_draft"] if x["id"] == kit_id), None)
+        v = calc_view.kit_calc(kit, draft, self._calc_versions, self._people, compare_no)
+        pid = kit.get("project_id")
+        # Подсказки (решает сервер): фиксирует только ГИП проекта; черновик — участники проекта.
+        v["can_freeze"] = self._has_project_role(pid, ("gip",))
+        v["can_edit"] = self._has_project_role(pid, ("gip", "rp", "participant")) or not self._assignments_known(pid)
+        v["can_see_revisions"] = self._has_project_role(pid, ("gip", "rp")) or "accountant" in self._me.get("roles", [])
+        return qml_safe(v)
+
+    @Slot("QVariantList", str, result="QVariantMap")
+    def calcPreview(self, lines, currency: str) -> dict:
+        """Проверка рабочей копии позиций в форме (без сервера): суммы, замечания по строкам, итог."""
+        lines = lines.toVariant() if hasattr(lines, "toVariant") else lines
+        return qml_safe(calc_view.preview(_clean_lines(lines), currency.strip().upper() or None))
+
+    @Slot(str, int, result="QVariantMap")
+    def projectCalc(self, project_id: str, _rev: int = 0) -> dict:
+        return qml_safe(calc_view.project_calc(project_id, self._calc_revisions, self._people))
+
+    @Property("QVariantList", notify=dataChanged)
+    def financeOverview(self):
+        """Итоги проектов (официальные — только из зафиксированных версий): для ГИП/РП и бухгалтерии."""
+        return qml_safe(calc_view.finance_overview(self._calc_revisions, self._people))
+
+    @Slot(str, str, str, str, "QVariantList")
+    def saveCalcDraft(self, tag: str, kit_id: str, currency: str, note: str, lines):
+        """«Сохранить расчёт»: через очередь (можно без связи). expected_version считает SyncClient."""
+        lines = _clean_lines(lines.toVariant() if hasattr(lines, "toVariant") else lines)
+        cur = currency.strip().upper() or None
+
+        def job():
+            r = self.client.save_calc_draft(kit_id, cur, note.strip() or None, lines)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "calc.save_draft", res))
+
+    def _assignments_known(self, project_id) -> bool:
+        return any(a.get("project_id") == project_id for a in self._assignments)
 
     # ------------------------------------------------------------ права-подсказки
     @Property(int, notify=changed)
@@ -451,7 +546,8 @@ class Backend(QObject):
         if pull and c.token:
             rep = c.sync()
         data = {k: c.list_local(k) for k in self._data}
-        return {"data": data, "doc_versions": c.get_meta("document_versions") or [], "me": c.get_meta("me") or c.get_meta("session") or {}, "people": c.get_meta("people") or [], "assignments": c.get_meta("assignments") or [],
+        return {"data": data, "doc_versions": c.get_meta("document_versions") or [],
+                "calc_versions": c.get_meta("calc_versions") or [], "calc_revisions": c.get_meta("calc_revisions") or [], "me": c.get_meta("me") or c.get_meta("session") or {}, "people": c.get_meta("people") or [], "assignments": c.get_meta("assignments") or [],
                 "pending": c.pending_count(), "problems": c.problem_count(), "last_pull": c.get_meta("last_pull") or "",
                 "online": c.t.online and c.token is not None, "token": c.token is not None, "rep": rep.__dict__ if rep else None}
 
@@ -462,6 +558,9 @@ class Backend(QObject):
             return
         self._data = s["data"]
         self._doc_versions = s.get("doc_versions", [])
+        self._calc_versions = s.get("calc_versions", [])
+        self._calc_revisions = s.get("calc_revisions", [])
+        self._data_rev += 1
         if s["me"] != self._me:
             self._perm_rev += 1
         self._me = s["me"]
@@ -524,30 +623,33 @@ class Backend(QObject):
         def job():
             r = self.client.execute(command, payload, ev)
             return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, command, res))
 
-        def done(res):
-            if "result" not in res:
-                self.toast.emit("error", res.get("message_ru", "Ошибка"))
-                self._command_done(tag, res)
-                return
-            r = res["result"]
-            self._apply_snapshot(res["snap"])
-            st = r["status"]
-            if st == "accepted":
-                self.toast.emit("success", "Готово: " + self.contracts.label(command).lower() + ".")
-            elif st == "queued":
-                self.toast.emit("info", r["message_ru"])
-            elif st == "conflict":
-                self.toast.emit("warning", r["message_ru"])
-            elif st in ("refused_offline", "blocked", "unknown_outcome"):
-                self.toast.emit("warning", r["message_ru"])
-            else:
-                self.toast.emit("error", r.get("message_ru") or "Действие не выполнено.")
-            self._command_done(tag, {"status": st, "code": (r.get("response") or {}).get("code", ""),
-                                        "message_ru": r.get("message_ru", ""), "operation_id": r.get("operation_id") or "",
-                                        "details": (r.get("response") or {}).get("details") or {},
-                                        "result": (r.get("response") or {}).get("result") or {}})
-        self._run(job, done)
+    def _finish_command(self, tag: str, command: str, res: dict):
+        """Общий разбор результата команды: снимок данных, уведомление, сигнал commandDone для формы."""
+        if "result" not in res:
+            self.toast.emit("error", res.get("message_ru", "Ошибка"))
+            self._command_done(tag, res)
+            return
+        r = res["result"]
+        self._apply_snapshot(res["snap"])
+        st = r["status"]
+        if st == "accepted" and (r.get("response") or {}).get("unchanged"):
+            self.toast.emit("info", r.get("message_ru") or "Изменений нет.")
+        elif st == "accepted":
+            self.toast.emit("success", "Готово: " + self.contracts.label(command).lower() + ".")
+        elif st == "queued":
+            self.toast.emit("info", r["message_ru"])
+        elif st == "conflict":
+            self.toast.emit("warning", r["message_ru"])
+        elif st in ("refused_offline", "blocked", "unknown_outcome"):
+            self.toast.emit("warning", r["message_ru"])
+        else:
+            self.toast.emit("error", r.get("message_ru") or "Действие не выполнено.")
+        self._command_done(tag, {"status": st, "code": (r.get("response") or {}).get("code", ""),
+                                    "message_ru": r.get("message_ru", ""), "operation_id": r.get("operation_id") or "",
+                                    "details": (r.get("response") or {}).get("details") or {},
+                                    "result": (r.get("response") or {}).get("result") or {}})
 
     # ------------------------------------------------------------ файлы документов
     # Ограничение клиента «на всякий случай»: заведомо неприемлемые размеры отсекаем до чтения файла.
@@ -654,8 +756,8 @@ class Backend(QObject):
                 for k, v in (p.get("payload") or {}).items():
                     if k == "id":
                         continue
-                    diff.append({"field": k, "field_label": FIELD_LABELS.get(k, k), "mine": "" if v is None else str(v), "server": "" if cur.get(k) is None else str(cur.get(k)),
-                                 "differs": cur.get(k) != v})
+                    diff.append({"field": k, "field_label": FIELD_LABELS.get(k, k), "mine": _conflict_value(k, v, p.get("payload")),
+                                 "server": _conflict_value(k, cur.get(k), cur), "differs": cur.get(k) != v})
                 items.append({**q, "message_ru": p.get("message_ru", ""), "code": p.get("code", ""), "diff": diff,
                               "server_version": cur.get("version", 0)})
             self._queue = items

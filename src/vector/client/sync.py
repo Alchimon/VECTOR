@@ -59,8 +59,23 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v_enc TEXT NOT NULL) STRICT
 # Типы объектов в зашифрованном кэше: (тип в каталоге команд, ключ в ответе pull / результате команды).
 # Версии документов (document_versions) в кэш объектов не входят: они неизменяемы и не правятся с клиента,
 # поэтому хранятся списком в зашифрованной meta (как назначения проекта).
+# Черновик расчёта комплекта (calc_draft) — обычный объект кэша: id = id комплекта, правится офлайн через очередь.
+# Зафиксированные версии расчёта и ревизии проектного итога неизменяемы — хранятся списками в meta.
 OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp"), ("project", "projects"), ("kit", "kits"),
-                ("task", "tasks"), ("document", "documents"))
+                ("task", "tasks"), ("document", "documents"), ("calc_draft", "calc_drafts"))
+# Неизменяемые объекты из результата команды → список в meta (ключ результата, ключ meta).
+META_LISTS = (("calc_version", "calc_versions"), ("calc_revision", "calc_revisions"))
+
+
+def _calc_same(local: dict, payload: dict) -> bool:
+    """Совпадает ли содержимое расчёта (валюта, примечание, позиции) — в канонической форме vector.core.calc."""
+    from vector.core import calc
+    try:
+        a, ca = calc.parse_lines(local.get("lines") or [], local.get("currency"))
+        b, cb = calc.parse_lines(payload["lines"], payload.get("currency"))
+    except calc.CalcError:
+        return False
+    return (ca, (local.get("note") or None)) == (cb, payload.get("note")) and [x.to_json() for x in a] == [x.to_json() for x in b]
 
 
 @dataclass
@@ -277,6 +292,33 @@ class SyncClient:
                 return LocalResult(resp["status"], op_id, resp.get("message_ru", ""), resp)
         return res
 
+    def save_calc_draft(self, kit_id: str, currency: Optional[str], note: Optional[str], lines: list[dict]) -> LocalResult:
+        """«Сохранить расчёт» комплекта: команда calc.save_draft через офлайн-очередь.
+
+        expected_version вычисляется здесь, а не в интерфейсе, с учётом очереди:
+        * в очереди нет неотправленных сохранений этого черновика → версия черновика с сервера (0 — его ещё нет);
+        * есть (пользователь сохранял несколько раз без связи) → версия предыдущего сохранения + 1: каждое
+          следующее сохранение основано на предыдущем, и после его приёма сервер будет именно на этой версии.
+        Ошибка в этой цепочке (например, предыдущее сохранение не изменило содержимого) даёт только КОНФЛИКТ,
+        который пользователь решает сам, — но никогда молчаливую перезапись чужих правок.
+        """
+        if self.db is None:
+            return LocalResult("unauthenticated", message_ru="Войдите в систему.")
+        prev = self.db.execute("SELECT expected_version FROM outbox WHERE command='calc.save_draft' AND object_id=? "
+                               "AND state IN ('pending','conflict','rejected') ORDER BY seq DESC LIMIT 1", (kit_id,)).fetchone()
+        if prev is not None:
+            ev = (prev[0] or 0) + 1
+        else:
+            row = self.db.execute("SELECT server_version FROM cache WHERE object_type='calc_draft' AND id=?", (kit_id,)).fetchone()
+            ev = (row[0] if row and row[0] is not None else 0)
+        payload = {"id": kit_id, "currency": currency or None, "note": note or None, "lines": lines}
+        # Ничего не изменилось относительно локальной копии → не ставим операцию в очередь: сервер такое
+        # сохранение не считает новой версией, и следующая цепочка версий разошлась бы (ложный конфликт).
+        local = self.get_local("calc_draft", kit_id)
+        if local is not None and _calc_same(local, payload):
+            return LocalResult("accepted", message_ru="Изменений нет — сохранять нечего.", response={"unchanged": True})
+        return self.execute("calc.save_draft", payload, ev)
+
     def retry_online(self, op_id: str) -> LocalResult:
         row = self.db.execute("SELECT command, payload_enc, expected_version FROM outbox WHERE operation_id=? AND state='pending'", (op_id,)).fetchone()
         if not row:
@@ -361,6 +403,8 @@ class SyncClient:
         self._set_meta("people", res.get("people", []))
         self._set_meta("assignments", res.get("assignments", []))
         self._set_meta("document_versions", res.get("document_versions", []))
+        for _, key in META_LISTS:
+            self._set_meta(key, res.get(key, []))
         self.db.execute("COMMIT")
         return True
 
@@ -592,6 +636,13 @@ class SyncClient:
     def _apply_response(self, r):
         if r.get("status") != "accepted":
             return
+        # Неизменяемые объекты (версия расчёта, ревизия итога) — сразу в локальные списки, не дожидаясь pull:
+        # пользователь видит результат фиксации и без связи после неё.
+        for rkey, mkey in META_LISTS:
+            obj = (r.get("result") or {}).get(rkey)
+            if obj:
+                items = [x for x in (self.get_meta(mkey) or []) if x.get("id") != obj["id"]]
+                self._set_meta(mkey, items + [obj])
         for otype, _ in OBJECT_TYPES:
             obj = (r.get("result") or {}).get(otype)
             if not obj:
