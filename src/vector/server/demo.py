@@ -165,6 +165,33 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     task("Подготовить пояснительную записку", "d.kuznetsov", [], "2026-12-15", "АТХ-003")
     task("Согласовать опросные листы с заказчиком", "m.lebedev", ["in_progress", "done"], "2026-11-10")
     task("Отдельная схема питания шкафов", None, ["cancelled"])
+
+    # Расчёты комплектов (С3). Цены ВЫМЫШЛЕНЫ — это демо-данные интерфейса, а не справочник цен.
+    # АТХ: черновик → фиксация ГИП (v1) → новые правки инженера (видно сравнение с v1, одна цена неизвестна).
+    # ЭМ: черновик РП → фиксация (v1). Итог проекта = последняя ревизия из v1 обоих комплектов.
+    def ln(code, name, unit, qty, price, note=None):
+        return {"line_id": str(uuid.uuid4()), "code": code, "name": name, "unit": unit, "qty": qty, "unit_price": price,
+                **({"note": note} if note else {})}
+    atx = [ln("ШУ-1", "Шкаф управления котлом (ПЛК, панель оператора)", "шт", "3", "485000"),
+           ln("ШУ-0", "Шкаф общекотельного оборудования", "шт", "1", "612000"),
+           ln("ПЛК-ВВ", "Модуль ввода-вывода резервный", "шт", "6", "38500"),
+           ln("АРМ", "АРМ оператора (ПК, ИБП, ПО SCADA)", "компл", "2", "214000"),
+           ln(None, "Кабель контрольный КВВГнг(А)-LS 7×1,5", "м", "1850", "142.6"),
+           ln(None, "Пусконаладочные работы АСУ ТП", "усл", "1", "780000", "по этапам")]
+    r = cmd(eng, "calc.save_draft", {"id": kits["АТХ"], "currency": "RUB", "note": "По опросным листам", "lines": atx}, 0)
+    cmd(gip, "calc.freeze", {"id": kits["АТХ"], "reason": "Расчёт к ТКП-27/2026"}, r["calc_draft"]["version"])
+    atx2 = [dict(x) for x in atx]
+    atx2[4]["qty"] = "2140"                                         # уточнили длины трасс
+    atx2.append(ln("ДД", "Датчик давления (изм. 2 схемы ФСА)", "шт", "8", None, "цена у поставщика КИП уточняется"))
+    del atx2[2]                                                     # резервные модули — в поставке ПЛК
+    cmd(eng, "calc.save_draft", {"id": kits["АТХ"], "currency": "RUB", "note": "По опросным листам", "lines": atx2},
+        r["calc_draft"]["version"])
+    r = cmd(rp, "calc.save_draft", {"id": kits["ЭМ"], "currency": "RUB", "lines": [
+        ln("ЩР-1", "Щит распределительный 0,4 кВ", "шт", "2", "356000"),
+        ln(None, "Кабель силовой ВВГнг(А)-LS 5×16", "м", "420", "1185.5"),
+        ln(None, "Монтаж электрооборудования", "усл", "1", "295000")]}, 0)
+    cmd(gip, "calc.freeze", {"id": kits["ЭМ"], "reason": "Расчёт к ТКП-27/2026"}, r["calc_draft"]["version"])
+
     pid2 = str(uuid.uuid4())
     cmd(rp, "project.start_rkd", {"id": pid2, "tender_id": t_won2, "code": "П-2026-011", "title": "ПАЗ цеха № 5"})
     cmd(adm, "project.assign", {"project_id": pid2, "user_id": people["a.smirnova"], "project_role": "rp", "reason": "Приказ № 98"})
