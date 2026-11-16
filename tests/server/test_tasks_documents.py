@@ -219,6 +219,12 @@ def test_download_rights_and_corruption_detected(world, proj):
     assert (r["code"], b) == ("file_corrupted", None)
     results = [a["result"] for a in audit(world, command="file.download")]
     assert results == ["accepted", "denied", "denied", "error"]
+    # В журнале видно основание доступа (назначение участника), а у отказов основания нет.
+    rows = audit(world, command="file.download")
+    assert rows[0]["authority"].startswith("project_role:participant#assignment:")
+    assert rows[1]["authority"] is None and rows[2]["authority"] is None
+    ups = audit(world, command="file.upload")
+    assert ups and all(u["authority"] and u["authority"].startswith("project_role:participant") for u in ups)
 
 
 def test_pull_and_history_include_tasks_and_documents(world, proj):

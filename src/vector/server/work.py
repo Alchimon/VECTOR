@@ -276,6 +276,17 @@ class WorkMixin:
         return {"document": self.v_document(n), "document_version": self.v_document_version(ver)}
 
     # ------------------------------------------------------------ файлы (вне конвейера команд)
+    def _authority_for(self, conn, user_id: str, action: str, now, project_id: str) -> Optional[str]:
+        """Основание доступа строкой для аудита («project_role:participant#assignment:7») или None, если права нет.
+
+        Файловые маршруты идут мимо общего конвейера команд, поэтому основание вычисляем здесь сами:
+        в журнале должно быть видно не только КТО загрузил/скачал файл, но и ПО КАКОМУ праву.
+        """
+        try:
+            return self.policy.check(conn, user_id, action, now, project_id=project_id).describe()
+        except Denied:
+            return None
+
     def put_file(self, token: Optional[str], project_id: object, data: bytes, claimed_sha256: object,
                  client_addr: Optional[str] = None) -> dict:
         """Загрузка содержимого файла. Возвращает SHA-256 и размер; создаёт квитанцию загрузки.
@@ -304,7 +315,9 @@ class WorkMixin:
         def tx(conn):
             now = self.now()
             user, device, _ = self._auth(conn, token, now)
-            if self._get(conn, projects, pid) is None or not self.policy.can(conn, user["id"], "document.add_version", now, pid):
+            authority = self._authority_for(conn, user["id"], "document.add_version", now, pid) \
+                if self._get(conn, projects, pid) is not None else None
+            if authority is None:
                 self._audit(conn, now, user["id"], device, client_addr, None, "file.upload", "project", pid, None, None, None,
                             "denied", {"sha256": actual, "size_bytes": len(data)})
                 return {"status": "denied", "code": "no_authority",
@@ -316,7 +329,7 @@ class WorkMixin:
                                                         uploaded_by=user["id"], uploaded_at=now))
                 conn.execute(file_chunks.insert(), [{"sha256": actual, "idx": i, "data": c} for i, c in enumerate(chunks)])
             conn.execute(file_uploads.insert().values(sha256=actual, user_id=user["id"], project_id=pid, uploaded_at=now))
-            self._audit(conn, now, user["id"], device, client_addr, None, "file.upload", "project", pid, None, None, None,
+            self._audit(conn, now, user["id"], device, client_addr, None, "file.upload", "project", pid, authority, None, None,
                         "accepted", {"sha256": actual, "size_bytes": len(data), "deduplicated": dedup})
             return {"status": "accepted", "sha256": actual, "size_bytes": len(data), "deduplicated": dedup}
         return self._guarded_tx(tx)
@@ -340,7 +353,8 @@ class WorkMixin:
             now = self.now()
             user, device, _ = self._auth(conn, token, now)
             d = self._get(conn, documents, did)
-            if d is None or not self.policy.can(conn, user["id"], "document.read", now, d["project_id"]):
+            authority = self._authority_for(conn, user["id"], "document.read", now, d["project_id"]) if d is not None else None
+            if authority is None:
                 # Не различаем «нет документа» и «нет доступа» — не раскрываем существование.
                 self._audit(conn, now, user["id"], device, client_addr, None, "file.download", "document", did, None,
                             None, None, "denied", {"version_no": version_no})
@@ -358,7 +372,7 @@ class WorkMixin:
                 parts.append(b)
             content = b"".join(parts)
             ok = h.hexdigest() == v["sha256"] and len(content) == v["size_bytes"]
-            self._audit(conn, now, user["id"], device, client_addr, None, "file.download", "document", did, None, None, None,
+            self._audit(conn, now, user["id"], device, client_addr, None, "file.download", "document", did, authority, None, None,
                         "accepted" if ok else "error", {"version_no": version_no, "sha256": v["sha256"], "intact": ok})
             if not ok:
                 return {"status": "error", "code": "file_corrupted",
