@@ -35,13 +35,23 @@ def test_powershell_script_is_utf8_bom_crlf_and_balanced():
     code = "\n".join(line.split("#", 1)[0] for line in code.splitlines())
     for o, c in ("{}", "()", "[]"):
         assert code.count(o) == code.count(c), f"скобки {o}{c} не сбалансированы"
+    # «$Port:» в строке PowerShell читает как переменную с указанием диска (как $env:) — ошибка разбора
+    # InvalidVariableReferenceWithDrive (так упал первый запуск на Windows). Разрешены только области видимости.
+    bad_ref = re.findall(r"\$(?!(?:env|script|global|local|private|using):)[A-Za-z_]\w*:", text)
+    assert not bad_ref, f"используйте ${{имя}}: перед двоеточием: {bad_ref}"
+    # «"$Repo[...]"» — неоднозначная граница имени в строке; пишем «${Repo}[...]».
+    assert not re.findall(r'"[^"\r\n]*\$[A-Za-z_]\w*\[', text)
     # Конструкции PowerShell 7, которых нет в 5.1 (встроенной в Windows 10/11).
     for bad in ("??", "?.", " && ", " || "):
         assert bad not in code, f"конструкция PowerShell 7: {bad!r}"
-    # Каждый вызов программы стенда — через Run/Probe (проверка кода возврата) или с явной проверкой.
+    # Каждый вызов программы стенда — через Run/Probe (проверка кода возврата) или внутри Invoke-PasswordStep
+    # (там ErrorActionPreference=Continue и проверка $LASTEXITCODE с повтором при коде 3).
     for m in re.finditer(r"& \$VS ([\w-]+)", text):
         line = text[text.rfind("\n", 0, m.start()) + 1:text.find("\n", m.start())]
-        assert "Run " in line or "$out =" in line, line
+        before = text[:m.start()]
+        in_pwd_step = before.rfind("Invoke-PasswordStep \"") > before.rfind("\n    }")
+        assert "Run " in line or in_pwd_step, line
+    assert "$rc -ne 3" in text and '"Continue"' in text  # повтор только на «слабый пароль», остальное — отказ
 
 
 def test_scripts_reference_existing_templates():

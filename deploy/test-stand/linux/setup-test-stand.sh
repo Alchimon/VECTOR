@@ -37,6 +37,29 @@ done
 say() { printf '\n== %s\n' "$*"; }
 die() { printf '\nОШИБКА: %s\n' "$*" >&2; exit 1; }
 
+# Шаг с паролем: до трёх попыток. Сервер проверяет пароль по политике ДО создания чего-либо и при отказе
+# завершается с кодом 3 — тогда спрашиваем снова. Пароль передаётся через переменную окружения (не argv).
+password_step() {   # <имя переменной> <приглашение> <текст ошибки> <команда...>
+  local name="$1" prompt="$2" fail="$3" from_env=0 rc i P1 P2
+  shift 3
+  [ -n "${!name:-}" ] && from_env=1
+  for i in 1 2 3; do
+    if [ "$from_env" = 0 ]; then
+      read -r -s -p "$prompt: " P1; echo
+      read -r -s -p "Повторите пароль: " P2; echo
+      if [ "$P1" != "$P2" ]; then echo "Пароли не совпадают — ещё раз."; continue; fi
+      export "$name=$P1"; unset P1 P2
+    fi
+    set +e; "$@"; rc=$?; set -e
+    [ "$rc" = 0 ] && return 0
+    if [ "$rc" != 3 ] || [ "$from_env" = 1 ]; then die "$fail (код $rc). Подробности — в сообщениях выше."; fi
+    echo "Придумайте другой пароль (требования — в сообщении выше)."
+  done
+  die "$fail: три попытки не удались. Удалите $DIR и запустите скрипт снова."
+}
+run_init() { (cd "$DIR" && "$VS" init --config server.toml); }
+run_demo() { (cd "$DIR" && "$VS" demo-seed --config server.toml) | tee "$DIR/demo-accounts.txt"; }
+
 # --- 1. Python 3.11–3.14 (PySide6 6.11 не поддерживает 3.15+) ---------------------------------------
 PY=""
 for c in python3.13 python3.12 python3.11 python3.14 python3; do
@@ -83,18 +106,11 @@ done
 printf 'https://localhost:%s\n' "$PORT" > "$DIR/server-url.txt"
 
 # --- 5. База: схема + первый администратор; демо-данные ---------------------------------------------
-say "Создание базы. Придумайте пароль администратора «admin» (не короче 12 символов)."
-if [ -z "${VECTOR_ADMIN_PASSWORD:-}" ]; then
-  read -r -s -p "Пароль администратора: " P1; echo
-  read -r -s -p "Повторите пароль: " P2; echo
-  [ "$P1" = "$P2" ] || die "Пароли не совпадают. Удалите $DIR и повторите."
-  export VECTOR_ADMIN_PASSWORD="$P1"; unset P1 P2
-fi
-(cd "$DIR" && "$VS" init --config server.toml) || die "База не создана (см. сообщение выше). Удалите $DIR и повторите."
+say "Создание базы. Придумайте пароль администратора «admin» (не короче 12 символов, не из простых)."
+password_step VECTOR_ADMIN_PASSWORD "Пароль администратора" "База не создана" run_init
 if [ "$DEMO" = 1 ]; then
   say "Демо-данные (вымышленные). Пароль для всех демо-учёток — придумайте отдельный (не короче 12 символов)."
-  (cd "$DIR" && "$VS" demo-seed --config server.toml) | tee "$DIR/demo-accounts.txt" \
-    || die "Демо-данные не созданы. Удалите $DIR и повторите."
+  password_step VECTOR_DEMO_PASSWORD "Пароль демо-учёток" "Демо-данные не созданы" run_demo
 fi
 unset VECTOR_ADMIN_PASSWORD VECTOR_DEMO_PASSWORD
 

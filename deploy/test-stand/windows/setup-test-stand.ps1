@@ -73,6 +73,28 @@ function Protect-File([string]$path) {
     if ($LASTEXITCODE -ne 0) { Fail "Не удалось ограничить права на файл $path" }
 }
 # UTF-8 без BOM: путь может содержать кириллицу (имя пользователя Windows), а BOM сломал бы чтение в cmd/Python.
+# Шаг с паролем: до трёх попыток. Сервер проверяет пароль по политике ДО создания чего-либо и при отказе
+# завершается с кодом 3 — тогда спрашиваем снова. Пароль передаётся дочернему процессу через переменную окружения
+# этого процесса (не через командную строку, где его видно в списке процессов) и удаляется в конце скрипта.
+function Invoke-PasswordStep([string]$envName, [string]$prompt, [string]$failText, [scriptblock]$block) {
+    $fromEnv = [bool][Environment]::GetEnvironmentVariable($envName, "Process")
+    for ($i = 1; $i -le 3; $i++) {
+        if (-not $fromEnv) {
+            $p1 = Read-Secret $prompt
+            $p2 = Read-Secret "Повторите пароль"
+            if ($p1 -ne $p2) { Write-Host "Пароли не совпадают — ещё раз." -ForegroundColor Yellow; continue }
+            [Environment]::SetEnvironmentVariable($envName, $p1, "Process")
+            Remove-Variable p1, p2
+        }
+        $ErrorActionPreference = "Continue"
+        & $block
+        $rc = $LASTEXITCODE
+        if ($rc -eq 0) { return }
+        if ($rc -ne 3 -or $fromEnv) { Fail "${failText} (код $rc). Подробности — в сообщениях выше." }
+        Write-Host "Придумайте другой пароль (требования — в сообщении выше)." -ForegroundColor Yellow
+    }
+    Fail "${failText}: три попытки не удались. Запустите setup.cmd снова, предварительно удалив каталог стенда."
+}
 function Write-Utf8([string]$path, [string]$text) {
     [IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding $false))
 }
@@ -105,7 +127,7 @@ if (-not $Py) {
 }
 $PyExe = $Py[0]
 $PyArgs = @()
-if ($Py.Count -gt 1) { $PyArgs = $Py[1..($Py.Count - 1)] }
+if ($Py.Count -gt 1) { $PyArgs = @($Py[1..($Py.Count - 1)]) }   # всегда массив: @PyArgs со строкой ненадёжен
 $ver = & $PyExe @PyArgs --version
 Write-Host "Python: $ver"
 
@@ -125,7 +147,7 @@ Run "Не удалось обновить pip" { & $VPy -m pip install --quiet -
 $extras = "server,client"
 if ($ClientOnly) { $extras = "client" }
 Run "Не удалось установить программу (нужен доступ в интернет к pypi.org)" {
-    & $VPy -m pip install --quiet --disable-pip-version-check -c "$Repo\deploy\test-stand\constraints.txt" "$Repo[$extras]"
+    & $VPy -m pip install --quiet --disable-pip-version-check -c "$Repo\deploy\test-stand\constraints.txt" "${Repo}[$extras]"
 }
 Copy-Item "$Templates\start-client.cmd" "$Dir\start-client.cmd"
 
@@ -167,31 +189,17 @@ try {
     Write-Utf8 "$Dir\server-url.txt" "https://localhost:$Port"
 
     # --- 5. База: схема + первый администратор; демо-данные -----------------------------------------
-    Say "Создание базы. Придумайте пароль администратора «admin» (не короче 12 символов)"
-    if (-not $env:VECTOR_ADMIN_PASSWORD) {
-        $p1 = Read-Secret "Пароль администратора"
-        $p2 = Read-Secret "Повторите пароль"
-        if ($p1 -ne $p2) { Fail "Пароли не совпадают. Удалите $Dir и запустите setup.cmd снова." }
-        $env:VECTOR_ADMIN_PASSWORD = $p1
-        Remove-Variable p1, p2
+    Say "Создание базы. Придумайте пароль администратора «admin» (не короче 12 символов, не из простых)"
+    Invoke-PasswordStep "VECTOR_ADMIN_PASSWORD" "Пароль администратора" "База не создана" {
+        & $VS init --config server.toml
     }
-    Run "База не создана. Удалите $Dir и повторите" { & $VS init --config server.toml }
     if (-not $NoDemo) {
         Say "Демо-данные (вымышленные). Придумайте отдельный пароль для всех демо-учёток (не короче 12 символов)"
-        if (-not $env:VECTOR_DEMO_PASSWORD) {
-            $d1 = Read-Secret "Пароль демо-учёток"
-            $d2 = Read-Secret "Повторите пароль"
-            if ($d1 -ne $d2) { Fail "Пароли не совпадают. Удалите $Dir и запустите setup.cmd снова." }
-            $env:VECTOR_DEMO_PASSWORD = $d1
-            Remove-Variable d1, d2
+        Invoke-PasswordStep "VECTOR_DEMO_PASSWORD" "Пароль демо-учёток" "Демо-данные не созданы" {
+            $script:demoOut = & $VS demo-seed --config server.toml
+            $script:demoOut | ForEach-Object { Write-Host $_ }
         }
-        $ErrorActionPreference = "Continue"
-        $out = & $VS demo-seed --config server.toml
-        $rc = $LASTEXITCODE
-        $ErrorActionPreference = "Stop"
-        $out | ForEach-Object { Write-Host $_ }
-        if ($rc -ne 0) { Fail "Демо-данные не созданы. Удалите $Dir и повторите." }
-        [IO.File]::WriteAllLines("$Dir\demo-accounts.txt", [string[]]$out, (New-Object System.Text.UTF8Encoding $true))
+        [IO.File]::WriteAllLines("$Dir\demo-accounts.txt", [string[]]$script:demoOut, (New-Object System.Text.UTF8Encoding $true))
     }
 } finally {
     Remove-Item Env:VECTOR_ADMIN_PASSWORD, Env:VECTOR_DEMO_PASSWORD -ErrorAction SilentlyContinue
@@ -207,7 +215,7 @@ if ($Lan) {
             -Action Allow -Profile Private, Domain | Out-Null
         Write-Host "Открыт входящий порт $Port (частная и доменная сеть)."
     } else {
-        Write-Host ("Чтобы другие ПК подключались, откройте порт $Port: PowerShell от администратора —`n" +
+        Write-Host ("Чтобы другие ПК подключались, откройте порт ${Port}: PowerShell от администратора —`n" +
                     "  New-NetFirewallRule -DisplayName 'VECTOR test server $Port' -Direction Inbound -Protocol TCP " +
                     "-LocalPort $Port -Action Allow -Profile Private,Domain") -ForegroundColor Yellow
     }
