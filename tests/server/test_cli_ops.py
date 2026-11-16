@@ -137,6 +137,13 @@ def test_tls_server_serves_and_requires_tls(setup):
             r = t.send({"type": "login", "login": "admin", "password": PWD, "device_id": "t2"})
             assert r["status"] == "accepted" and r["token"]
             assert t.ping() is True
+            # Файловые маршруты через настоящий TLS: администратор без бизнес-прав получает отказ в виде JSON,
+            # транспорт его разбирает (не принимает за «нет связи» и не падает).
+            import hashlib, uuid as _uuid
+            up = t.upload(r["token"], str(_uuid.uuid4()), b"data", hashlib.sha256(b"data").hexdigest())
+            assert up["status"] == "denied"
+            resp, content = t.download(r["token"], str(_uuid.uuid4()), 1)
+            assert resp["status"] == "denied" and content is None
         finally:
             t.close()
         t = HttpTransport(base)

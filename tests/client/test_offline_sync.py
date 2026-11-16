@@ -292,3 +292,95 @@ def test_pull_delivers_only_visible_active_assignments(world, mk):
     # В открытом виде в локальной БД назначения не хранятся (meta шифруется).
     raw = sqlite3.connect(str(rp.ov.path / "local.db")).execute("SELECT v_enc FROM meta WHERE k='assignments'").fetchone()[0]
     assert world.users["gip1"].encode() not in (raw if isinstance(raw, bytes) else raw.encode())
+
+
+# ====================================================================== задачи и документы (клиент)
+@pytest.fixture
+def team(world, mk):
+    """Проект с командой (rp1 — РП проекта, eng1 — участник) и комплектом; клиенты rp1 и eng1."""
+    s = world.login("rp1")
+    _, tender, _ = world.won_tender(s)
+    pid, kit = new_id(), new_id()
+    s.ok("project.start_rkd", {"id": pid, "tender_id": tender, "code": "П-7", "title": "Проект"})
+    world.admin.ok("project.assign", {"project_id": pid, "user_id": world.users["rp1"], "project_role": "rp", "reason": "Приказ"})
+    s.ok("project.assign", {"project_id": pid, "user_id": world.users["eng1"], "project_role": "participant", "reason": "Работы"})
+    s.ok("kit.create", {"id": kit, "project_id": pid, "code": "АТХ", "title": "Автоматизация"})
+    rp, eng = mk("rp1"), mk("eng1")
+    rp.pull(); eng.pull()
+    return pid, kit, rp, eng
+
+
+def test_task_created_offline_syncs_later(world, team):
+    pid, kit, rp, eng = team
+    rp.t.online = False
+    tid = new_id()
+    assert rp.execute("task.create", {"id": tid, "kit_id": kit, "title": "Офлайн-задача",
+                                      "assignee_user_id": world.users["eng1"]}).status == "queued"
+    assert rp.get_local("task", tid)["_pending"] is True
+    assert count(world, "tasks") == 0
+    rp.t.online = True
+    rep = rp.sync()
+    assert rep.accepted == 1 and count(world, "tasks") == 1
+    eng.pull()
+    t = eng.get_local("task", tid)
+    assert t["assignee_user_id"] == world.users["eng1"] and t["status"] == "open"
+    # Исполнитель двигает свою задачу; это тоже работает через очередь.
+    eng.t.online = False
+    assert eng.execute("task.transition", {"id": tid, "to": "in_progress"}, expected_version=1).status == "queued"
+    eng.t.online = True
+    assert eng.sync().accepted == 1
+
+
+def test_document_version_requires_connection_and_roundtrips_file(world, team, tmp_path):
+    pid, kit, rp, eng = team
+    did = new_id()
+    assert eng.execute("document.create", {"id": did, "kit_id": kit, "code": "АТХ-1", "title": "Схема"}).status == "accepted"
+    data = "Схема автоматизации, лист 1\n".encode() * 5000
+    eng.t.online = False
+    eng.token, saved = None, eng.token        # офлайн-сеанс: токена нет
+    r = eng.add_document_version(did, data, "АТХ-1.pdf", None, expected_version=1)
+    assert r.status == "refused_offline" and eng.pending_count() == 0
+    eng.token = saved
+    eng.t.online = True
+    r = eng.add_document_version(did, data, "АТХ-1.pdf", "Первая выдача", expected_version=1)
+    assert r.status == "accepted", r
+    assert [v["version_no"] for v in eng.document_versions(did)] == [1]
+    rp.pull()
+    dest = tmp_path / "АТХ-1 (скачано).pdf"
+    d = rp.download_document_version(did, 1, dest)
+    assert d.status == "accepted" and dest.read_bytes() == data
+    assert not list(tmp_path.glob("*.vector-partial"))
+
+
+def test_corrupted_download_is_not_saved(world, team, tmp_path):
+    pid, kit, rp, eng = team
+    did = new_id()
+    eng.execute("document.create", {"id": did, "kit_id": kit, "code": "АТХ-2", "title": "Схема"})
+    assert eng.add_document_version(did, b"original bytes", "a.pdf", None, expected_version=1).status == "accepted"
+    eng.t.corrupt_next_download = True
+    dest = tmp_path / "a.pdf"
+    r = eng.download_document_version(did, 1, dest)
+    assert r.status == "error" and "повреждён" in r.message_ru
+    assert not dest.exists() and not list(tmp_path.glob("*.vector-partial"))
+
+
+def test_concurrent_version_is_conflict_on_client(world, team):
+    pid, kit, rp, eng = team
+    did = new_id()
+    eng.execute("document.create", {"id": did, "kit_id": kit, "code": "АТХ-3", "title": "Схема"})
+    rp.pull()
+    assert eng.add_document_version(did, b"engineer v", "e.pdf", None, expected_version=1).status == "accepted"
+    r = rp.add_document_version(did, b"rp v", "r.pdf", None, expected_version=1)   # РП основывался на старой карточке
+    assert r.status == "conflict"
+
+
+def test_document_versions_cached_encrypted(world, team):
+    pid, kit, rp, eng = team
+    did = new_id()
+    eng.execute("document.create", {"id": did, "kit_id": kit, "code": "СЕКРЕТ-1", "title": "Закрытый документ"})
+    eng.add_document_version(did, b"x", "Секретный чертёж.dwg", None, expected_version=1)
+    eng.pull()
+    raw = sqlite3.connect(str(eng.ov.path / "local.db"))
+    blob = b"".join((r[0] if isinstance(r[0], bytes) else r[0].encode()) for r in raw.execute("SELECT v_enc FROM meta"))
+    blob += b"".join((r[0] if isinstance(r[0], bytes) else r[0].encode()) for r in raw.execute("SELECT data_enc FROM cache"))
+    assert "Секретный".encode() not in blob and "СЕКРЕТ-1".encode() not in blob

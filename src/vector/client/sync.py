@@ -14,7 +14,9 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
@@ -53,7 +55,11 @@ CREATE TABLE IF NOT EXISTS outbox (
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v_enc TEXT NOT NULL) STRICT;
 """
 
-OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp"), ("project", "projects"), ("kit", "kits"))
+# Типы объектов в зашифрованном кэше: (тип в каталоге команд, ключ в ответе pull / результате команды).
+# Версии документов (document_versions) в кэш объектов не входят: они неизменяемы и не правятся с клиента,
+# поэтому хранятся списком в зашифрованной meta (как назначения проекта).
+OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp"), ("project", "projects"), ("kit", "kits"),
+                ("task", "tasks"), ("document", "documents"))
 
 
 @dataclass
@@ -349,6 +355,7 @@ class SyncClient:
         self._set_meta("me", res["me"])
         self._set_meta("people", res.get("people", []))
         self._set_meta("assignments", res.get("assignments", []))
+        self._set_meta("document_versions", res.get("document_versions", []))
         self.db.execute("COMMIT")
         return True
 
@@ -361,6 +368,89 @@ class SyncClient:
             return {"status": "refused_offline", "message_ru": "Нет связи с сервером."}
         except TlsError as e:
             return {"status": "error", "message_ru": str(e)}
+
+    # ------------------------------------------------------------ файлы версий документов
+    # Файлы НЕ ставятся в офлайн-очередь (document.add_version — online_required): содержимое могло бы
+    # пролежать в очереди днями, а при конфликте его нельзя «слить». Поэтому всё — только при живом сеансе.
+
+    def document_versions(self, document_id: str) -> list[dict]:
+        """Версии документа из локального кэша (метаданные: номер, имя, размер, SHA-256), по возрастанию номера."""
+        return [v for v in (self.get_meta("document_versions") or []) if v["document_id"] == document_id]
+
+    def add_document_version(self, document_id: str, data: bytes, file_name: str, comment: Optional[str],
+                             expected_version: int) -> LocalResult:
+        """Загрузить файл и создать новую версию документа — два шага, оба онлайн.
+
+        1) upload: байты + SHA-256, посчитанный здесь; сервер пересчитывает и выдаёт квитанцию загрузки.
+           Повтор после обрыва безопасен: содержимое адресуется хэшем и не дублируется.
+        2) document.add_version с тем же хэшем и ожидаемой версией карточки документа: если коллега успел
+           добавить свою версию, вернётся конфликт — пользователь решает сам, ничего не перезаписывается.
+        """
+        if self.db is None:
+            return LocalResult("unauthenticated", message_ru="Войдите в систему.")
+        doc = self.get_local("document", document_id)
+        if doc is None:
+            return LocalResult("rejected", message_ru="Документ не найден в локальных данных. Обновите данные с сервера.")
+        if not self.token:
+            return LocalResult("refused_offline", message_ru="Новая версия документа (файл) добавляется только при связи с сервером. "
+                                                             "Ничего не поставлено в очередь.")
+        sha = hashlib.sha256(data).hexdigest()
+        try:
+            up = self.t.upload(self.token, doc["project_id"], data, sha)
+        except Offline:
+            return LocalResult("refused_offline", message_ru="Связь пропала до загрузки файла. Версия не добавлена.")
+        except ResponseLost:
+            return LocalResult("unknown_outcome", message_ru="Ответ сервера на загрузку не получен. Повторите — "
+                                                             "повторная загрузка того же файла безопасна.")
+        except TlsError as e:
+            return LocalResult("error", message_ru=str(e))
+        if up.get("status") != "accepted":
+            if up.get("status") == "unauthenticated":
+                self.token = None
+            return LocalResult(up.get("status", "error"), message_ru=up.get("message_ru", "Файл не загружен."), response=up)
+        r = self.execute("document.add_version", {"id": document_id, "sha256": sha, "file_name": file_name,
+                                                  **({"comment": comment} if comment else {})}, expected_version)
+        if r.status == "accepted":
+            v = (r.response.get("result") or {}).get("document_version")
+            if v:
+                versions = [x for x in (self.get_meta("document_versions") or []) if x["id"] != v["id"]] + [v]
+                self._set_meta("document_versions", versions)
+        return r
+
+    def download_document_version(self, document_id: str, version_no: int, dest: Path) -> LocalResult:
+        """Скачать файл версии в dest с проверкой целостности «из конца в конец».
+
+        * SHA-256 полученных байтов сверяется с хэшем версии из кэша И с заголовком сервера:
+          порча в пути или подмена промежуточным узлом обнаруживаются, файл не сохраняется.
+        * Запись атомарная: сначала временный файл рядом, затем переименование — при сбое на диске
+          не останется «половины чертежа» под нужным именем.
+        """
+        if not self.token:
+            return LocalResult("refused_offline", message_ru="Скачивание файла доступно при связи с сервером.")
+        meta = next((v for v in self.document_versions(document_id) if v["version_no"] == version_no), None)
+        try:
+            resp, content = self.t.download(self.token, document_id, version_no)
+        except (Offline, ResponseLost):
+            return LocalResult("refused_offline", message_ru="Нет связи с сервером — файл не скачан.")
+        except TlsError as e:
+            return LocalResult("error", message_ru=str(e))
+        if content is None:
+            if resp.get("status") == "unauthenticated":
+                self.token = None
+            return LocalResult(resp.get("status", "error"), message_ru=resp.get("message_ru", "Файл не получен."), response=resp)
+        actual = hashlib.sha256(content).hexdigest()
+        expected = {resp.get("sha256")} | ({meta["sha256"]} if meta else set())
+        if expected != {actual}:
+            return LocalResult("error", message_ru="Файл повреждён при передаче (контрольная сумма не совпала) и не сохранён. "
+                                                   "Повторите скачивание; если ошибка повторяется — сообщите администратору.")
+        dest = Path(dest)
+        tmp = dest.with_name(dest.name + ".vector-partial")
+        with open(tmp, "wb") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, dest)
+        return LocalResult("accepted", message_ru=f"Файл сохранён: {dest.name}", response={"sha256": actual, "path": str(dest)})
 
     # ------------------------------------------------------------ конфликты и отказы
     def problems(self) -> list[dict]:

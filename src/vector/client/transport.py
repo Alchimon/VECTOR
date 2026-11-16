@@ -71,6 +71,51 @@ class HttpTransport:
             raise ResponseLost()
         return data
 
+    # ------------------------------------------------------------ файлы версий документов
+    # Файлы идут отдельными маршрутами (сырые байты, не JSON). Контрольная сумма SHA-256 передаётся
+    # в заголовке X-Content-SHA256 в обе стороны: сервер проверяет её при загрузке, клиент — при скачивании.
+    # Таймаут чтения/записи увеличен: большой чертёж по медленному каналу не должен обрываться через 15 с.
+    _FILE_TIMEOUT = httpx.Timeout(600.0, connect=5.0)
+
+    def _guard(self, fn):
+        """Те же правила классификации сбоев сети, что и в send(): нет связи / ответ потерян / сертификат."""
+        try:
+            r = fn()
+        except httpx.ConnectError as e:
+            self.online = False
+            if _is_cert_error(e):
+                raise TlsError("Сертификат сервера не прошёл проверку. Соединение прервано ради безопасности — обратитесь к администратору.") from e
+            raise Offline() from e
+        except (httpx.ConnectTimeout, httpx.PoolTimeout) as e:
+            self.online = False
+            raise Offline() from e
+        except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.ReadError, httpx.WriteError, httpx.RemoteProtocolError) as e:
+            self.online = False
+            raise ResponseLost() from e
+        self.online = True
+        return r
+
+    def upload(self, token: str, project_id: str, data: bytes, sha256: str) -> dict:
+        r = self._guard(lambda: self._http.post("/api/v1/files", params={"project_id": project_id}, content=data,
+                                                headers={"Authorization": f"Bearer {token}", "X-Content-SHA256": sha256,
+                                                         "Content-Type": "application/octet-stream"},
+                                                timeout=self._FILE_TIMEOUT))
+        try:
+            out = r.json()
+        except ValueError:
+            raise ResponseLost()
+        return out if isinstance(out, dict) else {"status": "error", "message_ru": "Некорректный ответ сервера."}
+
+    def download(self, token: str, document_id: str, version_no: int) -> tuple[dict, Optional[bytes]]:
+        r = self._guard(lambda: self._http.get(f"/api/v1/files/{document_id}/{int(version_no)}",
+                                               headers={"Authorization": f"Bearer {token}"}, timeout=self._FILE_TIMEOUT))
+        if r.status_code == 200 and r.headers.get("content-type", "").startswith("application/octet-stream"):
+            return {"status": "accepted", "sha256": r.headers.get("x-content-sha256", "")}, r.content
+        try:
+            return r.json(), None
+        except ValueError:
+            raise ResponseLost()
+
     def ping(self) -> bool:
         try:
             ok = self._http.get("/api/v1/health", timeout=3.0).status_code == 200
@@ -96,6 +141,7 @@ class LoopbackTransport:
         self._svc, self._addr = service, addr
         self.online = True
         self.drop_next_response = False
+        self.corrupt_next_download = False
         self.sent: list[dict] = []
 
     def send(self, request: dict) -> dict:
@@ -108,6 +154,25 @@ class LoopbackTransport:
             self.drop_next_response = False
             raise ResponseLost()
         return resp
+
+    def upload(self, token: str, project_id: str, data: bytes, sha256: str) -> dict:
+        if not self.online:
+            raise Offline()
+        resp = self._svc.put_file(token, project_id, bytes(data), sha256, self._addr)
+        if self.drop_next_response:
+            self.drop_next_response = False
+            raise ResponseLost()
+        return json.loads(json.dumps(resp, ensure_ascii=False))
+
+    def download(self, token: str, document_id: str, version_no: int) -> tuple[dict, Optional[bytes]]:
+        if not self.online:
+            raise Offline()
+        resp, content = self._svc.get_file(token, document_id, version_no, self._addr)
+        if content is not None and self.corrupt_next_download:
+            # Инъекция порчи «в пути» для тестов: клиент обязан заметить несовпадение SHA-256.
+            self.corrupt_next_download = False
+            content = content[:-1] + bytes([content[-1] ^ 0xFF]) if content else b"x"
+        return json.loads(json.dumps(resp, ensure_ascii=False)), content
 
     def ping(self) -> bool:
         return self.online
