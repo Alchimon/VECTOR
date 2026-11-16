@@ -1,0 +1,29 @@
+{
+  "contract": "workflows-slice1-v1",
+  "notes": "Переходы и условия — временные предположения A-02/A-05 (Decision Log). Статус меняется только явной командой.",
+  "tender": {
+    "initial": "draft",
+    "terminal": ["won", "lost", "cancelled"],
+    "transitions": {
+      "draft":         ["in_work", "cancelled"],
+      "in_work":       ["bid_submitted", "cancelled"],
+      "bid_submitted": ["won", "lost", "cancelled"]
+    },
+    "reason_required_for": ["lost", "cancelled"],
+    "labels_ru": {"draft": "Черновик", "in_work": "В работе", "bid_submitted": "Заявка подана (зарегистрировано)", "won": "Выигран", "lost": "Проигран", "cancelled": "Отменён"}
+  },
+  "tkp": {
+    "initial": "draft",
+    "transitions": {
+      "draft":    ["approved"],
+      "approved": ["draft", "sent_recorded"]
+    },
+    "labels_ru": {"draft": "Черновик", "approved": "Согласовано внутри компании", "sent_recorded": "Отправка зарегистрирована (не доказательство получения)"}
+  },
+  "project": {
+    "start_rkd_allowed_from_tender_status": ["won"],
+    "one_project_per_tender": true,
+    "initial": "rkd_in_progress",
+    "labels_ru": {"rkd_in_progress": "Разработка РКД"}
+  }
+}
