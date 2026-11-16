@@ -363,7 +363,14 @@ class RestoreReport:
     problems: list[str]
 
 
-def restore_backup(path: Path, keys: KeySource, target: sa.Engine, batch: int = 500) -> RestoreReport:
+def restore_backup(path: Path, keys: KeySource, target: sa.Engine, batch: int = 500,
+                   batch_bytes: int = 16 * 1024 * 1024) -> RestoreReport:
+    """Восстановить копию в ПУСТУЮ БД и сверить результат с дайджестами копии.
+
+    Строки вставляются пачками: до `batch` строк ИЛИ до ~`batch_bytes` двоичных данных — что наступит раньше.
+    Второе ограничение важно для file_chunks (строка = блок файла до 1 МБ): без него пачка из 500 строк
+    занимала бы ~500 МБ памяти. Остающееся ограничение — расшифровка копии целиком в память (issue #8).
+    """
     vr = verify_backup(path, keys)
     if not vr.ok:
         raise BackupError("Резервная копия не прошла проверку: " + "; ".join(vr.problems))
@@ -379,8 +386,10 @@ def restore_backup(path: Path, keys: KeySource, target: sa.Engine, batch: int = 
         conn.execute(db.schema_meta.insert().values(key="restore_in_progress", value=header["created_at"]))
 
     current, cols, buf, end = None, None, [], None
+    buf_bytes = 0   # объём двоичных значений в текущей пачке (строки/числа не считаем — они малы)
 
     def flush(conn):
+        nonlocal buf_bytes
         if buf:
             t = db.metadata.tables[current]
             if current == "schema_meta":
@@ -395,6 +404,7 @@ def restore_backup(path: Path, keys: KeySource, target: sa.Engine, batch: int = 
                 if ident:
                     conn.exec_driver_sql(f"SET IDENTITY_INSERT {t.name} OFF")
             buf.clear()
+        buf_bytes = 0
 
     with target.begin() as conn:
         for r in recs:
@@ -402,8 +412,10 @@ def restore_backup(path: Path, keys: KeySource, target: sa.Engine, batch: int = 
                 flush(conn)
                 current, cols = r["name"], r["columns"]
             elif r["type"] == "row":
-                buf.append(dict(zip(cols, [_dec(x) for x in r["v"]])))
-                if len(buf) >= batch:
+                vals = [_dec(x) for x in r["v"]]
+                buf.append(dict(zip(cols, vals)))
+                buf_bytes += sum(len(v) for v in vals if isinstance(v, (bytes, bytearray, memoryview)))
+                if len(buf) >= batch or buf_bytes >= batch_bytes:
                     flush(conn)
             elif r["type"] == "end":
                 flush(conn)

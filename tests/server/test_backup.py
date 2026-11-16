@@ -198,3 +198,23 @@ def test_prune_keeps_newest(tmp_path):
     assert (tmp_path / "keep.txt").exists()
     with pytest.raises(bk.BackupError):
         bk.prune_backups(tmp_path, 0)
+
+
+def test_restore_limits_batch_by_bytes(world, tmp_path, keyfile, backend):
+    """Пачка вставки ограничена и по объёму: блоки файлов (до 1 МБ каждый) не копятся сотнями в памяти."""
+    _populate(world)
+    out = tmp_path / "b.vbak"
+    rep = bk.create_backup(world.svc.engine, out, bk.KeySource(key_file=keyfile))
+    target = db.make_engine(make_url(backend, tmp_path))
+    chunk_inserts = []
+
+    @sa.event.listens_for(target, "before_cursor_execute")
+    def _count(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith("INSERT INTO FILE_CHUNKS"):
+            chunk_inserts.append(len(parameters) if executemany else 1)
+
+    # Предел 1 байт: каждый блок файла вставляется отдельной пачкой, хотя по числу строк влез бы в одну.
+    rr = bk.restore_backup(out, bk.KeySource(key_file=keyfile), target, batch=500, batch_bytes=1)
+    assert rr.verified, rr.problems
+    assert rep.counts["file_chunks"] >= 2
+    assert chunk_inserts == [1] * rep.counts["file_chunks"]
