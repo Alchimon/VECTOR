@@ -174,7 +174,7 @@ def test_demo_seed_only_into_fresh_db(setup):
     r = run(["demo-seed", "--config", str(cfg)], env={"VECTOR_ADMIN_PASSWORD": "wrong-wrong-wrong", "VECTOR_DEMO_PASSWORD": DEMO_PWD}, ok=False)
     assert r.returncode == 1 and "Вход администратора не выполнен" in r.stderr
     r = run(["demo-seed", "--config", str(cfg)], env={"VECTOR_ADMIN_PASSWORD": PWD, "VECTOR_DEMO_PASSWORD": "short"}, ok=False)
-    assert r.returncode == 1 and "Демо-пароль не подходит" in r.stderr
+    assert r.returncode == 3 and "Демо-пароль не подходит" in r.stderr and "Traceback" not in r.stderr
     r = run(["demo-seed", "--config", str(cfg)], env={"VECTOR_ADMIN_PASSWORD": PWD, "VECTOR_DEMO_PASSWORD": DEMO_PWD})
     assert "a.smirnova" in r.stdout and "ВЫМЫШЛЕННЫЕ" in r.stdout
     assert DEMO_PWD not in r.stdout + r.stderr and PWD not in r.stdout + r.stderr
@@ -215,3 +215,17 @@ def test_dev_cert_covers_several_names(tmp_path):
     r = run(["dev-cert", "--dir", str(tmp_path / "c"), "--host", "x"], ok=False)
     assert r.returncode == 1 and "уже существуют" in r.stderr and "Traceback" not in r.stderr
     assert {p.name: p.read_bytes() for p in (tmp_path / "c").iterdir()} == before
+
+
+def test_init_checks_password_before_creating_anything(setup):
+    """Слабый пароль администратора: код 3, понятное сообщение, база не создана — init можно повторить."""
+    tmp, cfg, _, _ = setup
+    for weak in ("short", "123456789012"):
+        r = run(["init", "--config", str(cfg)], env={"VECTOR_ADMIN_PASSWORD": weak}, ok=False)
+        assert r.returncode == 3 and "Ничего не создано" in r.stderr and "Traceback" not in r.stderr
+        assert not (tmp / "vector.sqlite").exists() or (tmp / "vector.sqlite").stat().st_size == 0
+    r = run(["init", "--config", str(cfg)], env={"VECTOR_ADMIN_PASSWORD": PWD})
+    assert "администратор «admin» создан" in r.stdout
+    # Повторный init в уже созданную базу — понятный отказ без трассировки.
+    r = run(["init", "--config", str(cfg)], env={"VECTOR_ADMIN_PASSWORD": PWD}, ok=False)
+    assert r.returncode == 1 and "Traceback" not in r.stderr

@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from vector import __version__
+from vector.core.errors import Rejected
 
 from . import backup as bk
 from . import db
@@ -32,17 +33,37 @@ def _keys(args) -> bk.KeySource:
     return bk.KeySource(passphrase=pp or None)
 
 
+# Код возврата «пароль не соответствует политике; ничего не создано» — скрипты стенда по нему спрашивают пароль снова.
+EXIT_WEAK_PASSWORD = 3
+
+
+def _require_good_password(pwd: str, login: str, policy, what: str) -> None:
+    """Проверить пароль по политике ДО любых изменений в БД; при отказе — понятное сообщение и код 3."""
+    from . import security
+    from .validation import _LOGIN_RE
+    if not _LOGIN_RE.match(login):
+        print(f"Ошибка: недопустимый логин «{login}».", file=sys.stderr)
+        raise SystemExit(1)
+    problems = security.password_problems(pwd, login, policy)
+    if problems:
+        print(f"Ошибка: {what} не подходит: {' '.join(problems)} Ничего не создано.", file=sys.stderr)
+        raise SystemExit(EXIT_WEAK_PASSWORD)
+
+
 def cmd_init(args):
     cfg = load_config(Path(args.config))
-    eng = db.make_engine(cfg.db_url)
-    db.create_schema(eng, str(uuid.uuid4()), datetime.now(timezone.utc))
-    from .service import Service
-    svc = Service(eng, sec=cfg.security)
     pwd = os.environ.get("VECTOR_ADMIN_PASSWORD")
     if not pwd:
         pwd = getpass.getpass("Пароль первого администратора: ")
         if pwd != getpass.getpass("Повторите пароль: "):
             raise SystemExit("Пароли не совпадают.")
+    # Сначала пароль, потом схема: раньше слабый пароль обнаруживался после создания схемы — база оставалась
+    # наполовину инициализированной, а повторный init был невозможен.
+    _require_good_password(pwd, args.admin_login, cfg.security, "Пароль администратора")
+    eng = db.make_engine(cfg.db_url)
+    db.create_schema(eng, str(uuid.uuid4()), datetime.now(timezone.utc))
+    from .service import Service
+    svc = Service(eng, sec=cfg.security)
     svc.bootstrap_admin(args.admin_login, pwd)
     print(f"Схема v{db.SCHEMA_VERSION} создана в {cfg.masked_db_url()}; администратор «{args.admin_login}» создан.")
 
@@ -128,7 +149,7 @@ def cmd_demo(args):
     До начала проверяется всё, что можно проверить заранее (база пустая, пароль администратора верный,
     демо-пароль проходит политику), — чтобы не оставить базу заполненной наполовину.
     """
-    from . import demo, security
+    from . import demo
     from .service import Service
     cfg = load_config(Path(args.config))
     svc = Service(db.make_engine(cfg.db_url), sec=cfg.security)
@@ -140,9 +161,7 @@ def cmd_demo(args):
         if demo_pwd != getpass.getpass("Повторите пароль: "):
             raise SystemExit("Пароли не совпадают.")
     for lg, *_ in demo.ACCOUNTS:
-        problems = security.password_problems(demo_pwd, lg, cfg.security)
-        if problems:
-            raise demo.DemoError("Демо-пароль не подходит: " + " ".join(problems))
+        _require_good_password(demo_pwd, lg, cfg.security, "Демо-пароль")
     r = svc.handle({"type": "login", "login": args.admin_login, "password": admin_pwd, "device_id": demo.DEVICE}, demo.DEVICE)
     if r.get("status") != "accepted":
         raise demo.DemoError(f"Вход администратора не выполнен: {r.get('message_ru') or r.get('status')}")
@@ -180,6 +199,9 @@ def main(argv=None):
     args = p.parse_args(argv)
     try:
         args.fn(args)
+    except Rejected as e:
+        print(f"Ошибка: {e.message_ru}", file=sys.stderr)
+        raise SystemExit(1)
     except (ConfigError, bk.BackupError, RuntimeError, ValueError, DemoError, FileExistsError) as e:
         print(f"Ошибка: {e}", file=sys.stderr)
         raise SystemExit(1)
