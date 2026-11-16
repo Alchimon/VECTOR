@@ -218,3 +218,96 @@ def test_restore_limits_batch_by_bytes(world, tmp_path, keyfile, backend):
     assert rr.verified, rr.problems
     assert rep.counts["file_chunks"] >= 2
     assert chunk_inserts == [1] * rep.counts["file_chunks"]
+
+
+@pytest.mark.parametrize("content, expected", [
+    (b"-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n", "не файл ключа"),   # перепутали с сертификатом
+    (b"\xff\xfe\x00binary", "не файл ключа"),
+    (b"c2hvcnQ=", "ожидается 32 байта"),                                                   # base64, но не 32 байта
+])
+def test_bad_key_file_gives_clear_message(tmp_path, content, expected):
+    p = tmp_path / "k.key"
+    p.write_bytes(content)
+    with pytest.raises(bk.BackupError, match=expected):
+        bk.read_key_file(p)
+    with pytest.raises(bk.BackupError, match="не найден"):
+        bk.read_key_file(tmp_path / "missing.key")
+
+
+def test_backup_and_restore_check_read_tables_as_stream(world, tmp_path, keyfile, backend):
+    """Таблицы читаются потоком: на PostgreSQL — именованным серверным курсором (иначе psycopg2 загрузил бы
+    в память всю таблицу file_chunks, т. е. все файлы системы), на остальных СУБД — с yield_per."""
+    _populate(world)
+    seen = []
+
+    def spy(engine):
+        @sa.event.listens_for(engine, "before_cursor_execute")
+        def _s(conn, cursor, statement, parameters, context, executemany):
+            if statement.lstrip().upper().startswith("SELECT") and "FROM FILE_CHUNKS" in statement.upper():
+                seen.append((getattr(cursor, "name", None), context.execution_options.get("yield_per")))
+
+    spy(world.svc.engine)
+    out = tmp_path / "s.vbak"
+    bk.create_backup(world.svc.engine, out, bk.KeySource(key_file=keyfile))
+    target = db.make_engine(make_url(backend, tmp_path))
+    spy(target)
+    assert bk.restore_backup(out, bk.KeySource(key_file=keyfile), target).verified
+    assert len(seen) == 2                               # копирование + сверка после восстановления
+    assert all(yp == 16 for _, yp in seen)
+    if backend == "postgres":
+        assert all(name for name, _ in seen), seen      # серверный курсор psycopg2 всегда именованный
+
+
+def test_backup_is_read_lazily(world, tmp_path, keyfile):
+    """Записи копии читаются по мере потребления: после первой записи прочитана лишь малая часть файла
+    (раньше копия целиком расшифровывалась в память до выдачи первой записи)."""
+    _populate(world)
+    with world.svc.engine.begin() as c:        # ещё ~6 МБ несжимаемых файловых данных, чтобы файл был многоблочным
+        uid = c.execute(sa.select(db.users.c.id)).scalar()
+        sha = "f" * 64
+        c.execute(db.file_blobs.insert().values(sha256=sha, size_bytes=6 * db.FILE_CHUNK, chunk_count=6, uploaded_by=uid,
+                                                uploaded_at=world.clock.now()))
+        c.execute(db.file_chunks.insert(), [{"sha256": sha, "idx": i, "data": os.urandom(db.FILE_CHUNK)} for i in range(6)])
+    out = tmp_path / "big.vbak"
+    bk.create_backup(world.svc.engine, out, bk.KeySource(key_file=keyfile))
+    opened = []
+    real_open = open
+
+    def tracking_open(*a, **kw):
+        f = real_open(*a, **kw)
+        opened.append(f)
+        return f
+    import builtins
+    builtins.open, saved = tracking_open, builtins.open
+    try:
+        header, recs = bk._records(out, bk.KeySource(key_file=keyfile))
+        first = next(recs)
+    finally:
+        builtins.open = saved
+    f = next(x for x in opened if getattr(x, "name", None) == str(out))
+    assert first["type"] == "table"
+    assert f.tell() < out.stat().st_size / 3, (f.tell(), out.stat().st_size)
+    recs.close()                                 # брошенный поток закрывает файл
+    assert f.closed
+
+
+def test_backup_swapped_after_check_does_not_leave_partial_data(world, tmp_path, keyfile, monkeypatch, backend):
+    """Файл обрезан ПОСЛЕ предварительной проверки (подмена между проходами): обрезка обнаруживается
+    в конце потока, транзакция вставки откатывается — полувосстановленных данных не остаётся,
+    а БД остаётся в состоянии «восстановление не завершено» (сервер с ней не запустится)."""
+    _populate(world)
+    out = tmp_path / "a.vbak"
+    bk.create_backup(world.svc.engine, out, bk.KeySource(key_file=keyfile))
+    good = bk.verify_backup(out, bk.KeySource(key_file=keyfile))
+    raw = out.read_bytes()
+    out.write_bytes(raw[:-7])                   # последний блок испорчен — проверка подлинности не пройдёт
+    monkeypatch.setattr(bk, "verify_backup", lambda p, k: good)
+    target = db.make_engine(make_url(backend, tmp_path))
+    with pytest.raises(bk.BackupError):
+        bk.restore_backup(out, bk.KeySource(key_file=keyfile), target)
+    with target.connect() as c:
+        assert c.execute(sa.select(sa.func.count()).select_from(db.users)).scalar() == 0
+        assert c.execute(sa.select(sa.func.count()).select_from(db.file_chunks)).scalar() == 0
+    with pytest.raises(RuntimeError, match="fail-closed"):
+        db.check_schema(target)
+    target.dispose()

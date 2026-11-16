@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import gzip
 import hashlib
 import io
@@ -46,7 +47,55 @@ class BackupError(Exception):
     pass
 
 
+# ---------------------------------------------------------------- потоковое чтение таблиц
+# Сколько строк держать в памяти при чтении таблицы. Для file_chunks строка = блок файла до 1 МБ,
+# поэтому там окно маленькое (~16 МБ); для остальных таблиц строки малы.
+_YIELD_PER = {"file_chunks": 16}
+_YIELD_PER_DEFAULT = 1000
+
+
+def _stream_rows(conn, table: sa.Table):
+    """Все строки таблицы — потоком, а не списком в памяти.
+
+    Без этого psycopg2 (PostgreSQL) по умолчанию загружает ВЕСЬ результат в память клиента: при создании
+    копии это была бы вся таблица file_chunks, т. е. все файлы системы разом. yield_per включает
+    именованный серверный курсор (PostgreSQL); драйверы без серверных курсоров (SQLite, pyodbc для
+    MS SQL) SQLAlchemy использует как обычно — они и так отдают строки по мере чтения.
+    Порядок строк — по первичному ключу (индекс уже есть): содержимое копии детерминировано и не зависит
+    от плана запроса СУБД. Дайджест таблицы (TableDigest) от порядка не зависит в любом случае.
+    """
+    n = _YIELD_PER.get(table.name, _YIELD_PER_DEFAULT)
+    q = sa.select(table).order_by(*table.primary_key.columns).execution_options(yield_per=n)
+    return conn.execute(q)
+
+
 # ---------------------------------------------------------------- ключи
+def read_key_file(path: Path) -> bytes:
+    """Прочитать файл ключа резервных копий (32 случайных байта в base64, одна строка).
+
+    Все сбои превращаются в BackupError с понятным текстом: администратор, восстанавливающий систему
+    после аварии, должен сразу видеть «не тот файл» / «файл повреждён», а не «Incorrect padding».
+    Base64 разбирается строго (validate=True): лишние символы — признак не того файла, а не повод
+    молча отбросить часть содержимого.
+    """
+    try:
+        text = path.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        raise BackupError(f"Файл ключа {path} не найден.")
+    except PermissionError:
+        raise BackupError(f"Нет доступа к файлу ключа {path} (запустите от учётной записи, которой он доступен).")
+    except (UnicodeDecodeError, OSError):
+        raise BackupError(f"{path} — не файл ключа резервных копий ВЕКТОР (ожидается одна строка base64).")
+    try:
+        raw = base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError):
+        raise BackupError(f"{path} — не файл ключа резервных копий ВЕКТОР (ожидается одна строка base64). "
+                          "Возможно, указан другой файл (например, сертификат).")
+    if len(raw) != 32:
+        raise BackupError(f"Файл ключа {path} повреждён: ожидается 32 байта, получено {len(raw)}.")
+    return raw
+
+
 @dataclass(frozen=True)
 class KeySource:
     key_file: Optional[Path] = None
@@ -56,9 +105,7 @@ class KeySource:
         if kdf["kdf"] == "keyfile":
             if not self.key_file:
                 raise BackupError("Копия зашифрована файлом ключа — укажите --key-file.")
-            raw = base64.b64decode(Path(self.key_file).read_text().strip())
-            if len(raw) != 32:
-                raise BackupError("Файл ключа повреждён: ожидается 32 байта в base64.")
+            raw = read_key_file(Path(self.key_file))
             fp = hashlib.sha256(raw).hexdigest()[:16]
             if fp != kdf["key_fingerprint"]:
                 raise BackupError("Файл ключа не подходит к этой резервной копии (отпечаток не совпадает).")
@@ -72,9 +119,7 @@ class KeySource:
 
     def new_kdf(self) -> tuple[dict, bytes]:
         if self.key_file:
-            raw = base64.b64decode(Path(self.key_file).read_text().strip())
-            if len(raw) != 32:
-                raise BackupError("Файл ключа повреждён: ожидается 32 байта в base64.")
+            raw = read_key_file(Path(self.key_file))
             return {"kdf": "keyfile", "key_fingerprint": hashlib.sha256(raw).hexdigest()[:16]}, raw
         if self.passphrase:
             if len(self.passphrase) < 16:
@@ -185,37 +230,71 @@ def read_header(f: IO[bytes]) -> tuple[dict, bytes]:
     return json.loads(hb), hb
 
 
-def _decrypt_stream(f: IO[bytes], keys: KeySource) -> tuple[dict, bytes]:
+def _open_decrypted(f: IO[bytes], keys: KeySource) -> tuple[dict, Iterator[bytes]]:
+    """Заголовок копии и генератор расшифрованных блоков (по ~1 МБ) — без загрузки копии в память.
+
+    * Ключ выводится СРАЗУ (до первого блока): «не тот ключ» сообщается немедленно, а не в конце.
+    * Каждый блок проверяется AES-GCM отдельно; номер блока и признак «последний» входят в AAD,
+      поэтому перестановка, удаление или дублирование блоков обнаруживаются.
+    * Обрезка файла обнаруживается в КОНЦЕ потока (нет блока с признаком «последний»): потребитель
+      обязан дочитать генератор до конца и только тогда считать данные подлинными. verify_backup так
+      и делает, а restore_backup вставляет строки в одной транзакции, которая откатывается при ошибке.
+    """
     header, hb = read_header(f)
     key = keys.derive(header["kdf"])
     aes, prefix, hhash = AESGCM(key), base64.b64decode(header["nonce_prefix"]), hashlib.sha256(hb).digest()
-    out, counter, final_seen = bytearray(), 0, False
-    while True:
-        lb = f.read(4)
-        if not lb:
-            break
-        if final_seen:
-            raise BackupError("После последнего блока есть лишние данные — файл изменён.")
-        (n,) = struct.unpack(">I", lb)
-        if n > CHUNK + 16:
-            raise BackupError("Повреждённый блок.")
-        ct = f.read(n)
-        if len(ct) != n:
-            raise BackupError("Файл обрезан.")
-        nonce = prefix + struct.pack(">I", counter)
-        try:
-            pt = aes.decrypt(nonce, ct, hhash + struct.pack(">QB", counter, 1))
-            final_seen = True
-        except Exception:
+
+    def blocks() -> Iterator[bytes]:
+        counter, final_seen = 0, False
+        while True:
+            lb = f.read(4)
+            if not lb:
+                break
+            if final_seen:
+                raise BackupError("После последнего блока есть лишние данные — файл изменён.")
+            if len(lb) != 4:
+                raise BackupError("Файл обрезан.")
+            (n,) = struct.unpack(">I", lb)
+            if n > CHUNK + 16:
+                raise BackupError("Повреждённый блок.")
+            ct = f.read(n)
+            if len(ct) != n:
+                raise BackupError("Файл обрезан.")
+            nonce = prefix + struct.pack(">I", counter)
             try:
-                pt = aes.decrypt(nonce, ct, hhash + struct.pack(">QB", counter, 0))
+                pt = aes.decrypt(nonce, ct, hhash + struct.pack(">QB", counter, 1))
+                final_seen = True
             except Exception:
-                raise BackupError("Проверка подлинности не пройдена: неверный ключ или файл повреждён/изменён.")
-        out += pt
-        counter += 1
-    if not final_seen:
-        raise BackupError("Нет завершающего блока — файл обрезан.")
-    return header, bytes(out)
+                try:
+                    pt = aes.decrypt(nonce, ct, hhash + struct.pack(">QB", counter, 0))
+                except Exception:
+                    raise BackupError("Проверка подлинности не пройдена: неверный ключ или файл повреждён/изменён.")
+            yield pt
+            counter += 1
+        if not final_seen:
+            raise BackupError("Нет завершающего блока — файл обрезан.")
+    return header, blocks()
+
+
+class _BlockReader(io.RawIOBase):
+    """Файлоподобная обёртка над генератором блоков — чтобы gzip распаковывал поток по частям."""
+
+    def __init__(self, blocks: Iterator[bytes]):
+        self._it, self._buf = blocks, b""
+
+    def readable(self) -> bool:
+        return True
+
+    def readinto(self, b) -> int:
+        while not self._buf:
+            try:
+                self._buf = next(self._it)
+            except StopIteration:
+                return 0
+        n = min(len(b), len(self._buf))
+        b[:n] = self._buf[:n]
+        self._buf = self._buf[n:]
+        return n
 
 
 # ---------------------------------------------------------------- резервное копирование
@@ -260,7 +339,7 @@ def create_backup(engine: sa.Engine, out_path: Path, keys: KeySource) -> BackupR
                     cols = [c.name for c in t.columns]
                     gz.write(_line({"type": "table", "name": name, "columns": cols}))
                     dg, n = TableDigest(), 0
-                    for row in conn.execute(sa.select(t)):
+                    for row in _stream_rows(conn, t):
                         vals = list(row)
                         dg.add(vals)
                         gz.write(_line({"type": "row", "v": [_enc(x) for x in vals]}))
@@ -309,14 +388,30 @@ def _fsync_dir(d: Path) -> None:
 
 # ---------------------------------------------------------------- чтение и проверка
 def _records(path: Path, keys: KeySource) -> tuple[dict, Iterator[dict]]:
-    with open(path, "rb") as f:
-        header, plain = _decrypt_stream(f, keys)
-    data = gzip.decompress(plain)
+    """Заголовок и поток записей копии (таблица / строка / итог) — расшифровка и распаковка на лету.
 
-    def it():
-        for line in data.splitlines():
-            if line:
-                yield json.loads(line)
+    Память не зависит от размера копии: в работе один блок шифра (~1 МБ), буфер gzip и текущая строка
+    (строка file_chunks — до ~1,4 МБ в base64). Файл закрывается, когда поток дочитан или брошен.
+    """
+    f = open(path, "rb")
+    try:
+        header, blocks = _open_decrypted(f, keys)
+    except BaseException:
+        f.close()
+        raise
+
+    def it() -> Iterator[dict]:
+        try:
+            with gzip.GzipFile(fileobj=io.BufferedReader(_BlockReader(blocks), buffer_size=CHUNK), mode="rb") as gz:
+                for line in gz:
+                    if line.strip():
+                        yield json.loads(line)
+        except (OSError, EOFError, ValueError) as e:
+            # gzip/JSON-ошибки внутри подлинного (прошедшего GCM) потока — признак ошибки программы
+            # или несовместимого формата, а не подмены; сообщаем понятным текстом.
+            raise BackupError(f"Содержимое копии не читается: {e}")
+        finally:
+            f.close()
     return header, it()
 
 
@@ -364,12 +459,14 @@ class RestoreReport:
 
 
 def restore_backup(path: Path, keys: KeySource, target: sa.Engine, batch: int = 500,
-                   batch_bytes: int = 16 * 1024 * 1024) -> RestoreReport:
+                   batch_bytes: int = 4 * 1024 * 1024) -> RestoreReport:
     """Восстановить копию в ПУСТУЮ БД и сверить результат с дайджестами копии.
 
     Строки вставляются пачками: до `batch` строк ИЛИ до ~`batch_bytes` двоичных данных — что наступит раньше.
     Второе ограничение важно для file_chunks (строка = блок файла до 1 МБ): без него пачка из 500 строк
-    занимала бы ~500 МБ памяти. Остающееся ограничение — расшифровка копии целиком в память (issue #8).
+    занимала бы ~500 МБ памяти. Почему 4 МБ, а не больше: psycopg2 передаёт bytea текстом с экранированием
+    и делает копии параметров — измерено на 150 МБ файлов: пачка 16 МБ даёт прирост пиковой памяти ~99 МБ,
+    4 МБ — ~12 МБ, 1 МБ — ~7 МБ при практически той же скорости. Копия читается потоком (_records), поэтому память не зависит от её размера.
     """
     vr = verify_backup(path, keys)
     if not vr.ok:
@@ -429,7 +526,7 @@ def restore_backup(path: Path, keys: KeySource, target: sa.Engine, batch: int = 
         for name in header["tables"]:
             t = db.metadata.tables[name]
             dg, n = TableDigest(), 0
-            for row in conn.execute(sa.select(t)):
+            for row in _stream_rows(conn, t):
                 vals = list(row)
                 if name == "schema_meta" and vals[0] == "restore_in_progress":
                     continue
