@@ -22,8 +22,10 @@ from vector.core import money
 
 # История версий схемы (до первой эксплуатации миграций нет: схема создаётся заново, см. D-15/D-20):
 #   v2 — срез 1: заказчики, тендеры, ТКП, проекты, назначения, комплекты, учётные записи, аудит;
-#   v3 — задачи, документы, неизменяемые версии документов, хранилище файлов в БД (блоками).
-SCHEMA_VERSION = 3
+#   v3 — задачи, документы, неизменяемые версии документов, хранилище файлов в БД (блоками);
+#   v4 — расчёт комплекта: черновик, неизменяемые версии K.n, неизменяемые ревизии проектного итога (С3).
+#        Переход v3 → v4 только добавляет таблицы: `vector-server migrate` (migrate.py).
+SCHEMA_VERSION = 4
 
 ID = sa.String(36)
 BIGID = sa.BigInteger().with_variant(sa.Integer(), "sqlite")
@@ -297,6 +299,89 @@ document_versions = sa.Table("document_versions", metadata,
     sa.Column("created_at", UtcDateTime, nullable=False),
     sa.UniqueConstraint("document_id", "version_no", name="uq_document_versions_no"))
 
+# ---------------------------------------------------------------- расчёт комплекта (С3, R-04/R-11/R-12)
+# Правила позиций и итогов — vector.core.calc (общие с клиентом). Количество хранится тем же типом Money:
+# NUMERIC(18,4) / BIGINT в десятитысячных — те же точность и диапазон, без float.
+Qty = Money
+
+# Черновик расчёта: один на комплект, изменяемый («Сохранить расчёт», в том числе офлайн через очередь).
+# Официальный итог проекта от черновика НЕ зависит. version — для обнаружения конфликтов правок.
+calc_drafts = sa.Table("calc_drafts", metadata,
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id"), primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("currency", sa.String(3)),          # NULL — валюта не указана (допустимо, пока нет ни одной цены)
+    sa.Column("note", U(2000)),
+    sa.Column("line_count", sa.Integer, nullable=False),
+    sa.Column("content_hash", sa.String(64), nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
+
+
+def _calc_line_columns() -> list:
+    """Колонки позиции расчёта (одинаковые у черновика и у версии). amount = qty × unit_price, вычисляется сервером."""
+    return [sa.Column("pos", sa.Integer, primary_key=True),
+            sa.Column("line_id", ID, nullable=False),
+            sa.Column("code", U(100)),
+            sa.Column("name", U(300), nullable=False),
+            sa.Column("unit", U(20), nullable=False),
+            sa.Column("qty", Qty, nullable=False),
+            sa.Column("unit_price", Money),       # NULL = цена неизвестна (≠ 0)
+            sa.Column("amount", Money),           # NULL ⇔ unit_price NULL
+            sa.Column("note", U(1000))]
+
+
+calc_draft_lines = sa.Table("calc_draft_lines", metadata,
+    sa.Column("kit_id", ID, sa.ForeignKey("calc_drafts.kit_id"), primary_key=True),
+    *_calc_line_columns(),
+    sa.UniqueConstraint("kit_id", "line_id", name="uq_calc_draft_lines_line"))
+
+# Зафиксированная версия K.n — НЕИЗМЕНЯЕМА (триггеры ниже), как и её позиции. Итоги хранятся вместе
+# с версией: ревизия проектного итога ссылается на точную версию и её hash.
+calc_versions = sa.Table("calc_versions", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id"), nullable=False, index=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("version_no", sa.Integer, nullable=False),
+    sa.Column("currency", sa.String(3)),
+    sa.Column("note", U(2000)),
+    sa.Column("reason", U(2000), nullable=False),
+    sa.Column("total", Money, nullable=False),          # сумма ИЗВЕСТНЫХ позиций
+    sa.Column("line_count", sa.Integer, nullable=False),
+    sa.Column("unknown_price_count", sa.Integer, nullable=False),
+    sa.Column("content_hash", sa.String(64), nullable=False),
+    sa.Column("draft_version", sa.Integer, nullable=False),   # какая версия черновика была зафиксирована
+    sa.Column("frozen_by", ID, nullable=False),
+    sa.Column("frozen_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("kit_id", "version_no", name="uq_calc_versions_no"))
+
+calc_version_lines = sa.Table("calc_version_lines", metadata,
+    sa.Column("version_id", BIGID, sa.ForeignKey("calc_versions.id"), primary_key=True),
+    *_calc_line_columns())
+
+# Ревизия проектного итога P.r — создаётся ТОЛЬКО при фиксации комплекта, неизменяема. Состав = точный
+# список (комплект, версия, hash) последних зафиксированных версий всех комплектов проекта на тот момент.
+project_calc_revisions = sa.Table("project_calc_revisions", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("revision_no", sa.Integer, nullable=False),
+    sa.Column("reason", U(2000), nullable=False),
+    sa.Column("trigger_kit_id", ID, sa.ForeignKey("kits.id"), nullable=False),
+    sa.Column("trigger_version_id", BIGID, sa.ForeignKey("calc_versions.id"), nullable=False),
+    sa.Column("created_by", ID, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("project_id", "revision_no", name="uq_project_calc_revisions_no"))
+
+project_calc_revision_items = sa.Table("project_calc_revision_items", metadata,
+    sa.Column("revision_id", BIGID, sa.ForeignKey("project_calc_revisions.id"), primary_key=True),
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id"), primary_key=True),
+    sa.Column("calc_version_id", BIGID, sa.ForeignKey("calc_versions.id"), nullable=False),
+    sa.Column("version_no", sa.Integer, nullable=False),
+    sa.Column("content_hash", sa.String(64), nullable=False),
+    sa.Column("currency", sa.String(3)),
+    sa.Column("total", Money, nullable=False),
+    sa.Column("unknown_price_count", sa.Integer, nullable=False))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -355,6 +440,32 @@ for ddl in (_PG_DV_FN, _PG_DV_TRG):
 event.listen(document_versions, "after_create", _MS_DV_TRG.execute_if(dialect="mssql"))
 for ddl in (_LITE_DV_U, _LITE_DV_D):
     event.listen(document_versions, "after_create", ddl.execute_if(dialect="sqlite"))
+
+
+
+def _immutable(table: sa.Table, ms_error: int) -> None:
+    """Запретить UPDATE/DELETE строк таблицы на всех СУБД (как у журнала аудита и версий документов).
+
+    Это защита от ошибок программы и случайных правок, а не от администратора СУБД (05-architecture §7).
+    Вставка разрешена — её делают обработчики команд и восстановление из резервной копии.
+    """
+    n = table.name
+    event.listen(table, "after_create", sa.DDL(f"""
+CREATE OR REPLACE FUNCTION vector_{n}_immutable() RETURNS trigger AS $$
+BEGIN RAISE EXCEPTION '{n} are immutable'; END; $$ LANGUAGE plpgsql""").execute_if(dialect="postgresql"))
+    event.listen(table, "after_create", sa.DDL(f"""CREATE TRIGGER {n}_immutable BEFORE UPDATE OR DELETE ON {n}
+FOR EACH ROW EXECUTE FUNCTION vector_{n}_immutable()""").execute_if(dialect="postgresql"))
+    event.listen(table, "after_create", sa.DDL(f"""CREATE TRIGGER {n}_immutable ON {n} INSTEAD OF UPDATE, DELETE AS
+BEGIN THROW {ms_error}, '{n} are immutable', 1; END""").execute_if(dialect="mssql"))
+    for op in ("UPDATE", "DELETE"):
+        event.listen(table, "after_create", sa.DDL(
+            f"CREATE TRIGGER {n}_no_{op.lower()} BEFORE {op} ON {n} BEGIN SELECT RAISE(ABORT, '{n} are immutable'); END"
+        ).execute_if(dialect="sqlite"))
+
+
+for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_calc_revisions, 50005),
+                 (project_calc_revision_items, 50006)):
+    _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):
     event.listen(audit_log, "after_create", ddl.execute_if(dialect="postgresql"))
@@ -425,5 +536,6 @@ def check_schema(engine: Engine) -> int:
     v = meta.get("schema_version")
     if v is None or int(v) != SCHEMA_VERSION:
         raise RuntimeError(f"Версия схемы БД {v} не совпадает с версией приложения {SCHEMA_VERSION}. "
-                           "Запуск остановлен (fail-closed). Нужна процедура миграции с резервной копией.")
+                           "Запуск остановлен (fail-closed). Если БД старее программы — выполните "
+                           "«vector-server migrate --config …» (сначала будет сделана проверенная копия).")
     return int(v)

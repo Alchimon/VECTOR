@@ -1,5 +1,5 @@
 {
-  "contract": "command-catalog-slice1-v3",
+  "contract": "command-catalog-slice1-v4",
   "offline_classes": {
     "offline_full": "Полностью доступно офлайн (чтение локального кэша, локальные черновики без эффекта для других).",
     "queued": "Создаёт локальное изменение в очереди синхронизации. До ответа сервера это НЕ подтверждённое действие; сервер заново проверяет права, состояние и версию.",
@@ -157,6 +157,20 @@
       "object": "document",
       "label_ru": "Добавить версию документа (файл)",
       "requires_expected_version": true
+    },
+    "calc.save_draft": {
+      "offline": "queued",
+      "object": "calc_draft",
+      "label_ru": "Сохранить расчёт комплекта",
+      "requires_expected_version": true,
+      "note": "payload.id = id комплекта (черновик один на комплект). expected_version = версия черновика; 0 — черновика ещё нет. Позиции заменяются целиком; конфликт не сливается (деньги)."
+    },
+    "calc.freeze": {
+      "offline": "online_required",
+      "object": "calc_draft",
+      "label_ru": "Зафиксировать расчёт комплекта",
+      "requires_expected_version": true,
+      "note": "Фиксирует ровно ту версию черновика, которую видел пользователь; создаёт неизменяемую версию K.n и новую ревизию проектного итога в той же транзакции."
     }
   },
   "queries": {

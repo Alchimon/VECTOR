@@ -27,6 +27,7 @@ from vector.core.errors import CommandOutcome, Conflict, Denied, Rejected, Unaut
 
 from . import db, security
 from .authz import Authority, Policy, active_grants, grant_is_active
+from .calc import CalcMixin
 from .work import WorkMixin
 from .db import audit_log, customers, kits, operations, project_assignments, projects, role_grants, sessions, tenders, tkp, tkp_approvals, users
 
@@ -60,8 +61,8 @@ class Ctx:
                                version_before=before, version_after=after, details=details or {}))
 
 
-class Service(WorkMixin):
-    """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py)."""
+class Service(WorkMixin, CalcMixin):
+    """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py)."""
 
     def __init__(self, engine: Engine, contracts: Optional[Contracts] = None, clock=None,
                  sec: Optional[security.SecurityPolicy] = None):
@@ -92,6 +93,8 @@ class Service(WorkMixin):
             "task.create": self._task_create, "task.update": self._task_update, "task.transition": self._task_transition,
             "document.create": self._document_create, "document.update": self._document_update,
             "document.add_version": self._document_add_version,
+            # расчёт комплекта → фиксация → ревизия проектного итога (calc.py)
+            "calc.save_draft": self._calc_save_draft, "calc.freeze": self._calc_freeze,
         }
         diff = set(self.contracts.catalog["commands"]) ^ set(self.handlers)
         if diff:
@@ -848,7 +851,9 @@ class Service(WorkMixin):
                         .order_by(project_assignments.c.id)))
         # Задачи, документы и метаданные версий (без содержимого файлов) — только по читаемым проектам.
         out.update(self._pull_work(conn, readable))
-        if out["tenders"] or out["projects"]:
+        # Расчёты: черновики и версии — по читаемым проектам; ревизии итога — по отдельному праву.
+        out.update(self._pull_calc(conn, uid, now, readable))
+        if out["tenders"] or out["projects"] or out["calc_revisions"]:
             # Минимальный справочник людей (имя для отображения ответственного) — без логинов и контактов.
             out["people"] = [{"id": r["id"], "display_name": r["display_name"]} for r in
                              self._rows(conn, sa.select(users.c.id, users.c.display_name).where(users.c.active == sa.true()))]
@@ -870,13 +875,15 @@ class Service(WorkMixin):
 
     def _history(self, conn, uid, now, otype, oid) -> dict:
         action = {"customer": "customer.read", "tender": "tender.read", "tkp": "tkp.read", "project": "project.read",
-                  "kit": "kit.read", "task": "task.read", "document": "document.read"}.get(otype)
+                  "kit": "kit.read", "task": "task.read", "document": "document.read",
+                  "calc_draft": "calc.read", "project_calc": "calc.read_revisions"}.get(otype)
         if not action or not isinstance(oid, str):
             return {"status": "rejected", "code": "bad_history_request", "message_ru": "Укажите тип и id объекта."}
-        pid = oid if otype == "project" else None
-        if otype in ("kit", "task", "document"):
+        pid = oid if otype in ("project", "project_calc") else None
+        if otype in ("kit", "task", "document", "calc_draft"):
             # Объекты внутри проекта: право чтения определяется ролью в их проекте.
-            table = {"kit": kits, "task": db.tasks, "document": db.documents}[otype]
+            # Черновик расчёта идентифицируется id комплекта (один черновик на комплект).
+            table = {"kit": kits, "task": db.tasks, "document": db.documents, "calc_draft": kits}[otype]
             k = self._get(conn, table, oid)
             pid = k["project_id"] if k else None
         if not self.policy.can(conn, uid, action, now, pid):

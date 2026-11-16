@@ -119,11 +119,13 @@ def only_keys(p: dict, allowed: set[str]) -> None:
 
 
 # Команды вне области эталонного ядра (реализованы и проверены продуктом, src/vector/server):
-#   учётные записи (каталог v2) и задачи/документы с файлами (каталог v3, tests/server/test_tasks_documents.py).
+#   учётные записи (каталог v2), задачи/документы с файлами (каталог v3, tests/server/test_tasks_documents.py),
+#   расчёт комплекта и фиксация (каталог v4, tests/server/test_calc.py).
 OUT_OF_SPIKE_SCOPE = frozenset({
     "account.change_password", "admin.reset_password", "admin.set_user_active",
     "task.create", "task.update", "task.transition",
     "document.create", "document.update", "document.add_version",
+    "calc.save_draft", "calc.freeze",
 })
 
 
