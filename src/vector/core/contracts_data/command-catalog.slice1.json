@@ -1,0 +1,142 @@
+{
+  "contract": "command-catalog-slice1-v2",
+  "offline_classes": {
+    "offline_full": "Полностью доступно офлайн (чтение локального кэша, локальные черновики без эффекта для других).",
+    "queued": "Создаёт локальное изменение в очереди синхронизации. До ответа сервера это НЕ подтверждённое действие; сервер заново проверяет права, состояние и версию.",
+    "online_required": "Требует актуальной проверки сервера в момент эффекта. Офлайн — отказ с объяснением; ничего не ставится в очередь."
+  },
+  "commands": {
+    "customer.create": {
+      "offline": "queued",
+      "object": "customer",
+      "label_ru": "Создать заказчика"
+    },
+    "customer.update": {
+      "offline": "queued",
+      "object": "customer",
+      "label_ru": "Изменить карточку заказчика",
+      "requires_expected_version": true
+    },
+    "tender.create": {
+      "offline": "queued",
+      "object": "tender",
+      "label_ru": "Создать тендер"
+    },
+    "tender.update": {
+      "offline": "queued",
+      "object": "tender",
+      "label_ru": "Изменить тендер",
+      "requires_expected_version": true
+    },
+    "tender.transition": {
+      "offline": "online_required",
+      "object": "tender",
+      "label_ru": "Сменить статус тендера",
+      "requires_expected_version": true
+    },
+    "tkp.create": {
+      "offline": "queued",
+      "object": "tkp",
+      "label_ru": "Создать ТКП (черновик)"
+    },
+    "tkp.update": {
+      "offline": "queued",
+      "object": "tkp",
+      "label_ru": "Изменить черновик ТКП",
+      "requires_expected_version": true
+    },
+    "tkp.approve": {
+      "offline": "online_required",
+      "object": "tkp",
+      "label_ru": "Согласовать ТКП (внутреннее)",
+      "requires_expected_version": true
+    },
+    "tkp.reopen": {
+      "offline": "online_required",
+      "object": "tkp",
+      "label_ru": "Вернуть ТКП в черновик",
+      "requires_expected_version": true
+    },
+    "tkp.record_sent": {
+      "offline": "online_required",
+      "object": "tkp",
+      "label_ru": "Зарегистрировать факт отправки ТКП",
+      "requires_expected_version": true
+    },
+    "project.start_rkd": {
+      "offline": "online_required",
+      "object": "project",
+      "label_ru": "Начать разработку РКД (создать проект)"
+    },
+    "project.assign": {
+      "offline": "online_required",
+      "object": "assignment",
+      "label_ru": "Назначить участника проекта"
+    },
+    "project.revoke_assignment": {
+      "offline": "online_required",
+      "object": "assignment",
+      "label_ru": "Отозвать назначение"
+    },
+    "kit.create": {
+      "offline": "queued",
+      "object": "kit",
+      "label_ru": "Создать комплект"
+    },
+    "kit.update": {
+      "offline": "queued",
+      "object": "kit",
+      "label_ru": "Изменить комплект",
+      "requires_expected_version": true
+    },
+    "admin.create_user": {
+      "offline": "online_required",
+      "object": "user",
+      "label_ru": "Создать учётную запись"
+    },
+    "admin.grant_role": {
+      "offline": "online_required",
+      "object": "role_grant",
+      "label_ru": "Выдать роль доступа"
+    },
+    "admin.revoke_role": {
+      "offline": "online_required",
+      "object": "role_grant",
+      "label_ru": "Отозвать роль доступа"
+    },
+    "admin.revoke_sessions": {
+      "offline": "online_required",
+      "object": "session",
+      "label_ru": "Завершить все сеансы пользователя"
+    },
+    "account.change_password": {
+      "offline": "online_required",
+      "object": "user",
+      "label_ru": "Сменить свой пароль"
+    },
+    "admin.reset_password": {
+      "offline": "online_required",
+      "object": "user",
+      "label_ru": "Сбросить пароль пользователя (временный, со сменой при входе)"
+    },
+    "admin.set_user_active": {
+      "offline": "online_required",
+      "object": "user",
+      "label_ru": "Заблокировать / разблокировать учётную запись"
+    }
+  },
+  "queries": {
+    "pull": {
+      "offline": "offline_full",
+      "label_ru": "Обновить локальный кэш (онлайн); чтение кэша доступно офлайн"
+    },
+    "history": {
+      "offline": "online_required",
+      "label_ru": "История объекта с сервера (офлайн — только локальный журнал очереди)"
+    },
+    "users": {
+      "offline": "online_required",
+      "label_ru": "Список учётных записей и ролей (администратор)"
+    }
+  }
+}

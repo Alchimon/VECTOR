@@ -1,0 +1,364 @@
+{
+  "contract": "permissions-slice1-v2",
+  "notes": [
+    "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
+    "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
+    "Роль доступа ≠ должность ≠ подразделение. Admin НЕ получает бизнес-прав автоматически (принцип минимальных привилегий).",
+    "Каждая выдача роли/назначение — отдельная запись с id (= generation). Отзыв и повторная выдача создают новый id; старые согласования не оживают.",
+    "Условие {\"authenticated\": true} — любой вошедший пользователь, только над собственной учётной записью (проверяется в обработчике)."
+  ],
+  "roles": [
+    "admin",
+    "gip",
+    "rp",
+    "dept_head",
+    "lead_engineer",
+    "engineer",
+    "designer",
+    "technologist",
+    "production",
+    "warehouse",
+    "procurement",
+    "accountant"
+  ],
+  "project_roles": [
+    "gip",
+    "rp",
+    "participant"
+  ],
+  "rules": {
+    "customer.read": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "rp",
+            "dept_head",
+            "lead_engineer",
+            "accountant"
+          ]
+        }
+      ],
+      "assumption": "A-03"
+    },
+    "customer.create": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "rp",
+            "dept_head"
+          ]
+        }
+      ],
+      "assumption": "A-03"
+    },
+    "customer.update": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "rp",
+            "dept_head"
+          ]
+        }
+      ],
+      "assumption": "A-03"
+    },
+    "tender.read": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "rp",
+            "dept_head",
+            "lead_engineer"
+          ]
+        }
+      ],
+      "assumption": "A-03"
+    },
+    "tender.create": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "rp",
+            "dept_head"
+          ]
+        }
+      ],
+      "assumption": "A-03"
+    },
+    "tender.update": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "rp",
+            "dept_head"
+          ]
+        }
+      ],
+      "assumption": "A-03"
+    },
+    "tender.transition": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "rp",
+            "dept_head"
+          ]
+        }
+      ],
+      "assumption": "A-03"
+    },
+    "tkp.read": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "rp",
+            "dept_head",
+            "lead_engineer",
+            "accountant"
+          ]
+        }
+      ],
+      "assumption": "A-03"
+    },
+    "tkp.create": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "rp",
+            "dept_head",
+            "lead_engineer"
+          ]
+        }
+      ],
+      "assumption": "A-03"
+    },
+    "tkp.update": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "rp",
+            "dept_head",
+            "lead_engineer"
+          ]
+        }
+      ],
+      "assumption": "A-03"
+    },
+    "tkp.approve": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "dept_head"
+          ]
+        }
+      ],
+      "assumption": "A-04",
+      "extra": "Автор последней правки не может согласовать сам (разделение обязанностей)."
+    },
+    "tkp.reopen": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "rp",
+            "dept_head"
+          ]
+        }
+      ],
+      "assumption": "A-04"
+    },
+    "tkp.record_sent": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "rp",
+            "dept_head"
+          ]
+        }
+      ],
+      "assumption": "A-04"
+    },
+    "project.start_rkd": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "rp"
+          ]
+        }
+      ],
+      "assumption": "A-05"
+    },
+    "project.read": {
+      "any_of": [
+        {
+          "global_role": [
+            "gip",
+            "rp",
+            "dept_head"
+          ]
+        },
+        {
+          "project_role": [
+            "gip",
+            "rp",
+            "participant"
+          ]
+        }
+      ],
+      "assumption": "A-06"
+    },
+    "project.assign_gip": {
+      "any_of": [
+        {
+          "global_role": [
+            "admin"
+          ]
+        }
+      ],
+      "assumption": "FIXED",
+      "extra": "Зафиксировано промптом: назначение ГИП проекта — только admin."
+    },
+    "project.assign_rp": {
+      "any_of": [
+        {
+          "global_role": [
+            "admin"
+          ]
+        },
+        {
+          "project_role": [
+            "gip"
+          ]
+        }
+      ],
+      "assumption": "A-07"
+    },
+    "project.assign_participant": {
+      "any_of": [
+        {
+          "project_role": [
+            "gip",
+            "rp"
+          ]
+        }
+      ],
+      "assumption": "A-07"
+    },
+    "kit.read": {
+      "same_as": "project.read"
+    },
+    "kit.create": {
+      "any_of": [
+        {
+          "project_role": [
+            "gip",
+            "rp"
+          ]
+        }
+      ],
+      "assumption": "A-08"
+    },
+    "kit.update": {
+      "any_of": [
+        {
+          "project_role": [
+            "gip",
+            "rp"
+          ]
+        }
+      ],
+      "assumption": "A-08"
+    },
+    "admin.create_user": {
+      "any_of": [
+        {
+          "global_role": [
+            "admin"
+          ]
+        }
+      ],
+      "assumption": "A-09"
+    },
+    "admin.grant_role": {
+      "any_of": [
+        {
+          "global_role": [
+            "admin"
+          ]
+        }
+      ],
+      "assumption": "A-09"
+    },
+    "admin.revoke_role": {
+      "any_of": [
+        {
+          "global_role": [
+            "admin"
+          ]
+        }
+      ],
+      "assumption": "A-09"
+    },
+    "admin.revoke_sessions": {
+      "any_of": [
+        {
+          "global_role": [
+            "admin"
+          ]
+        }
+      ],
+      "assumption": "A-09"
+    },
+    "account.change_password": {
+      "any_of": [
+        {
+          "authenticated": true
+        }
+      ],
+      "assumption": "D-16"
+    },
+    "admin.reset_password": {
+      "any_of": [
+        {
+          "global_role": [
+            "admin"
+          ]
+        }
+      ],
+      "assumption": "A-09"
+    },
+    "admin.set_user_active": {
+      "any_of": [
+        {
+          "global_role": [
+            "admin"
+          ]
+        }
+      ],
+      "assumption": "A-09"
+    },
+    "admin.list_users": {
+      "any_of": [
+        {
+          "global_role": [
+            "admin"
+          ]
+        }
+      ],
+      "assumption": "A-09"
+    }
+  }
+}
