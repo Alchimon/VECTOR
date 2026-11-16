@@ -1,29 +1,111 @@
 {
-  "contract": "workflows-slice1-v1",
+  "contract": "workflows-slice1-v2",
   "notes": "Переходы и условия — временные предположения A-02/A-05 (Decision Log). Статус меняется только явной командой.",
   "tender": {
     "initial": "draft",
-    "terminal": ["won", "lost", "cancelled"],
+    "terminal": [
+      "won",
+      "lost",
+      "cancelled"
+    ],
     "transitions": {
-      "draft":         ["in_work", "cancelled"],
-      "in_work":       ["bid_submitted", "cancelled"],
-      "bid_submitted": ["won", "lost", "cancelled"]
+      "draft": [
+        "in_work",
+        "cancelled"
+      ],
+      "in_work": [
+        "bid_submitted",
+        "cancelled"
+      ],
+      "bid_submitted": [
+        "won",
+        "lost",
+        "cancelled"
+      ]
     },
-    "reason_required_for": ["lost", "cancelled"],
-    "labels_ru": {"draft": "Черновик", "in_work": "В работе", "bid_submitted": "Заявка подана (зарегистрировано)", "won": "Выигран", "lost": "Проигран", "cancelled": "Отменён"}
+    "reason_required_for": [
+      "lost",
+      "cancelled"
+    ],
+    "labels_ru": {
+      "draft": "Черновик",
+      "in_work": "В работе",
+      "bid_submitted": "Заявка подана (зарегистрировано)",
+      "won": "Выигран",
+      "lost": "Проигран",
+      "cancelled": "Отменён"
+    }
   },
   "tkp": {
     "initial": "draft",
     "transitions": {
-      "draft":    ["approved"],
-      "approved": ["draft", "sent_recorded"]
+      "draft": [
+        "approved"
+      ],
+      "approved": [
+        "draft",
+        "sent_recorded"
+      ]
     },
-    "labels_ru": {"draft": "Черновик", "approved": "Согласовано внутри компании", "sent_recorded": "Отправка зарегистрирована (не доказательство получения)"}
+    "labels_ru": {
+      "draft": "Черновик",
+      "approved": "Согласовано внутри компании",
+      "sent_recorded": "Отправка зарегистрирована (не доказательство получения)"
+    }
   },
   "project": {
-    "start_rkd_allowed_from_tender_status": ["won"],
+    "start_rkd_allowed_from_tender_status": [
+      "won"
+    ],
     "one_project_per_tender": true,
     "initial": "rkd_in_progress",
-    "labels_ru": {"rkd_in_progress": "Разработка РКД"}
+    "labels_ru": {
+      "rkd_in_progress": "Разработка РКД"
+    }
+  },
+  "task": {
+    "initial": "open",
+    "terminal": [
+      "cancelled"
+    ],
+    "transitions": {
+      "open": [
+        "in_progress",
+        "cancelled"
+      ],
+      "in_progress": [
+        "done",
+        "open",
+        "cancelled"
+      ],
+      "done": [
+        "open"
+      ]
+    },
+    "own_transitions": {
+      "open": [
+        "in_progress"
+      ],
+      "in_progress": [
+        "done",
+        "open"
+      ]
+    },
+    "reason_required_for": [
+      "cancelled",
+      "reopen"
+    ],
+    "labels_ru": {
+      "open": "Открыта",
+      "in_progress": "В работе",
+      "done": "Выполнена",
+      "cancelled": "Отменена"
+    },
+    "assumption": "A-13"
+  },
+  "document": {
+    "code_unique_within": "project",
+    "versions": "Версия документа неизменяема: файл, размер и SHA-256 фиксируются при добавлении; новая правка — новая версия с номером n+1.",
+    "assumption": "A-15"
   }
 }

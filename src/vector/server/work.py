@@ -1,0 +1,399 @@
+"""Задачи и документы проекта (срез 1, завершение цепочки «комплект → задача → документ с версиями»).
+
+Модуль — примесь (mixin) к `Service`: обработчики команд пользуются общей инфраструктурой сервиса
+(транзакция, идемпотентность по operation_id, журнал аудита, проверка версий) и регистрируются в
+`Service.handlers`. Здесь только бизнес-правила задач, документов и файлов.
+
+Главные инварианты (каждый закреплён тестом в tests/server/test_tasks_documents.py):
+
+* Права — только по ролям В ПРОЕКТЕ (A-13, A-14) и проверяются в момент эффекта, в той же транзакции.
+* Задача: статусы open → in_progress → done; отмена и повторное открытие — только ГИП/РП и с причиной.
+  Исполнитель (участник проекта) может двигать СВОЮ задачу по «своим» переходам (workflows: own_transitions).
+* Исполнитель задачи — только пользователь с действующим назначением в этом проекте.
+* Документ: обозначение уникально в проекте; файл хранится в НЕИЗМЕНЯЕМЫХ версиях с SHA-256 и размером.
+  Новая версия — только онлайн (файлы не ставятся в офлайн-очередь и не сливаются при конфликте).
+* Файл можно привязать к версии, только если ЭТОТ пользователь сам загрузил его байты (квитанция file_uploads).
+* При скачивании содержимое пересчитывается и сверяется с SHA-256: повреждённый файл не отдаётся.
+* Каждое изменение, загрузка и скачивание файла записываются в журнал аудита.
+"""
+from __future__ import annotations
+
+import hashlib
+from typing import Any, Optional
+
+import sqlalchemy as sa
+
+from vector.core.errors import Denied, Rejected
+
+from .authz import active_project_roles
+from .db import FILE_CHUNK, document_versions, documents, file_blobs, file_chunks, file_uploads, kits, projects, tasks
+from .validation import iso, only_keys, opt_date, opt_str, req_str, req_uuid
+
+_SHA_RE_LEN = 64
+# Символы, недопустимые в имени файла на Windows, плюс разделители путей: имя файла хранится как
+# метка версии и при скачивании предлагается пользователю — путь из него не должен «выпрыгнуть» из папки.
+_BAD_NAME_CHARS = set('<>:"/\\|?*') | {chr(c) for c in range(32)}
+
+
+def _check_sha256(v: object) -> str:
+    """SHA-256 в виде 64 строчных шестнадцатеричных символов (иначе — отказ с понятным текстом)."""
+    if not isinstance(v, str) or len(v) != _SHA_RE_LEN or any(ch not in "0123456789abcdef" for ch in v):
+        raise Rejected("invalid_sha256", "Контрольная сумма файла должна быть SHA-256 (64 шестнадцатеричных символа).",
+                       {"field": "sha256"})
+    return v
+
+
+def _check_file_name(p: dict) -> str:
+    name = req_str(p, "file_name", 255)
+    if any(ch in _BAD_NAME_CHARS for ch in name) or name in (".", "..") or name.endswith((" ", ".")):
+        raise Rejected("invalid_file_name", "Имя файла содержит недопустимые символы (\\ / : * ? \" < > | или управляющие).",
+                       {"field": "file_name"})
+    return name
+
+
+class WorkMixin:
+    """Обработчики команд task.* и document.*, загрузка/скачивание файлов, представления для pull."""
+
+    # ------------------------------------------------------------ представления (то, что видит клиент)
+    @staticmethod
+    def v_task(o: dict) -> dict:
+        return {"id": o["id"], "project_id": o["project_id"], "kit_id": o["kit_id"], "title": o["title"],
+                "description": o["description"], "assignee_user_id": o["assignee_user_id"],
+                "due_date": o["due_date"].isoformat() if o["due_date"] else None, "document_id": o["document_id"],
+                "status": o["status"], "status_reason": o["status_reason"], "version": o["version"],
+                "updated_at": iso(o["updated_at"])}
+
+    @staticmethod
+    def v_document(o: dict) -> dict:
+        return {"id": o["id"], "project_id": o["project_id"], "kit_id": o["kit_id"], "code": o["code"], "title": o["title"],
+                "current_version_no": o["current_version_no"], "version": o["version"], "updated_at": iso(o["updated_at"])}
+
+    @staticmethod
+    def v_document_version(o: dict) -> dict:
+        return {"id": o["id"], "document_id": o["document_id"], "version_no": o["version_no"], "file_name": o["file_name"],
+                "sha256": o["sha256"], "size_bytes": o["size_bytes"], "comment": o["comment"],
+                "created_by": o["created_by"], "created_at": iso(o["created_at"])}
+
+    # ------------------------------------------------------------ общие проверки
+    def _open_project_of_kit(self, ctx, kit_id: str) -> tuple[dict, dict]:
+        """Комплект и его проект; проект должен быть в работе (как и для комплектов, см. kit.create)."""
+        kit = self._require(ctx.conn, kits, kit_id, "Комплект")
+        pr = self._get(ctx.conn, projects, kit["project_id"])
+        return kit, pr
+
+    @staticmethod
+    def _project_must_be_active(pr: dict) -> None:
+        if pr["status"] != "rkd_in_progress":
+            raise Rejected("project_state", "Изменения возможны только в проекте в статусе «Разработка РКД».")
+
+    def _assignee(self, ctx, project_id: str, value: Any) -> Optional[str]:
+        """Исполнитель: None — «не назначен»; иначе пользователь с ДЕЙСТВУЮЩИМ назначением в проекте.
+
+        Проверяется на сервере в момент эффекта: если назначение отозвали, пока правка лежала в офлайн-очереди,
+        команда будет отклонена, а не «проскочит» со старыми данными.
+        """
+        if value is None:
+            return None
+        uid = req_uuid({"assignee_user_id": value}, "assignee_user_id")
+        if not active_project_roles(ctx.conn, uid, project_id, ctx.now):
+            raise Rejected("assignee_not_in_project", "Исполнителем может быть только участник команды этого проекта.",
+                           {"field": "assignee_user_id"})
+        return uid
+
+    def _task_document(self, ctx, project_id: str, value: Any) -> Optional[str]:
+        """Необязательная ссылка задачи на документ того же проекта (замечание к документу)."""
+        if value is None:
+            return None
+        did = req_uuid({"document_id": value}, "document_id")
+        d = self._get(ctx.conn, documents, did)
+        if d is None or d["project_id"] != project_id:
+            raise Rejected("document_not_in_project", "Документ не найден в этом проекте.", {"field": "document_id"})
+        return did
+
+    # ------------------------------------------------------------ задачи
+    def _task_create(self, ctx, p, ev):
+        only_keys(p, {"id", "kit_id", "title", "description", "assignee_user_id", "due_date", "document_id"})
+        kit, pr = self._open_project_of_kit(ctx, req_uuid(p, "kit_id"))
+        # Права проверяются ДО раскрытия подробностей о состоянии проекта (не подсказываем посторонним).
+        auth = self.policy.check(ctx.conn, ctx.user_id, "task.create", ctx.now, project_id=pr["id"])
+        self._project_must_be_active(pr)
+        tid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, tasks, tid)
+        row = {"id": tid, "project_id": pr["id"], "kit_id": kit["id"], "title": req_str(p, "title", 200),
+               "description": opt_str(p, "description", 8000),
+               "assignee_user_id": self._assignee(ctx, pr["id"], p.get("assignee_user_id")),
+               "due_date": opt_date(p, "due_date"),
+               "document_id": self._task_document(ctx, pr["id"], p.get("document_id")),
+               "status": self.wf["task"]["initial"], "status_reason": None, "version": 1,
+               "created_by": ctx.user_id, "created_at": ctx.now, "updated_by": ctx.user_id, "updated_at": ctx.now}
+        ctx.conn.execute(tasks.insert().values(**row))
+        ctx.log("task", tid, auth, None, 1, {"project_id": pr["id"], "kit_id": kit["id"], "title": row["title"],
+                                             "assignee_user_id": row["assignee_user_id"]})
+        return {"task": self.v_task(self._get(ctx.conn, tasks, tid))}
+
+    def _task_update(self, ctx, p, ev):
+        """Правка полей задачи. Отсутствующий ключ — «не менять», null — «очистить» (для необязательных)."""
+        only_keys(p, {"id", "title", "description", "assignee_user_id", "due_date", "document_id"})
+        o = self._require(ctx.conn, tasks, req_uuid(p, "id"), "Задача")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "task.update", ctx.now, project_id=o["project_id"])
+        self._check_version(o, ev, self.v_task)
+        if o["status"] in ("done", "cancelled"):
+            raise Rejected("task_closed", "Задача закрыта. Чтобы изменить её, сначала откройте задачу повторно.")
+        ch: dict[str, Any] = {}
+        if "title" in p:
+            ch["title"] = req_str(p, "title", 200)
+        if "description" in p:
+            ch["description"] = opt_str(p, "description", 8000)
+        if "assignee_user_id" in p:
+            ch["assignee_user_id"] = self._assignee(ctx, o["project_id"], p["assignee_user_id"])
+        if "due_date" in p:
+            ch["due_date"] = opt_date(p, "due_date")
+        if "document_id" in p:
+            ch["document_id"] = self._task_document(ctx, o["project_id"], p["document_id"])
+        ch = {k: v for k, v in ch.items() if v != o[k]}
+        if not ch:
+            raise Rejected("no_changes", "Нет изменений.")
+        before = {k: o[k] for k in ch}
+        n = self._update_versioned(ctx, tasks, o, {**ch, "updated_by": ctx.user_id, "updated_at": ctx.now})
+        ctx.log("task", o["id"], auth, o["version"], n["version"], {"before": before, "after": ch})
+        return {"task": self.v_task(n)}
+
+    def _task_transition(self, ctx, p, ev):
+        """Смена статуса задачи.
+
+        Два пути полномочий:
+        1) ГИП/РП проекта (task.transition) — любые переходы из workflows.task.transitions;
+        2) исполнитель задачи (task.transition_own) — только «свои» переходы own_transitions
+           (взять в работу, выполнить, вернуть в открытые). Отмена и повторное открытие — не его решение.
+        """
+        only_keys(p, {"id", "to", "reason"})
+        o = self._require(ctx.conn, tasks, req_uuid(p, "id"), "Задача")
+        wf = self.wf["task"]
+        try:
+            auth = self.policy.check(ctx.conn, ctx.user_id, "task.transition", ctx.now, project_id=o["project_id"])
+            allowed = wf["transitions"].get(o["status"], [])
+        except Denied:
+            if o["assignee_user_id"] != ctx.user_id:
+                raise
+            # Исполнитель должен по-прежнему состоять в проекте (назначение могли отозвать).
+            auth = self.policy.check(ctx.conn, ctx.user_id, "task.transition_own", ctx.now, project_id=o["project_id"])
+            allowed = wf["own_transitions"].get(o["status"], [])
+            to = p.get("to")
+            if to not in allowed and to in wf["transitions"].get(o["status"], []):
+                raise Denied("own_transition_not_allowed",
+                             "Этот переход выполняет ГИП или РП проекта (исполнитель может взять задачу в работу, "
+                             "выполнить её или вернуть в открытые).", {"from": o["status"], "to": to})
+        self._check_version(o, ev, self.v_task)
+        to = p.get("to")
+        if to not in allowed:
+            raise Rejected("transition_not_allowed",
+                           f"Переход «{o['status']}» → «{to}» не разрешён. Допустимо: {', '.join(allowed) or 'нет'}.",
+                           {"from": o["status"], "to": to, "allowed": allowed})
+        reason = opt_str(p, "reason", 2000)
+        is_reopen = o["status"] == "done" and to == "open"
+        if (to in wf["reason_required_for"] or (is_reopen and "reopen" in wf["reason_required_for"])) and not reason:
+            raise Rejected("reason_required", "Для этого перехода укажите причину.", {"field": "reason"})
+        n = self._update_versioned(ctx, tasks, o, {"status": to, "status_reason": reason,
+                                                    "updated_by": ctx.user_id, "updated_at": ctx.now})
+        ctx.log("task", o["id"], auth, o["version"], n["version"], {"from": o["status"], "to": to, "reason": reason})
+        return {"task": self.v_task(n)}
+
+    # ------------------------------------------------------------ документы
+    def _document_code_free(self, ctx, project_id: str, code: str) -> None:
+        if ctx.conn.execute(sa.select(documents.c.id).where(documents.c.project_id == project_id,
+                                                            documents.c.code == code)).first():
+            raise Rejected("document_code_taken", "Документ с таким обозначением уже есть в этом проекте.", {"field": "code"})
+
+    def _document_create(self, ctx, p, ev):
+        only_keys(p, {"id", "kit_id", "code", "title"})
+        kit, pr = self._open_project_of_kit(ctx, req_uuid(p, "kit_id"))
+        auth = self.policy.check(ctx.conn, ctx.user_id, "document.create", ctx.now, project_id=pr["id"])
+        self._project_must_be_active(pr)
+        did = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, documents, did)
+        code = req_str(p, "code", 100)
+        self._document_code_free(ctx, pr["id"], code)
+        title = req_str(p, "title", 300)
+        ctx.conn.execute(documents.insert().values(
+            id=did, project_id=pr["id"], kit_id=kit["id"], code=code, title=title, current_version_no=0, version=1,
+            created_by=ctx.user_id, created_at=ctx.now, updated_by=ctx.user_id, updated_at=ctx.now))
+        ctx.log("document", did, auth, None, 1, {"project_id": pr["id"], "kit_id": kit["id"], "code": code})
+        return {"document": self.v_document(self._get(ctx.conn, documents, did))}
+
+    def _document_update(self, ctx, p, ev):
+        """Правка карточки (обозначение, название). Файлы этой командой не меняются — только add_version."""
+        only_keys(p, {"id", "code", "title"})
+        o = self._require(ctx.conn, documents, req_uuid(p, "id"), "Документ")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "document.update", ctx.now, project_id=o["project_id"])
+        self._check_version(o, ev, self.v_document)
+        ch: dict[str, Any] = {}
+        if "code" in p:
+            ch["code"] = req_str(p, "code", 100)
+            if ch["code"] != o["code"]:
+                self._document_code_free(ctx, o["project_id"], ch["code"])
+        if "title" in p:
+            ch["title"] = req_str(p, "title", 300)
+        ch = {k: v for k, v in ch.items() if v != o[k]}
+        if not ch:
+            raise Rejected("no_changes", "Нет изменений.")
+        before = {k: o[k] for k in ch}
+        n = self._update_versioned(ctx, documents, o, {**ch, "updated_by": ctx.user_id, "updated_at": ctx.now})
+        ctx.log("document", o["id"], auth, o["version"], n["version"], {"before": before, "after": ch})
+        return {"document": self.v_document(n)}
+
+    def _document_add_version(self, ctx, p, ev):
+        """Новая неизменяемая версия документа с ранее загруженным файлом.
+
+        expected_version — версия КАРТОЧКИ документа: если коллега успел добавить свою версию, пользователь
+        получит конфликт и сам решит, добавлять ли свой файл поверх (никакого молчаливого «последний победил»).
+        """
+        only_keys(p, {"id", "sha256", "file_name", "comment"})
+        o = self._require(ctx.conn, documents, req_uuid(p, "id"), "Документ")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "document.add_version", ctx.now, project_id=o["project_id"])
+        self._project_must_be_active(self._get(ctx.conn, projects, o["project_id"]))
+        self._check_version(o, ev, self.v_document)
+        sha = _check_sha256(p.get("sha256"))
+        name = _check_file_name(p)
+        blob = self._get(ctx.conn, file_blobs, sha, "sha256")
+        receipt = ctx.conn.execute(sa.select(file_uploads.c.id).where(
+            file_uploads.c.sha256 == sha, file_uploads.c.user_id == ctx.user_id,
+            file_uploads.c.project_id == o["project_id"])).first()
+        if blob is None or receipt is None:
+            # Одинаковый ответ для «файла нет» и «файл есть, но загружен не вами» — не раскрываем,
+            # существует ли в системе файл с таким хэшем.
+            raise Rejected("file_not_uploaded", "Сначала загрузите файл (загрузка выполняется онлайн), затем добавьте версию.",
+                           {"field": "sha256"})
+        no = o["current_version_no"] + 1
+        ctx.conn.execute(document_versions.insert().values(
+            document_id=o["id"], version_no=no, file_name=name, sha256=sha, size_bytes=blob["size_bytes"],
+            comment=opt_str(p, "comment", 2000), created_by=ctx.user_id, created_at=ctx.now))
+        n = self._update_versioned(ctx, documents, o, {"current_version_no": no, "updated_by": ctx.user_id,
+                                                        "updated_at": ctx.now})
+        ver = dict(ctx.conn.execute(sa.select(document_versions).where(
+            document_versions.c.document_id == o["id"], document_versions.c.version_no == no)).one()._mapping)
+        ctx.log("document", o["id"], auth, o["version"], n["version"],
+                {"version_no": no, "file_name": name, "sha256": sha, "size_bytes": blob["size_bytes"]})
+        return {"document": self.v_document(n), "document_version": self.v_document_version(ver)}
+
+    # ------------------------------------------------------------ файлы (вне конвейера команд)
+    def put_file(self, token: Optional[str], project_id: object, data: bytes, claimed_sha256: object,
+                 client_addr: Optional[str] = None) -> dict:
+        """Загрузка содержимого файла. Возвращает SHA-256 и размер; создаёт квитанцию загрузки.
+
+        * Нужно право document.add_version в указанном проекте — иначе посторонний мог бы заполнять БД.
+        * claimed_sha256 считает клиент ДО отправки; сервер пересчитывает. Несовпадение = повреждение в пути.
+        * Повторная загрузка того же содержимого не дублирует данные (дедупликация), но квитанция создаётся.
+        * Операция идемпотентна по содержимому: её безопасно повторять после обрыва связи.
+        """
+        if not isinstance(data, (bytes, bytearray)):
+            return {"status": "rejected", "code": "bad_file", "message_ru": "Нет содержимого файла."}
+        limit = self.sec.max_file_mb * 1024 * 1024
+        if len(data) > limit:
+            return {"status": "rejected", "code": "file_too_large",
+                    "message_ru": f"Файл больше допустимого размера ({self.sec.max_file_mb} МБ)."}
+        try:
+            claimed = _check_sha256(claimed_sha256)
+            pid = req_uuid({"project_id": project_id}, "project_id")
+        except Rejected as e:
+            return {"status": "rejected", "code": e.code, "message_ru": e.message_ru}
+        actual = hashlib.sha256(data).hexdigest()
+        if actual != claimed:
+            return {"status": "rejected", "code": "hash_mismatch",
+                    "message_ru": "Файл повреждён при передаче (контрольная сумма не совпала). Повторите загрузку."}
+
+        def tx(conn):
+            now = self.now()
+            user, device, _ = self._auth(conn, token, now)
+            if self._get(conn, projects, pid) is None or not self.policy.can(conn, user["id"], "document.add_version", now, pid):
+                self._audit(conn, now, user["id"], device, client_addr, None, "file.upload", "project", pid, None, None, None,
+                            "denied", {"sha256": actual, "size_bytes": len(data)})
+                return {"status": "denied", "code": "no_authority",
+                        "message_ru": "Нет права добавлять файлы в документы этого проекта."}
+            dedup = self._get(conn, file_blobs, actual, "sha256") is not None
+            if not dedup:
+                chunks = [bytes(data[i:i + FILE_CHUNK]) for i in range(0, len(data), FILE_CHUNK)] or [b""]
+                conn.execute(file_blobs.insert().values(sha256=actual, size_bytes=len(data), chunk_count=len(chunks),
+                                                        uploaded_by=user["id"], uploaded_at=now))
+                conn.execute(file_chunks.insert(), [{"sha256": actual, "idx": i, "data": c} for i, c in enumerate(chunks)])
+            conn.execute(file_uploads.insert().values(sha256=actual, user_id=user["id"], project_id=pid, uploaded_at=now))
+            self._audit(conn, now, user["id"], device, client_addr, None, "file.upload", "project", pid, None, None, None,
+                        "accepted", {"sha256": actual, "size_bytes": len(data), "deduplicated": dedup})
+            return {"status": "accepted", "sha256": actual, "size_bytes": len(data), "deduplicated": dedup}
+        return self._guarded_tx(tx)
+
+    def get_file(self, token: Optional[str], document_id: object, version_no: object,
+                 client_addr: Optional[str] = None) -> tuple[dict, Optional[bytes]]:
+        """Скачивание файла конкретной версии документа: (ответ, байты или None).
+
+        Права — document.read в проекте документа. Содержимое собирается из блоков и сверяется с SHA-256
+        версии; при расхождении файл НЕ отдаётся (код file_corrupted) и событие пишется в аудит —
+        администратор восстанавливает файл из резервной копии.
+        """
+        try:
+            did = req_uuid({"document_id": document_id}, "document_id")
+            if isinstance(version_no, bool) or not isinstance(version_no, int) or version_no < 1:
+                raise Rejected("bad_version_no", "Номер версии — целое число от 1.")
+        except Rejected as e:
+            return {"status": "rejected", "code": e.code, "message_ru": e.message_ru}, None
+
+        def tx(conn):
+            now = self.now()
+            user, device, _ = self._auth(conn, token, now)
+            d = self._get(conn, documents, did)
+            if d is None or not self.policy.can(conn, user["id"], "document.read", now, d["project_id"]):
+                # Не различаем «нет документа» и «нет доступа» — не раскрываем существование.
+                self._audit(conn, now, user["id"], device, client_addr, None, "file.download", "document", did, None,
+                            None, None, "denied", {"version_no": version_no})
+                return {"status": "denied", "code": "no_authority", "message_ru": "Документ не найден или нет доступа."}, None
+            v = conn.execute(sa.select(document_versions).where(document_versions.c.document_id == did,
+                                                               document_versions.c.version_no == version_no)).first()
+            if v is None:
+                return {"status": "rejected", "code": "version_not_found", "message_ru": "Такой версии документа нет."}, None
+            v = dict(v._mapping)
+            h, parts = hashlib.sha256(), []
+            for row in conn.execute(sa.select(file_chunks.c.data).where(file_chunks.c.sha256 == v["sha256"])
+                                    .order_by(file_chunks.c.idx)):
+                b = bytes(row.data)
+                h.update(b)
+                parts.append(b)
+            content = b"".join(parts)
+            ok = h.hexdigest() == v["sha256"] and len(content) == v["size_bytes"]
+            self._audit(conn, now, user["id"], device, client_addr, None, "file.download", "document", did, None, None, None,
+                        "accepted" if ok else "error", {"version_no": version_no, "sha256": v["sha256"], "intact": ok})
+            if not ok:
+                return {"status": "error", "code": "file_corrupted",
+                        "message_ru": "Файл на сервере повреждён (контрольная сумма не совпала) и не будет выдан. "
+                                      "Сообщите администратору: нужно восстановление из резервной копии."}, None
+            return {"status": "accepted", "file_name": v["file_name"], "sha256": v["sha256"], "size_bytes": v["size_bytes"]}, content
+        return self._guarded_tx(tx, wrap=lambda resp: (resp, None))
+
+    def _guarded_tx(self, fn, wrap=lambda resp: resp):
+        """Транзакция для операций вне конвейера команд (файлы).
+
+        Ошибка входа (сеанс истёк, отозван, нужна смена пароля) превращается в обычный ответ
+        с кодом, а не в исключение; `wrap` приводит его к форме ответа операции
+        (для get_file — пара «ответ, байты=None»).
+        """
+        from vector.core.errors import Unauthenticated
+
+        def wrapped(conn):
+            try:
+                return fn(conn)
+            except Unauthenticated as e:
+                return wrap({"status": e.status, "code": e.code, "message_ru": e.message_ru})
+        return self._tx(wrapped)
+
+    # ------------------------------------------------------------ данные для pull
+    def _pull_work(self, conn, project_ids: list[str]) -> dict:
+        """Задачи, документы и метаданные версий для проектов, которые пользователь уже вправе читать."""
+        if not project_ids:
+            return {"tasks": [], "documents": [], "document_versions": []}
+        t = [self.v_task(dict(r._mapping)) for r in conn.execute(
+            sa.select(tasks).where(tasks.c.project_id.in_(project_ids)).order_by(tasks.c.created_at, tasks.c.id))]
+        d_rows = [dict(r._mapping) for r in conn.execute(
+            sa.select(documents).where(documents.c.project_id.in_(project_ids)).order_by(documents.c.code))]
+        ids = [d["id"] for d in d_rows]
+        v = [self.v_document_version(dict(r._mapping)) for r in conn.execute(
+            sa.select(document_versions).where(document_versions.c.document_id.in_(ids))
+            .order_by(document_versions.c.document_id, document_versions.c.version_no))] if ids else []
+        return {"tasks": t, "documents": [self.v_document(d) for d in d_rows], "document_versions": v}

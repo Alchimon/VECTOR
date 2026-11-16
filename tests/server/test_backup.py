@@ -1,4 +1,5 @@
 """Резервное копирование: шифрование, подлинность, целостность, восстановление со сверкой, переносимость между СУБД."""
+import hashlib
 import os
 import struct
 
@@ -11,6 +12,11 @@ from vector.server import db
 from vector.server.service import Service
 
 PASS = "очень-длинная-фраза-для-копий"
+FILE_CONTENT = bytes(range(256)) * 4500      # ~1.1 МБ: два блока file_chunks, все значения байтов
+
+
+def _document_id(svc, token):
+    return svc.handle({"type": "query", "token": token, "query": "pull"})["result"]["documents"][0]["id"]
 
 
 def _populate(world):
@@ -20,7 +26,14 @@ def _populate(world):
     pid = new_id()
     rp.ok("project.start_rkd", {"id": pid, "tender_id": tender, "code": "P-1", "title": "РКД"})
     world.admin.ok("project.assign", {"project_id": pid, "user_id": world.users["rp1"], "project_role": "rp"})
-    rp.ok("kit.create", {"id": new_id(), "project_id": pid, "code": "АТХ", "title": "Автоматика"})
+    kit, did = new_id(), new_id()
+    rp.ok("kit.create", {"id": kit, "project_id": pid, "code": "АТХ", "title": "Автоматика"})
+    # Документ с файлом больше одного блока хранилища и задача: файлы входят в ту же копию, что и метаданные.
+    rp.ok("document.create", {"id": did, "kit_id": kit, "code": "АТХ-1", "title": "Схема"})
+    up = world.svc.put_file(rp.token, pid, FILE_CONTENT, hashlib.sha256(FILE_CONTENT).hexdigest())
+    assert up["status"] == "accepted", up
+    rp.ok("document.add_version", {"id": did, "sha256": up["sha256"], "file_name": "схема.pdf"}, expected_version=1)
+    rp.ok("task.create", {"id": new_id(), "kit_id": kit, "title": "Проверить схему", "document_id": did})
     return pid
 
 
@@ -50,6 +63,10 @@ def test_roundtrip_same_dbms(world, tmp_path, keyfile, backend, clock):
     assert r["status"] == "accepted"
     pull = svc2.handle({"type": "query", "token": r["token"], "query": "pull"})["result"]
     assert pull["tkp"][0]["amount"] == "1234567.8901"
+    assert len(pull["tasks"]) == 1 and pull["document_versions"][0]["size_bytes"] == len(FILE_CONTENT)
+    # Файл версии документа восстановлен побайтно и проходит проверку SHA-256 при скачивании.
+    resp, content = svc2.get_file(r["token"], _document_id(svc2, r["token"]), 1)
+    assert resp["status"] == "accepted" and content == FILE_CONTENT
     a = svc2.handle({"type": "login", "login": "admin", "password": "correct-horse-battery", "device_id": "d"})
     g = svc2.handle({"type": "command", "token": a["token"], "operation_id": new_id(), "command": "admin.grant_role",
                      "payload": {"user_id": world.users["eng1"], "role": "rp", "reason": "после восстановления"}})
@@ -74,6 +91,11 @@ def test_cross_dbms_restore(tmp_path, keyfile, src, dst):
     rr = bk.restore_backup(out, bk.KeySource(passphrase=PASS), target)
     assert rr.verified, rr.problems
     assert rr.counts == rep.counts
+    # Файл из PostgreSQL (bytea) читается из SQLite (BLOB) и наоборот — побайтно.
+    svc2 = Service(target, clock=clock, sec=world.svc.sec)
+    r = svc2.handle({"type": "login", "login": "rp1", "password": "correct-horse-battery", "device_id": "d"})
+    resp, content = svc2.get_file(r["token"], _document_id(svc2, r["token"]), 1)
+    assert content == FILE_CONTENT, resp
     eng.dispose(); target.dispose()
 
 

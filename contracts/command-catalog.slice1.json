@@ -1,5 +1,5 @@
 {
-  "contract": "command-catalog-slice1-v2",
+  "contract": "command-catalog-slice1-v3",
   "offline_classes": {
     "offline_full": "Полностью доступно офлайн (чтение локального кэша, локальные черновики без эффекта для других).",
     "queued": "Создаёт локальное изменение в очереди синхронизации. До ответа сервера это НЕ подтверждённое действие; сервер заново проверяет права, состояние и версию.",
@@ -123,6 +123,40 @@
       "offline": "online_required",
       "object": "user",
       "label_ru": "Заблокировать / разблокировать учётную запись"
+    },
+    "task.create": {
+      "offline": "queued",
+      "object": "task",
+      "label_ru": "Создать задачу"
+    },
+    "task.update": {
+      "offline": "queued",
+      "object": "task",
+      "label_ru": "Изменить задачу",
+      "requires_expected_version": true
+    },
+    "task.transition": {
+      "offline": "queued",
+      "object": "task",
+      "label_ru": "Сменить статус задачи",
+      "requires_expected_version": true
+    },
+    "document.create": {
+      "offline": "queued",
+      "object": "document",
+      "label_ru": "Создать документ"
+    },
+    "document.update": {
+      "offline": "queued",
+      "object": "document",
+      "label_ru": "Изменить карточку документа",
+      "requires_expected_version": true
+    },
+    "document.add_version": {
+      "offline": "online_required",
+      "object": "document",
+      "label_ru": "Добавить версию документа (файл)",
+      "requires_expected_version": true
     }
   },
   "queries": {
@@ -137,6 +171,10 @@
     "users": {
       "offline": "online_required",
       "label_ru": "Список учётных записей и ролей (администратор)"
+    },
+    "file": {
+      "offline": "online_required",
+      "label_ru": "Скачать файл версии документа (проверка прав и целостности на сервере)"
     }
   }
 }

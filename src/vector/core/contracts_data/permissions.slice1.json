@@ -1,5 +1,5 @@
 {
-  "contract": "permissions-slice1-v2",
+  "contract": "permissions-slice1-v3",
   "notes": [
     "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
     "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -359,6 +359,94 @@
         }
       ],
       "assumption": "A-09"
+    },
+    "task.read": {
+      "same_as": "project.read"
+    },
+    "task.create": {
+      "any_of": [
+        {
+          "project_role": [
+            "gip",
+            "rp"
+          ]
+        }
+      ],
+      "assumption": "A-13"
+    },
+    "task.update": {
+      "any_of": [
+        {
+          "project_role": [
+            "gip",
+            "rp"
+          ]
+        }
+      ],
+      "assumption": "A-13"
+    },
+    "task.transition": {
+      "any_of": [
+        {
+          "project_role": [
+            "gip",
+            "rp"
+          ]
+        }
+      ],
+      "assumption": "A-13"
+    },
+    "task.transition_own": {
+      "any_of": [
+        {
+          "project_role": [
+            "gip",
+            "rp",
+            "participant"
+          ]
+        }
+      ],
+      "assumption": "A-13",
+      "note": "Исполнитель задачи (назначенный участник проекта) двигает СВОЮ задачу: open→in_progress→done. Проверка «исполнитель = я» — в обработчике."
+    },
+    "document.read": {
+      "same_as": "project.read"
+    },
+    "document.create": {
+      "any_of": [
+        {
+          "project_role": [
+            "gip",
+            "rp",
+            "participant"
+          ]
+        }
+      ],
+      "assumption": "A-14"
+    },
+    "document.update": {
+      "any_of": [
+        {
+          "project_role": [
+            "gip",
+            "rp",
+            "participant"
+          ]
+        }
+      ],
+      "assumption": "A-14"
+    },
+    "document.add_version": {
+      "any_of": [
+        {
+          "project_role": [
+            "gip",
+            "rp",
+            "participant"
+          ]
+        }
+      ],
+      "assumption": "A-14"
     }
   }
 }

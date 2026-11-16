@@ -38,6 +38,8 @@ class SecurityPolicy:
     session_idle_minutes: int = 120
     session_absolute_hours: int = 12
     login_rate_per_minute_per_addr: int = 20
+    # Максимальный размер одного файла версии документа (технический предел, A-16; меняется в [security]).
+    max_file_mb: int = 200
 
     def validate(self) -> None:
         if self.password_min_length < 8:
@@ -46,6 +48,8 @@ class SecurityPolicy:
             raise ValueError("Параметры блокировки должны быть положительными")
         if self.session_idle_minutes < 1 or self.session_absolute_hours < 1:
             raise ValueError("Сроки сеанса должны быть положительными")
+        if not 1 <= self.max_file_mb <= 2048:
+            raise ValueError("max_file_mb: допустимо от 1 до 2048 МБ")
 
 
 def configure_hasher_for_tests() -> None:

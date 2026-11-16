@@ -20,7 +20,10 @@ from sqlalchemy.types import TypeDecorator
 
 from vector.core import money
 
-SCHEMA_VERSION = 2
+# История версий схемы (до первой эксплуатации миграций нет: схема создаётся заново, см. D-15/D-20):
+#   v2 — срез 1: заказчики, тендеры, ТКП, проекты, назначения, комплекты, учётные записи, аудит;
+#   v3 — задачи, документы, неизменяемые версии документов, хранилище файлов в БД (блоками).
+SCHEMA_VERSION = 3
 
 ID = sa.String(36)
 BIGID = sa.BigInteger().with_variant(sa.Integer(), "sqlite")
@@ -214,6 +217,86 @@ kits = sa.Table("kits", metadata,
     sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
     sa.UniqueConstraint("project_id", "code", name="uq_kits_project_code"))
 
+# ---------------------------------------------------------------- задачи (A-13)
+# Задача живёт внутри комплекта проекта. project_id хранится явно (денормализация), чтобы права
+# «роль в проекте» проверялись без лишних соединений и чтобы pull отбирал задачи по проекту одним запросом.
+tasks = sa.Table("tasks", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id"), nullable=False, index=True),
+    sa.Column("title", U(200), nullable=False),
+    sa.Column("description", T),
+    # Исполнитель — пользователь с действующим назначением в этом проекте (проверяется в обработчике).
+    # NULL = «исполнитель не назначен» (это не то же самое, что «назначен на всех»).
+    sa.Column("assignee_user_id", ID, sa.ForeignKey("users.id")),
+    sa.Column("due_date", sa.Date),          # срок не подставляется по умолчанию — только если его ввели
+    # Необязательная ссылка на документ, к которому относится задача/замечание.
+    sa.Column("document_id", ID, sa.ForeignKey("documents.id")),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("status_reason", U(2000)),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("status IN ('open','in_progress','done','cancelled')", name="status"))
+
+# ---------------------------------------------------------------- документы (A-14, A-15)
+# Карточка документа: обозначение (code) уникально в пределах проекта, название, принадлежность комплекту.
+# Файлы хранятся в неизменяемых версиях (document_versions); current_version_no — номер последней версии
+# (0 — у документа ещё нет файла: «пусто» ≠ «ошибка»).
+documents = sa.Table("documents", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id"), nullable=False, index=True),
+    sa.Column("code", U(100), nullable=False),
+    sa.Column("title", U(300), nullable=False),
+    sa.Column("current_version_no", sa.Integer, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),          # версия КАРТОЧКИ (для обнаружения конфликтов)
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("project_id", "code", name="uq_documents_project_code"))
+
+# Хранилище файлов (D-20): содержимое адресуется SHA-256 и хранится в БД блоками по FILE_CHUNK байт.
+# Плюсы: одна транзакционная система, файлы входят в ту же резервную копию и восстанавливаются согласованно
+# с метаданными на PostgreSQL / MS SQL. Одинаковый файл хранится один раз (дедупликация по хэшу).
+FILE_CHUNK = 1024 * 1024
+file_blobs = sa.Table("file_blobs", metadata,
+    sa.Column("sha256", sa.String(64), primary_key=True),
+    sa.Column("size_bytes", sa.BigInteger, nullable=False),
+    sa.Column("chunk_count", sa.Integer, nullable=False),
+    sa.Column("uploaded_by", ID, nullable=False),
+    sa.Column("uploaded_at", UtcDateTime, nullable=False))
+
+file_chunks = sa.Table("file_chunks", metadata,
+    sa.Column("sha256", sa.String(64), sa.ForeignKey("file_blobs.sha256"), primary_key=True),
+    sa.Column("idx", sa.Integer, primary_key=True),
+    # LargeBinary → bytea (PostgreSQL), VARBINARY(MAX) (MS SQL), BLOB (SQLite).
+    sa.Column("data", sa.LargeBinary, nullable=False))
+
+# Квитанция загрузки: «пользователь U прислал байты файла с хэшем H в рамках проекта P».
+# Зачем: файлы дедуплицируются по SHA-256, и без квитанции любой, кто УЗНАЛ хэш (например, видел его
+# в метаданных чужого проекта), мог бы сослаться на этот файл в своём документе и скачать его.
+# Добавить версию документа можно только с файлом, который ты сам загрузил (доказал владение байтами).
+file_uploads = sa.Table("file_uploads", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("sha256", sa.String(64), sa.ForeignKey("file_blobs.sha256"), nullable=False, index=True),
+    sa.Column("user_id", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False),
+    sa.Column("uploaded_at", UtcDateTime, nullable=False))
+
+# Версия документа НЕИЗМЕНЯЕМА: после вставки строка не обновляется и не удаляется (как и аудит —
+# триггеры ниже). Исправление = новая версия с номером n+1; история сохраняется полностью.
+document_versions = sa.Table("document_versions", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("document_id", ID, sa.ForeignKey("documents.id"), nullable=False, index=True),
+    sa.Column("version_no", sa.Integer, nullable=False),
+    sa.Column("file_name", U(255), nullable=False),
+    sa.Column("sha256", sa.String(64), sa.ForeignKey("file_blobs.sha256"), nullable=False),
+    sa.Column("size_bytes", sa.BigInteger, nullable=False),
+    sa.Column("comment", U(2000)),
+    sa.Column("created_by", ID, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("document_id", "version_no", name="uq_document_versions_no"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -256,6 +339,22 @@ _MS_TRG = sa.DDL("""CREATE TRIGGER audit_append_only ON audit_log INSTEAD OF UPD
 BEGIN THROW 50001, 'audit_log is append-only', 1; END""")
 _LITE_U = sa.DDL("CREATE TRIGGER audit_no_update BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END")
 _LITE_D = sa.DDL("CREATE TRIGGER audit_no_delete BEFORE DELETE ON audit_log BEGIN SELECT RAISE(ABORT, 'audit_log is append-only'); END")
+
+# Неизменяемость версий документов — тем же способом, что и журнал аудита.
+_PG_DV_FN = sa.DDL("""
+CREATE OR REPLACE FUNCTION vector_document_versions_immutable() RETURNS trigger AS $$
+BEGIN RAISE EXCEPTION 'document_versions are immutable'; END; $$ LANGUAGE plpgsql""")
+_PG_DV_TRG = sa.DDL("""CREATE TRIGGER document_versions_immutable BEFORE UPDATE OR DELETE ON document_versions
+FOR EACH ROW EXECUTE FUNCTION vector_document_versions_immutable()""")
+_MS_DV_TRG = sa.DDL("""CREATE TRIGGER document_versions_immutable ON document_versions INSTEAD OF UPDATE, DELETE AS
+BEGIN THROW 50002, 'document_versions are immutable', 1; END""")
+_LITE_DV_U = sa.DDL("CREATE TRIGGER document_versions_no_update BEFORE UPDATE ON document_versions BEGIN SELECT RAISE(ABORT, 'document_versions are immutable'); END")
+_LITE_DV_D = sa.DDL("CREATE TRIGGER document_versions_no_delete BEFORE DELETE ON document_versions BEGIN SELECT RAISE(ABORT, 'document_versions are immutable'); END")
+for ddl in (_PG_DV_FN, _PG_DV_TRG):
+    event.listen(document_versions, "after_create", ddl.execute_if(dialect="postgresql"))
+event.listen(document_versions, "after_create", _MS_DV_TRG.execute_if(dialect="mssql"))
+for ddl in (_LITE_DV_U, _LITE_DV_D):
+    event.listen(document_versions, "after_create", ddl.execute_if(dialect="sqlite"))
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):
     event.listen(audit_log, "after_create", ddl.execute_if(dialect="postgresql"))

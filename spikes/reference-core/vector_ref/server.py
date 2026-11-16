@@ -118,7 +118,13 @@ def only_keys(p: dict, allowed: set[str]) -> None:
         raise Rejected("unknown_fields", "Неизвестные поля: " + ", ".join(sorted(extra)), {"fields": sorted(extra)})
 
 
-OUT_OF_SPIKE_SCOPE = frozenset({"account.change_password", "admin.reset_password", "admin.set_user_active"})
+# Команды вне области эталонного ядра (реализованы и проверены продуктом, src/vector/server):
+#   учётные записи (каталог v2) и задачи/документы с файлами (каталог v3, tests/server/test_tasks_documents.py).
+OUT_OF_SPIKE_SCOPE = frozenset({
+    "account.change_password", "admin.reset_password", "admin.set_user_active",
+    "task.create", "task.update", "task.transition",
+    "document.create", "document.update", "document.add_version",
+})
 
 
 class Server:

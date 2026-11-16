@@ -74,3 +74,31 @@ def test_internal_error_hides_details(http, world):
     r = http.post("/api/v1/command", headers=h, json={"operation_id": new_id(), "command": "customer.create", "payload": {"id": new_id(), "name": "X"}})
     assert r.status_code == 500
     assert "Traceback" not in r.text and "injected" not in r.text
+
+
+def test_file_upload_and_download_over_http(http, world):
+    """Файлы по HTTP: сырые байты, SHA-256 в заголовке в обе стороны, кириллица в имени, отказ при порче в пути."""
+    import hashlib
+    from urllib.parse import quote
+    rp = world.login("rp1")
+    _, tender, _ = world.won_tender(rp)
+    pid, kit, did = new_id(), new_id(), new_id()
+    rp.ok("project.start_rkd", {"id": pid, "tender_id": tender, "code": "П-1", "title": "П"})
+    world.admin.ok("project.assign", {"project_id": pid, "user_id": world.users["rp1"], "project_role": "rp", "reason": "Приказ"})
+    rp.ok("kit.create", {"id": kit, "project_id": pid, "code": "К", "title": "К"})
+    rp.ok("document.create", {"id": did, "kit_id": kit, "code": "К-1", "title": "Документ"})
+    h = _login(http)
+    data = "Чертёж\n".encode() * 1000
+    sha = hashlib.sha256(data).hexdigest()
+    bad = http.post(f"/api/v1/files?project_id={pid}", content=data, headers={**h, "X-Content-SHA256": "0" * 64})
+    assert bad.status_code == 422 and bad.json()["code"] == "hash_mismatch"
+    up = http.post(f"/api/v1/files?project_id={pid}", content=data, headers={**h, "X-Content-SHA256": sha})
+    assert up.status_code == 200 and up.json()["sha256"] == sha
+    rp.ok("document.add_version", {"id": did, "sha256": sha, "file_name": "Схема К-1.dwg"}, expected_version=1)
+    r = http.get(f"/api/v1/files/{did}/1", headers=h)
+    assert r.status_code == 200 and r.content == data
+    assert r.headers["x-content-sha256"] == sha and r.headers["cache-control"] == "no-store"
+    assert quote("Схема К-1.dwg") in r.headers["content-disposition"]
+    assert http.get(f"/api/v1/files/{did}/1").status_code == 401           # без токена
+    assert http.get(f"/api/v1/files/{did}/9", headers=h).status_code == 422
+    assert http.get(f"/api/v1/files/{did}/abc", headers=h).status_code == 422

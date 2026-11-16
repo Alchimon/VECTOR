@@ -27,14 +27,11 @@ from vector.core.errors import CommandOutcome, Conflict, Denied, Rejected, Unaut
 
 from . import db, security
 from .authz import Authority, Policy, active_grants, grant_is_active
+from .work import WorkMixin
 from .db import audit_log, customers, kits, operations, project_assignments, projects, role_grants, sessions, tenders, tkp, tkp_approvals, users
 
 log = logging.getLogger("vector.server")
 
-_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-_CUR_RE = re.compile(r"^[A-Z]{3}$")
-_INN_RE = re.compile(r"^(\d{10}|\d{12})$")
-_LOGIN_RE = re.compile(r"^[A-Za-z0-9._-]{3,64}$")
 MAX_ATTEMPTS = 6
 
 
@@ -43,89 +40,10 @@ class SystemClock:
         return datetime.now(timezone.utc)
 
 
-def canon(obj: Any) -> str:
-    return json.dumps(obj, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=_json_default)
-
-
-def _json_default(o):
-    if isinstance(o, datetime):
-        return o.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-    if isinstance(o, date):
-        return o.isoformat()
-    if isinstance(o, Decimal):
-        return money.to_json(o)
-    raise TypeError(type(o))
-
-
-def iso(dt: Optional[datetime]) -> Optional[str]:
-    return None if dt is None else _json_default(dt)
-
-
-def parse_iso_utc(v: object, field: str) -> datetime:
-    if not isinstance(v, str):
-        raise Rejected("invalid_datetime", f"Поле «{field}»: ожидается время ISO-8601 в UTC.", {"field": field})
-    try:
-        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
-    except ValueError:
-        raise Rejected("invalid_datetime", f"Поле «{field}»: неверный формат времени.", {"field": field})
-    if dt.tzinfo is None:
-        raise Rejected("invalid_datetime", f"Поле «{field}»: укажите часовой пояс (UTC).", {"field": field})
-    return dt.astimezone(timezone.utc)
-
-
-# ---------------------------------------------------------------- валидация полей
-def req_str(p: dict, key: str, max_len: int = 200) -> str:
-    v = p.get(key)
-    if not isinstance(v, str) or not v.strip():
-        raise Rejected("field_required", f"Поле «{key}» обязательно.", {"field": key})
-    if len(v) > max_len:
-        raise Rejected("field_too_long", f"Поле «{key}» длиннее {max_len} символов.", {"field": key})
-    return v.strip()
-
-
-def opt_str(p: dict, key: str, max_len: int = 4000) -> Optional[str]:
-    v = p.get(key)
-    if v is None:
-        return None
-    if not isinstance(v, str):
-        raise Rejected("field_type", f"Поле «{key}» должно быть строкой.", {"field": key})
-    if len(v) > max_len:
-        raise Rejected("field_too_long", f"Поле «{key}» длиннее {max_len} символов.", {"field": key})
-    return v.strip() or None
-
-
-def req_uuid(p: dict, key: str) -> str:
-    v = p.get(key)
-    if not isinstance(v, str) or not _UUID_RE.match(v):
-        raise Rejected("invalid_id", f"Поле «{key}» должно быть UUID в нижнем регистре.", {"field": key})
-    return v
-
-
-def opt_date(p: dict, key: str) -> Optional[date]:
-    v = p.get(key)
-    if v is None:
-        return None
-    try:
-        if not isinstance(v, str) or len(v) != 10:
-            raise ValueError
-        return date.fromisoformat(v)
-    except ValueError:
-        raise Rejected("invalid_date", f"Поле «{key}»: ожидается существующая дата ГГГГ-ММ-ДД.", {"field": key})
-
-
-def opt_int(p: dict, key: str) -> Optional[int]:
-    v = p.get(key)
-    if v is None:
-        return None
-    if isinstance(v, bool) or not isinstance(v, int):
-        raise Rejected("field_type", f"Поле «{key}» должно быть целым числом.", {"field": key})
-    return v
-
-
-def only_keys(p: dict, allowed: set[str]) -> None:
-    extra = set(p) - allowed
-    if extra:
-        raise Rejected("unknown_fields", "Неизвестные поля: " + ", ".join(sorted(extra)), {"fields": sorted(extra)})
+# Валидаторы и сериализация вынесены в validation.py (используются и модулем задач/документов);
+# импортируются сюда под прежними именами, чтобы не менять существующий код и тесты.
+from .validation import (_CUR_RE, _INN_RE, _LOGIN_RE, _UUID_RE, _json_default, canon, iso, only_keys,  # noqa: E402,F401
+                         opt_date, opt_int, opt_str, parse_iso_utc, req_str, req_uuid)
 
 
 class Ctx:
@@ -142,7 +60,9 @@ class Ctx:
                                version_before=before, version_after=after, details=details or {}))
 
 
-class Service:
+class Service(WorkMixin):
+    """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py)."""
+
     def __init__(self, engine: Engine, contracts: Optional[Contracts] = None, clock=None,
                  sec: Optional[security.SecurityPolicy] = None):
         self.engine = engine
@@ -168,6 +88,10 @@ class Service:
             "admin.create_user": self._admin_create_user, "admin.grant_role": self._admin_grant_role,
             "admin.revoke_role": self._admin_revoke_role, "admin.revoke_sessions": self._admin_revoke_sessions,
             "admin.reset_password": self._admin_reset_password, "admin.set_user_active": self._admin_set_user_active,
+            # задачи и документы (work.py)
+            "task.create": self._task_create, "task.update": self._task_update, "task.transition": self._task_transition,
+            "document.create": self._document_create, "document.update": self._document_update,
+            "document.add_version": self._document_add_version,
         }
         diff = set(self.contracts.catalog["commands"]) ^ set(self.handlers)
         if diff:
@@ -906,8 +830,10 @@ class Service:
             out["tenders"] = [self.v_tender(o) for o in self._rows(conn, sa.select(tenders).order_by(tenders.c.created_at))]
         if can("tkp.read"):
             out["tkp"] = [self.v_tkp(o) for o in self._rows(conn, sa.select(tkp).order_by(tkp.c.created_at))]
+        readable: list[str] = []
         for pr in self._rows(conn, sa.select(projects).order_by(projects.c.code)):
             if can("project.read", pr["id"]):
+                readable.append(pr["id"])
                 out["projects"].append(self.v_project(pr))
                 out["kits"].extend(self.v_kit(k) for k in self._rows(conn, sa.select(kits).where(kits.c.project_id == pr["id"]).order_by(kits.c.code)))
                 out["assignments"].extend(
@@ -917,6 +843,8 @@ class Service:
                         project_assignments.c.project_id == pr["id"], project_assignments.c.revoked_at.is_(None),
                         sa.or_(project_assignments.c.valid_until.is_(None), project_assignments.c.valid_until > now))
                         .order_by(project_assignments.c.id)))
+        # Задачи, документы и метаданные версий (без содержимого файлов) — только по читаемым проектам.
+        out.update(self._pull_work(conn, readable))
         if out["tenders"] or out["projects"]:
             # Минимальный справочник людей (имя для отображения ответственного) — без логинов и контактов.
             out["people"] = [{"id": r["id"], "display_name": r["display_name"]} for r in
@@ -938,12 +866,15 @@ class Service:
         return out
 
     def _history(self, conn, uid, now, otype, oid) -> dict:
-        action = {"customer": "customer.read", "tender": "tender.read", "tkp": "tkp.read", "project": "project.read", "kit": "kit.read"}.get(otype)
+        action = {"customer": "customer.read", "tender": "tender.read", "tkp": "tkp.read", "project": "project.read",
+                  "kit": "kit.read", "task": "task.read", "document": "document.read"}.get(otype)
         if not action or not isinstance(oid, str):
             return {"status": "rejected", "code": "bad_history_request", "message_ru": "Укажите тип и id объекта."}
         pid = oid if otype == "project" else None
-        if otype == "kit":
-            k = self._get(conn, kits, oid)
+        if otype in ("kit", "task", "document"):
+            # Объекты внутри проекта: право чтения определяется ролью в их проекте.
+            table = {"kit": kits, "task": db.tasks, "document": db.documents}[otype]
+            k = self._get(conn, table, oid)
             pid = k["project_id"] if k else None
         if not self.policy.can(conn, uid, action, now, pid):
             return {"status": "denied", "code": "no_authority", "message_ru": "Нет права на просмотр истории этого объекта."}
