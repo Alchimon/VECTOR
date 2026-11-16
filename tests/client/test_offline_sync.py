@@ -408,6 +408,42 @@ def test_interrupted_download_leaves_nothing(world, team, tmp_path):
     assert dest.read_bytes() == b"old file stays" and not list(tmp_path.glob("*.vector-partial"))
 
 
+def test_lost_replies_in_file_flow_lose_nothing_and_duplicate_nothing(world, team, tmp_path):
+    """Надёжность без потерь: ответ потерян на загрузке И на создании версии → повторы дают ровно одну версию,
+    одно содержимое в хранилище, и скачанные байты совпадают с исходными."""
+    pid, kit, rp, eng = team
+    did = new_id()
+    eng.execute("document.create", {"id": did, "kit_id": kit, "code": "АТХ-6", "title": "Схема"})
+    src = tmp_path / "АТХ-6.dwg"
+    data = bytes(range(251)) * 9000                       # ~2.2 МБ, несколько блоков
+    src.write_bytes(data)
+    # 1) Сервер принял файл, но ответ на загрузку потерян.
+    eng.t.drop_next_response = True
+    r = eng.add_document_version(did, src, src.name, None, expected_version=1)
+    assert r.status == "unknown_outcome" and "безопасна" in r.message_ru
+    # 2) Повтор: загрузка дедуплицируется, но ответ на создание версии снова потерян.
+    orig_send = eng.t.send
+
+    def drop_add_version(request):
+        if request.get("command") == "document.add_version":
+            eng.t.send = orig_send
+            eng.t.drop_next_response = True
+        return orig_send(request)
+    eng.t.send = drop_add_version
+    r = eng.add_document_version(did, src, src.name, None, expected_version=1)
+    assert r.status == "unknown_outcome" and r.operation_id
+    # 3) Повтор той же операции (тот же operation_id): сервер возвращает сохранённый исход, не создаёт вторую версию.
+    r2 = eng.retry_online(r.operation_id)
+    assert r2.status == "accepted" and r2.response.get("replayed")
+    with world.svc.engine.connect() as c:
+        assert c.execute(sa.select(sa.func.count()).select_from(db.document_versions)).scalar() == 1
+        assert c.execute(sa.select(sa.func.count()).select_from(db.file_blobs)).scalar() == 1
+    assert count(world, "audit_log", db.audit_log.c.command == "document.add_version") == 1
+    rp.pull()
+    dest = tmp_path / "скачано.dwg"
+    assert rp.download_document_version(did, 1, dest).status == "accepted" and dest.read_bytes() == data
+
+
 def test_concurrent_version_is_conflict_on_client(world, team):
     pid, kit, rp, eng = team
     did = new_id()

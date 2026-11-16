@@ -470,6 +470,7 @@ class SyncClient:
                 os.fsync(f.fileno())
             os.replace(tmp, dest)
             saved = True
+            _fsync_dir(dest.parent)
         except OSError as e:
             return LocalResult("error", message_ru=f"Не удалось записать файл на диск: {e.strerror or e}.")
         finally:
@@ -639,3 +640,23 @@ class _HashingWriter:
 
     def hexdigest(self) -> str:
         return self._h.hexdigest()
+
+
+def _fsync_dir(path: Path) -> None:
+    """Сбросить на диск запись каталога после переименования (POSIX), чтобы сохранение пережило отключение питания.
+
+    На Windows каталог так открыть нельзя, а NTFS журналирует метаданные сама — там это пропускается.
+    Ошибка здесь не делает файл недействительным (он уже проверен и на месте), поэтому она не поднимается.
+    """
+    if os.name != "posix":
+        return
+    try:
+        fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
