@@ -211,6 +211,14 @@ def test_demo_seed_only_into_fresh_db(setup):
     buyer = svc.handle({"type": "login", "login": "s.morozov", "password": DEMO_PWD, "device_id": "t"}, "t")
     needs = svc.handle({"type": "query", "token": buyer["token"], "query": "pull"}, "t")["result"]["needs"]
     assert [(x["kit_code"], x["calc_version_no"], x["matched_count"]) for x in needs] == [("АТХ", 1, 2)]
+    # Заказы поставщикам (D-32): № 1 ждём (под строку ШУ-1 — видно в потребности), № 2 поставлен частично,
+    # № 3 черновик без валюты, № 4 отменён. Склад видит заказы без цен.
+    bp = svc.handle({"type": "query", "token": buyer["token"], "query": "pull"}, "t")["result"]
+    assert [(o["order_no"], o["status"], o["delivery"]) for o in sorted(bp["purchase_orders"], key=lambda o: o["order_no"])] == \
+        [(1, "placed", "none"), (2, "placed", "partial"), (3, "draft", None), (4, "cancelled", None)]
+    assert len(bp["suppliers"]) == 3
+    assert next(ln_["on_order"] for ln_ in needs[0]["lines"] if ln_["code"] == "ШУ-1") == "1.0000"
+    assert all(o["total"] is None for o in sp["purchase_orders"]) and len(sp["purchase_orders"]) == 4
     with eng.connect() as c:
         assert c.execute(sa.select(sa.func.count()).select_from(db.audit_log).where(db.audit_log.c.device_id == "demo-seed")).scalar() > 20
         before = c.execute(sa.select(sa.func.count()).select_from(db.customers)).scalar()

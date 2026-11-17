@@ -294,5 +294,45 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
                             "reservation_id": res_arm["id"], "reason": "Выдано на ПНР, бригада Иванова"})
     cmd(wh, "stock.issue", {"id": str(uuid.uuid4()), "warehouse_id": whs["СК-2"], "item_id": items["ХМТ-200"], "qty": "120",
                             "project_id": pid, "reason": "Монтаж кабельных трасс"})
+
+    # Заказы поставщикам и факт поставки (D-32). Поставщики, цены, номера счетов и накладных ВЫМЫШЛЕНЫ; ИНН не указан
+    # нарочно — любой «правдоподобный» ИНН может принадлежать настоящей организации.
+    sups = {}
+    for code, name, contact in [("ШКАФЫ-ПРО", "ООО «Шкафы-Про» (вымышленный)", "Отдел продаж, доб. 101"),
+                                ("ЭЛЕКТРОСНАБ", "ООО «Электроснаб» (вымышленный)", "Менеджер Ковалёв"),
+                                ("КИП-КОМПЛЕКТ", "ООО «КИП-Комплект» (вымышленный)", None)]:
+        sups[code] = str(uuid.uuid4())
+        cmd(buyer, "supplier.create", {"id": sups[code], "code": code, "name": name,
+                                       **({"contact": contact} if contact else {})})
+
+    def po_line(item, qty, price=None, need_line=None, note=None):
+        """Строка заказа поставщику (цена None — неизвестна; need_line — код строки потребности АТХ v1)."""
+        return {"line_id": str(uuid.uuid4()), "item_id": items[item], "qty": qty, "unit_price": price,
+                **({"need_id": need["id"], "need_line_id": line_of[need_line]} if need_line else {}),
+                **({"note": note} if note else {})}
+
+    def po(sup, lines, currency="RUB", **kw):
+        """Черновик заказа от закупки; возвращает представление заказа."""
+        return cmd(buyer, "po.create", {"id": str(uuid.uuid4()), "supplier_id": sups[sup], "currency": currency,
+                                        "lines": lines, **kw})["purchase_order"]
+
+    def place(o):
+        """Разместить черновик (строки замораживаются)."""
+        return cmd(buyer, "po.place", {"id": o["id"]}, ev=o["version"])["purchase_order"]
+    # № 1 — размещён, ждём: третий шкаф ШУ-1 под непокрытую строку потребности (2 из 3 уже в резерве).
+    o1 = place(po("ШКАФЫ-ПРО", [po_line("ШУ-1", "1", "485000", need_line="ШУ-1")], supplier_ref="Счёт № 218",
+                  expected_on=(svc.now().date() + timedelta(days=21)).isoformat()))
+    # № 2 — размещён, поставлен частично: кабель пришёл 1200 м из 2000 (накладная), цена хомутов неизвестна.
+    o2 = place(po("ЭЛЕКТРОСНАБ", [po_line("КВВГнг-7x1.5", "2000", "142.6"),
+                                  po_line("ХМТ-200", "1000", None, note="Цену уточняют, счёт будет с поставкой")],
+                  supplier_ref="Счёт № 5531"))
+    cmd(wh, "po.receive", {"id": str(uuid.uuid4()), "order_id": o2["id"], "line_id": o2["lines"][0]["line_id"],
+                           "warehouse_id": whs["СК-2"], "qty": "1200", "source_doc": "ТН № 8812 от ООО «Электроснаб»"})
+    # № 3 — черновик: датчики давления по изменению схемы (цены и валюты пока нет — не подставляются).
+    o3 = po("КИП-КОМПЛЕКТ", [po_line("ДД", "8", None)], currency=None, note="Ждём ТКП поставщика")
+    # № 4 — отменён: случайный дубль № 3.
+    o4 = po("КИП-КОМПЛЕКТ", [po_line("ДД", "8", None)], currency=None)
+    cmd(buyer, "po.cancel", {"id": o4["id"], "reason": "Дубль заказа № 3"}, ev=o4["version"])
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
-            "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]]}
+            "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
+            "suppliers": sups, "purchase_orders": [o1["id"], o2["id"], o3["id"], o4["id"]]}
