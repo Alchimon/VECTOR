@@ -23,7 +23,7 @@ from vector import __version__
 from vector.core import stock
 from vector.core.contracts import Contracts
 
-from . import calc_view, purchasing_view, stock_view
+from . import calc_view, delegation_view, purchasing_view, stock_view
 from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
 from .vault import KeyringStore, MemoryStore, VaultError
@@ -95,6 +95,14 @@ def _clean_lines(lines) -> list[dict]:
                 ln[k] = v
         out.append(ln)
     return out
+
+
+def _plain_amount(v) -> Optional[str]:
+    """Сумма из поля формы в виде для сервера: без пробелов, запятая → точка; пусто → None (не указано)."""
+    if v is None:
+        return None
+    t = str(v).strip().replace(" ", "").replace("\u00a0", "").replace(",", ".")
+    return t or None
 
 
 def _clean_po_lines(lines) -> list[dict]:
@@ -320,9 +328,9 @@ class Backend(QObject):
 
     @Property("QVariantMap", notify=changed)
     def me(self):
-        """Текущий пользователь: id, имя, глобальные роли с русскими подписями, инициалы для аватара."""
-        roles = self._me.get("roles", [])
-        return qml_safe({**self._me, "role_labels": [ROLE_LABELS.get(r, r) for r in roles],
+        """Текущий пользователь: id, имя, глобальные роли с русскими подписями (полученные замещением — с пометкой
+        «замещение до …», D-34), инициалы для аватара."""
+        return qml_safe({**self._me, "role_labels": delegation_view.role_labels(self._me, ROLE_LABELS),
                 "initials": "".join(w[:1] for w in (self._me.get("display_name") or "?").split()[:2]).upper()})
 
     customers = _lst("customer", dataChanged)
@@ -541,6 +549,13 @@ class Backend(QObject):
             self._me.get("user_id") or ""))
 
     @Property("QVariantMap", notify=dataChanged)
+    def delegationsOverview(self):
+        """Раздел «Замещения» (D-34): мои замещения, все — для руководителя отдела и администратора, покрытие ролей."""
+        return qml_safe(delegation_view.delegations_view(
+            self._stock.get("delegations") or [], self._stock.get("role_coverage") or [], self._people, self._me,
+            ROLE_LABELS, self._online and self._session_mode == "online", self.hint("delegation.manage", 0)))
+
+    @Property("QVariantMap", notify=dataChanged)
     def suppliersOverview(self):
         """Вкладка «Поставщики»: справочник с реквизитами и договорами (ведёт закупка, A-34)."""
         return qml_safe(purchasing_view.suppliers_view(self._decorate("supplier"), self._me.get("roles", []),
@@ -552,13 +567,19 @@ class Backend(QObject):
         self._po_filter = flt if flt in ("active", "approval", "draft", "placed", "closed", "all") else "active"
         self.dataChanged.emit()
 
-    @Slot("QVariantList", str, str, result="QVariantMap")
-    def poPreview(self, lines, currency: str, vat_mode: str = "") -> dict:
+    @Slot("QVariantList", str, str, str, str, result="QVariantMap")
+    def poPreview(self, lines, currency: str, vat_mode: str = "", invoice_gross: str = "", invoice_vat: str = "") -> dict:
         """Проверка строк черновика заказа в форме (без сервера): суммы и НДС строк, замечания, итоги, чего не
-        хватает для согласования."""
+        хватает для согласования; с D-34 — контроль расчёта и сверка с суммами из счёта поставщика."""
         lines = lines.toVariant() if hasattr(lines, "toVariant") else lines
         return qml_safe(purchasing_view.preview(_clean_po_lines(lines), currency.strip().upper() or None,
-                                                self._decorate("stock_item"), vat_mode or None))
+                                                self._decorate("stock_item"), vat_mode or None,
+                                                _plain_amount(invoice_gross), _plain_amount(invoice_vat)))
+
+    @Slot(str, str, result=str)
+    def invoiceProblem(self, text: str, field: str) -> str:
+        """Проверка суммы из счёта поставщика в форме: неотрицательная, в рублях и копейках (D-34)."""
+        return purchasing_view.invoice_problem(text, field)
 
     @Slot(str, result=str)
     def innProblem(self, text: str) -> str:
@@ -583,6 +604,10 @@ class Backend(QObject):
         for k in ("currency", "supplier_ref", "expected_on", "note", "contract_id", "vat_mode"):
             v = (p.get(k) or "").strip() if isinstance(p.get(k), str) else p.get(k)
             p[k] = (v.upper() if k == "currency" else v) or None
+        # Суммы из счёта поставщика (D-34): «1 220,50» → «1220.50»; пусто — не введены (сверки нет).
+        for k in ("invoice_gross", "invoice_vat"):
+            if k in p:
+                p[k] = _plain_amount(p.get(k))
 
         def job():
             """Сохранить черновик в рабочем потоке и снять снимок данных."""
@@ -647,11 +672,16 @@ class Backend(QObject):
 
     @Slot(str, result=str)
     def authorityLabel(self, authority: str) -> str:
-        """global_role:rp#grant:2 → «роль РП (выдача №2)»; без внутренних кодов в интерфейсе."""
+        """global_role:rp#grant:2 → «роль РП (выдача №2)»; delegated_role:… → «… по замещению №N»; без внутренних кодов."""
         if not authority:
             return "—"
         if authority == "self":
             return "собственная учётная запись"
+        # Замещение (D-34): роль носителя, полученная на срок.
+        d = re.fullmatch(r"delegated_role:([a-z_]+)#grant:(\w+)#delegation:(\w+)", authority)
+        if d:
+            role, grant, deleg = d.groups()
+            return f"роль «{ROLE_LABELS.get(role, role)}» по замещению №{deleg} (выдача носителя №{grant})"
         m = re.fullmatch(r"(global_role|project_role):([a-z_]+)#(grant|assignment):(\w+)", authority)
         if not m:
             return authority
@@ -892,7 +922,8 @@ class Backend(QObject):
         self._run(job, lambda res: self._finish_command(tag, "config.publish", res))
 
     # Справочник и настройки тоже приходят только с pull — после их команд снимок перечитывается.
-    _STOCK_PREFIXES = frozenset({"stock", "need", "item_alias", "unit_conversion", "config", "po"})
+    # Замещение (D-34) меняет роли — после него перечитываются и роли (me), и права в интерфейсе.
+    _STOCK_PREFIXES = frozenset({"stock", "need", "item_alias", "unit_conversion", "config", "po", "delegation"})
 
     def _finish_command(self, tag: str, command: str, res: dict):
         """Общий разбор результата команды: снимок данных, уведомление, сигнал commandDone для формы."""

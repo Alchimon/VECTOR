@@ -85,10 +85,11 @@ META_LISTS = (("calc_version", "calc_versions"), ("calc_revision", "calc_revisio
               ("movement", "stock_movements"), ("reservation", "stock_reservations"), ("need", "needs"),
               ("transfer", "stock_transfers"))
 # Данные из pull, которые хранятся в meta как есть (снимок; время снимка — last_pull): склад, потребности,
-# справочник аналогов/пересчёта (D-25, A-27) и настройки компании (config, D-26). Всё это меняется только
+# справочник аналогов/пересчёта (D-25, A-27), настройки компании (config, D-26), замещения и покрытие ролей (D-34). Всё это меняется только
 # онлайн-командами, офлайн — только читается.
 STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_movements_truncated", "needs",
-              "stock_transfers", "stock_projects", "need_candidates", "item_aliases", "unit_conversions", "config")
+              "stock_transfers", "stock_projects", "need_candidates", "item_aliases", "unit_conversions", "config",
+              "delegations", "role_coverage")
 
 
 def _calc_same(local: dict, payload: dict) -> bool:
@@ -113,9 +114,14 @@ def _po_same(local: dict, payload: dict) -> bool:
                                         o.get("currency"))
         except pu.PurchaseError:
             return None
+        try:   # D-34: суммы по счёту — числом («1220.00» из формы = «1220.0000» с сервера)
+            inv = tuple(None if o.get(k) in (None, "") else pu.check_invoice_amount(o.get(k), k)
+                        for k in ("invoice_gross", "invoice_vat"))
+        except pu.PurchaseError:
+            return None
         # D-33: договор и режим цен (с НДС / без НДС) — тоже содержание черновика; ставка НДС — в строках.
         return (o.get("supplier_id"), cur, o.get("supplier_ref") or None, o.get("expected_on") or None,
-                o.get("note") or None, o.get("contract_id") or None, o.get("vat_mode") or None,
+                o.get("note") or None, o.get("contract_id") or None, o.get("vat_mode") or None, inv,
                 [x.to_json() for x in lines])
     a = canon(local)
     return a is not None and a == canon(payload)

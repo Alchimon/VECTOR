@@ -137,11 +137,24 @@ MasterDetail {
                muted: sel !== null && !!sel.vat && !sel.vat.known }
     KeyValue { objectName: "poVatGross"; visible: sel !== null && !!sel.vat; k: "С НДС"
                v: sel && sel.vat ? (sel.vat.known ? sel.vat.gross_label : "—") : ""; muted: sel !== null && !!sel.vat && !sel.vat.known }
+    // Суммы из счёта поставщика (D-34) — если закупка их ввела.
+    KeyValue { objectName: "poInvoiceGrossKv"; visible: sel !== null && !!sel.invoice_gross_label; k: "По счёту, с НДС"; v: sel ? sel.invoice_gross_label : "" }
+    KeyValue { visible: sel !== null && !!sel.invoice_vat_label; k: "НДС по счёту"; v: sel ? sel.invoice_vat_label : "" }
     KeyValue { k: "Ожидаемая поставка"; v: sel ? sel.expected_label : "" }
     KeyValue { k: "Примечание"; v: sel ? sel.note : "" }
     KeyValue { visible: sel !== null && sel.placed_label !== ""; k: "Размещение"; v: sel ? sel.placed_label : "" }
     KeyValue { visible: sel !== null && sel.closed_label !== ""; k: sel && sel.status === "cancelled" ? "Отмена" : "Закрытие"
                v: sel ? sel.closed_label + (sel.close_reason ? " — " + sel.close_reason : "") : "" }
+    // Контроль расчёта (D-34, A-38): самопроверка НДС вторым способом, доли копейки, сверка со счётом поставщика.
+    SectionTitle { visible: sel !== null && !!sel.control; text: "Контроль расчёта"; iconName: "circle-check" }
+    Repeater {
+        objectName: "poControl"
+        model: sel && sel.control ? sel.control.checks : []
+        delegate: RowLayout { required property var modelData; Layout.fillWidth: true; spacing: 8
+            Icon { name: modelData.icon; size: 16; color: Theme.tone(modelData.tone).fg }
+            Text { text: modelData.text; color: modelData.state === "ok" || modelData.state === "info" ? Theme.textMuted : Theme.tone(modelData.tone).fg
+                   font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true } }
+    }
     SectionTitle { text: "Строки заказа"; iconName: "list-checks" }
     Repeater {
         objectName: "poLines"
@@ -186,7 +199,10 @@ MasterDetail {
             Text { text: modelData.label; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold
                    wrapMode: Text.Wrap; Layout.fillWidth: true }
             Text { visible: modelData.comment !== ""; text: modelData.comment; color: Theme.textMuted; font.family: Theme.family
-                   font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true } }
+                   font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            // Сверка со счётом при отправке (D-34): расхождение — с причиной закупки, её видит согласующий.
+            Text { visible: (modelData.invoice || "") !== ""; text: modelData.invoice || ""; color: modelData.invoice_warn ? Theme.warning : Theme.textMuted
+                   font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true } }
     }
     HistoryList { objectType: "purchase_order"; objectId: page.sel && page.sel.order_no ? page.selectedId : "" }
 
@@ -234,11 +250,21 @@ MasterDetail {
         subtitle: o ? o.supplier_label + " · " + o.line_count_label + " · " + o.total_label : ""
         note: "Согласующий увидит ровно это содержание. Пока заказ на согласовании, условия не меняются; изменить — отозвать."
         confirmText: "Отправить"
-        function openFor(x) { o = x; sbComment.text = ""; open() }
-        onConfirmed: cSubmit.run("po.submit", Object.assign({ id: o.id }, sbComment.text.trim() ? { comment: sbComment.text.trim() } : {}), o.version)
+        // Причина расхождения со счётом (D-34): нужна, если расчёт не сошёлся со счётом или сверить нельзя —
+        // по локальной проверке или по ответу сервера (invoice_reason_required).
+        property bool askReason: false
+        readonly property bool needReason: askReason || (o !== null && !!o.control && o.control.needs_reason === true)
+        canConfirm: !needReason || sbReason.text.trim() !== ""
+        function openFor(x) { o = x; sbComment.text = ""; sbReason.text = ""; askReason = false; open() }
+        onConfirmed: cSubmit.run("po.submit", Object.assign({ id: o.id }, sbComment.text.trim() ? { comment: sbComment.text.trim() } : {},
+                                                            needReason ? { invoice_reason: sbReason.text.trim() } : {}), o.version)
+        Text { visible: submitForm.needReason; color: Theme.warning; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true
+               text: submitForm.o && submitForm.o.control ? (submitForm.o.control.checks.filter(c => c.code === "invoice").map(c => c.text).join(" ")) : "" }
+        VField { id: sbReason; objectName: "sbReason"; visible: submitForm.needReason; required: true; label: "Причина расхождения со счётом"
+                 placeholder: "Например: поставщик считает НДС от итога счёта"; hint: "Её увидит согласующий; без причины заказ не отправить." }
         VField { id: sbComment; objectName: "sbComment"; label: "Комментарий согласующему"; placeholder: "Необязательно: срочность, обоснование цены …" }
     }
-    Cmd { id: cSubmit; dialog: submitForm }
+    Cmd { id: cSubmit; dialog: submitForm; onDone: r => { if (r.code === "invoice_reason_required") submitForm.askReason = true } }
     FormDialog {
         id: withdrawForm
         objectName: "withdrawForm"

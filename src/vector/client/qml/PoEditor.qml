@@ -12,6 +12,9 @@ import QtQuick.Layouts
 //    Внизу — три итога: без НДС, НДС, с НДС (A-35, НДС строки округляется до копеек). Режим и ставки для
 //    черновика необязательны, но без них заказ не отправить на согласование (подсказка внизу).
 //  * Договор — из действующих договоров выбранного поставщика (A-34); можно «без договора».
+//  * Сверка со счётом (D-34, A-38): суммы «с НДС» и «НДС» из счёта поставщика (необязательно). Внизу — «Контроль
+//    расчёта»: самопроверка НДС вторым способом, строки с долями копейки, совпадение со счётом. Расхождение не
+//    мешает сохранить черновик, но при отправке на согласование потребуется причина (её увидит согласующий).
 //  * Строку можно привязать к строке потребности — тогда позиция должна совпадать с выбранной для строки
 //    потребности (проверит сервер); в потребности появится «заказано, ждём» после размещения.
 //  * «Сохранить» — через очередь (можно без связи): новый заказ — po.create, существующий черновик — po.update
@@ -30,7 +33,7 @@ Popup {
     property string tag: "po-" + Math.random().toString(36).slice(2)
     readonly property var pv: {
         editRev
-        var r = visible ? backend.poPreview(collect(), curField.text, vatSel.currentValue || "") : ({ rows: [] })
+        var r = visible ? backend.poPreview(collect(), curField.text, vatSel.currentValue || "", invGross.text, invVat.text) : ({ rows: [] })
         var m = {}
         for (var i = 0; i < (r.rows || []).length; i++) m[r.rows[i].line_id] = r.rows[i]
         r.byId = m
@@ -72,6 +75,8 @@ Popup {
         refField.text = o ? (o.supplier_ref || "") : ""
         dateField.text = o ? (o.expected_on || "") : ""
         noteField.text = o ? (o.note || "") : ""
+        invGross.text = o && o.invoice_gross ? plain(o.invoice_gross) : ""
+        invVat.text = o && o.invoice_vat ? plain(o.invoice_vat) : ""
         editRev++
         open()
     }
@@ -100,7 +105,8 @@ Popup {
         working = true; error = ""
         backend.savePoDraft(tag, { id: orderId, supplier_id: supSel.currentValue, currency: curField.text,
                                    vat_mode: vatSel.currentValue || "", contract_id: conSel.currentValue || "",
-                                   supplier_ref: refField.text, expected_on: dateField.text, note: noteField.text, lines: collect() })
+                                   supplier_ref: refField.text, expected_on: dateField.text, note: noteField.text,
+                                   invoice_gross: invGross.text, invoice_vat: invVat.text, lines: collect() })
     }
     Connections {
         target: backend
@@ -141,6 +147,11 @@ Popup {
             VField { id: dateField; label: "Ожидаемая поставка (для справки)"; placeholder: "ГГГГ-ММ-ДД"; Layout.fillWidth: true
                      error: text.trim() === "" || /^\d{4}-\d{2}-\d{2}$/.test(text.trim()) ? "" : "Дата в виде ГГГГ-ММ-ДД" }
             VField { id: noteField; label: "Примечание"; placeholder: "Необязательно"; Layout.fillWidth: true }
+            // Суммы из счёта поставщика — для сверки с расчётом (D-34); пусто — сверки нет.
+            VField { id: invGross; objectName: "poInvoiceGross"; label: "Итого по счёту, с НДС"; placeholder: "Для сверки, необязательно"; Layout.fillWidth: true
+                     error: backend.invoiceProblem(text, "invoice_gross"); input.onTextEdited: ed.editRev++ }
+            VField { id: invVat; objectName: "poInvoiceVat"; label: "НДС по счёту"; placeholder: "Для сверки, необязательно"; Layout.fillWidth: true
+                     error: backend.invoiceProblem(text, "invoice_vat"); input.onTextEdited: ed.editRev++ }
         }
         Banner { visible: (ed.ov.suppliers || []).length === 0; tone: "warning"; Layout.fillWidth: true
                  Layout.leftMargin: Theme.padL; Layout.rightMargin: Theme.padL; Layout.topMargin: 8
@@ -232,6 +243,14 @@ Popup {
                                                         : "НДС не посчитан: " + ed.pv.vat.why) : ""
                        color: ed.pv.vat && ed.pv.vat.known ? Theme.text : Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs
                        font.features: { "tnum": 1 }; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                // Контроль расчёта (D-34): только замечания и сверка со счётом — «всё сошлось» не занимает место.
+                Repeater {
+                    model: ed.pv.control ? ed.pv.control.checks.filter(c => c.state !== "ok" || c.code === "invoice") : []
+                    delegate: RowLayout { required property var modelData; spacing: 6; Layout.fillWidth: true
+                        Icon { name: modelData.icon; size: 14; color: Theme.tone(modelData.tone).fg }
+                        Text { objectName: "poEditorCheck"; text: modelData.text; color: modelData.state === "info" ? Theme.textMuted : Theme.tone(modelData.tone).fg
+                               font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true } }
+                }
                 // Чего не хватит для согласования — не мешает сохранить черновик.
                 Text { objectName: "poEditorReady"; visible: (ed.pv.ready_problems || []).length > 0
                        text: "Для согласования: " + (ed.pv.ready_problems || []).join(" ")
@@ -245,6 +264,7 @@ Popup {
             VButton { text: "Отмена"; kind: "ghost"; onClicked: ed.close() }
             VButton { objectName: "poSave"; text: ed.working ? "Сохранение…" : "Сохранить черновик"; kind: "primary"; iconName: "check"
                       enabled: !ed.working && ed.pv.valid === true && supSel.currentValue !== "" && dateField.error === ""
+                               && invGross.error === "" && invVat.error === ""
                       onClicked: ed.save() }
         }
     }

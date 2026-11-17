@@ -35,6 +35,7 @@ Item {
     readonly property bool seesNeeds: seesStock || (backend.needsOverview.needs || []).length > 0
         || (backend.me.roles || []).indexOf("accountant") >= 0   // бухгалтерия видит заказы поставщикам (D-32)
         || (backend.me.roles || []).indexOf("po_approver") >= 0  // согласующий закупки — заказы на согласовании (D-33)
+        || (backend.me.roles || []).indexOf("dept_head") >= 0    // руководитель отдела «в курсе» согласований (D-34)
     Shortcut { sequence: "F5"; onActivated: backend.syncNow() }
 
     RowLayout {
@@ -73,6 +74,11 @@ Item {
                 Text { text: "СИСТЕМА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
                 NavItem { text: "Синхронизация"; iconName: "refresh-cw"; active: shellRoot.page === "sync"; onClicked: shellRoot.go("sync")
                           badge: backend.problemCount > 0 ? backend.problemCount : backend.pendingCount; badgeTone: backend.problemCount > 0 ? "danger" : "warning" }
+                // Замещения — всем: свою роль может передать каждый (D-34). Бейдж: руководителю — роли, которые заменить
+                // некем; остальным — сколько ролей коллег он сейчас замещает.
+                NavItem { objectName: "navDelegations"; text: "Замещения"; iconName: "user-check"; active: shellRoot.page === "delegations"; onClicked: shellRoot.go("delegations")
+                          badge: backend.delegationsOverview.manage ? backend.delegationsOverview.warnings : backend.delegationsOverview.active_received
+                          badgeTone: backend.delegationsOverview.manage ? "warning" : "primary" }
                 NavItem { text: "Администрирование"; iconName: "shield-check"; active: shellRoot.page === "admin"; onClicked: shellRoot.go("admin"); visible: backend.hint("admin.list_users", backend.permRevision) }
                 Item { Layout.fillHeight: true }
                 ConnectionPill {}
@@ -106,7 +112,7 @@ Item {
         Loader {
             anchors.fill: parent
             sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC, finance: financeC,
-                               stock: stockC, procurement: procurementC })[shellRoot.page]
+                               stock: stockC, procurement: procurementC, delegations: delegationsC })[shellRoot.page]
         }
         }
     }
@@ -118,6 +124,7 @@ Item {
     Component { id: adminC; AdminPage {} }
     Component { id: stockC; StockPage { shell: shellRoot } }
     Component { id: procurementC; ProcurementPage { shell: shellRoot } }
+    Component { id: delegationsC; DelegationsPage { shell: shellRoot } }
 
     FormDialog {
         id: reconnect

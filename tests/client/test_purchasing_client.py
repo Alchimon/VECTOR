@@ -116,7 +116,7 @@ def test_orders_view_recomputes_pending_draft_and_hints():
     # Склад: цен нет, принять можно; без связи — нельзя.
     w = pv.orders_view([placed], sups, items, [], ["warehouse"], True, "")["orders"][0]
     assert (w["total_label"], w["lines"][0]["price_label"], w["can_receive"]) == \
-        ("цены видят закупка, бухгалтерия и согласующий", "", True)
+        ("цены видят закупка, бухгалтерия и согласующие", "", True)
     assert pv.orders_view([placed], sups, items, [], ["warehouse"], False, "")["orders"][0]["can_receive"] is False
     # Фильтр «архив» и текст пустого списка.
     assert pv.orders_view([placed], sups, items, [], ["procurement"], True, "", "closed")["empty_text"] == "Под этот фильтр заказов нет."

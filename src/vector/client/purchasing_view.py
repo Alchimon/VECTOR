@@ -78,7 +78,9 @@ def vat_summary(lines: list[pu.Line], mode: Optional[str], cur: Optional[str]) -
     """
     t = pu.vat_totals(lines, mode)
     priced = sum(1 for ln in lines if ln.amount is not None)
-    if not priced:
+    if t["check_failed"]:
+        why = "расчёт НДС не прошёл самопроверку — суммы не показываются (сообщите администратору)"
+    elif not priced:
         why = "нет строк с ценой"
     elif mode is None:
         why = "не указано, как даны цены (с НДС или без НДС)"
@@ -120,7 +122,40 @@ def _line_vat_label(ln: Optional[pu.Line], mode: Optional[str]) -> str:
     return f"НДС {pu.VAT_RATE_LABELS_RU[ln.vat_rate]}: {fmt_money(money.to_json(v[1]), None)}"
 
 
-def preview(raw_lines: list, currency: Optional[str], items: list, vat_mode: Optional[str] = None) -> dict:
+CHECK_TONES = {"ok": "success", "warn": "warning", "error": "danger", "info": "neutral"}
+CHECK_ICONS = {"ok": "circle-check", "warn": "triangle-alert", "error": "circle-x", "info": "info"}
+
+
+def _invoice_quiet(v) -> Optional[Decimal]:
+    """Сумма по счёту из формы/кэша или None (пусто или ошибка ввода — ошибку покажет invoice_problem)."""
+    try:
+        return pu.check_invoice_amount(v, "invoice_gross")
+    except pu.PurchaseError:
+        return None
+
+
+def invoice_problem(text: str, field: str = "invoice_gross") -> str:
+    """Замечание к полю «Сумма по счёту» в форме: пусто — всё в порядке (или поле не заполнено)."""
+    try:
+        pu.check_invoice_amount((text or "").strip().replace(" ", "").replace(",", "."), field)
+        return ""
+    except pu.PurchaseError as e:
+        return e.problems[0]["message_ru"]
+
+
+def control_view(lines: list[pu.Line], mode: Optional[str], inv_gross, inv_vat) -> dict:
+    """«Контроль расчёта» (D-34, A-38) для карточки и формы: проверки с цветом и значком, сверка со счётом,
+    нужна ли причина при отправке. Считается на клиенте по тем же правилам ядра, что и на сервере (решает сервер).
+    """
+    c = pu.calc_control(lines, mode, _invoice_quiet(inv_gross), _invoice_quiet(inv_vat))
+    return {"checks": [{**x, "tone": CHECK_TONES.get(x["state"], "neutral"), "icon": CHECK_ICONS.get(x["state"], "info")}
+                       for x in c["checks"]],
+            "invoice_state": c["invoice"]["state"], "needs_reason": c["needs_reason"], "check_failed": c["check_failed"],
+            "has_problem": c["check_failed"] or c["needs_reason"]}
+
+
+def preview(raw_lines: list, currency: Optional[str], items: list, vat_mode: Optional[str] = None,
+            invoice_gross: Optional[str] = None, invoice_vat: Optional[str] = None) -> dict:
     """Проверка строк в форме черновика ДО сохранения: суммы и НДС строк, замечания по строкам, итоги.
 
     ready_problems — чего не хватит для согласования (режим цен, ставки, валюта); сохранить черновик это не мешает.
@@ -144,6 +179,8 @@ def preview(raw_lines: list, currency: Optional[str], items: list, vat_mode: Opt
     t = pu.totals(ok)
     ready = pu.ready_problems(ok, cur, mode) if not problems else []
     return {"rows": rows, "valid": not problems, "problem_count": len(problems), "vat": vat_summary(ok, mode, cur),
+            # Контроль расчёта и сверка со счётом прямо в форме (D-34) — до сохранения.
+            "control": control_view(ok, mode, invoice_gross, invoice_vat) if not problems else None,
             "ready_problems": [p["message_ru"] for p in ready],
             "general_problems": [p["message_ru"] for p in problems if not p.get("line")],
             "first_problem": problems[0]["message_ru"] if problems else "",
@@ -176,13 +213,30 @@ def contract_usable(c: dict, today: Optional[date] = None) -> bool:
 
 
 def _approval_events(events: list, people: dict) -> list[dict]:
-    """История согласования для карточки: «Согласован · Зайцева Вера · 2026-11-16 09:00 — комментарий»."""
+    """История согласования для карточки: «Согласован · Зайцева Вера (замещает Иванова) · 2026-11-16 09:00».
+
+    С D-34: решение по замещению показывает, за кого принято (основание хранится на сервере неизменяемо), а отправка
+    с расхождением со счётом — причину, которую указала закупка (её видит согласующий).
+    """
     out = []
     for e in events or []:
         who = people.get(e.get("actor_id") or "", "") or "пользователь"
+        if e.get("on_behalf_of"):
+            who += f" (замещает {people.get(e['on_behalf_of'], '') or 'коллегу'})"
+        inv = ""
+        if e.get("invoice_state") in ("mismatch", "unknown"):
+            inv = pu.INVOICE_STATE_LABELS_RU[e["invoice_state"]] + (f": {e['invoice_reason']}" if e.get("invoice_reason") else "")
+            if e.get("diff_gross") not in (None, "") and Decimal(e["diff_gross"]):
+                inv += f" (разница с НДС {fmt_money(e['diff_gross'], None)})"
+            elif e.get("diff_vat") not in (None, "") and Decimal(e["diff_vat"]):
+                inv += f" (разница НДС {fmt_money(e['diff_vat'], None)})"
+        elif e.get("invoice_state") == "match":
+            inv = pu.INVOICE_STATE_LABELS_RU["match"]
         out.append({"kind": e.get("kind"), "tone": APPROVAL_TONES.get(e.get("kind"), "neutral"),
                     "label": f"{pu.APPROVAL_LABELS_RU.get(e.get('kind'), e.get('kind'))} · {who} · {short_dt(e.get('at'))}",
-                    "comment": e.get("comment") or ""})
+                    "comment": e.get("comment") or "", "invoice": inv,
+                    "invoice_warn": e.get("invoice_state") in ("mismatch", "unknown"),
+                    "on_behalf_of": e.get("on_behalf_of")})
     return out
 
 
@@ -241,7 +295,9 @@ def _order(o: dict, sup: dict, it: dict, needs: dict, roles: list, online: bool,
     delivery = pu.delivery_state(pairs) if status in ("placed", "closed") else None
     t = pu.totals(ok)
     is_proc = "procurement" in roles
-    is_appr = "po_approver" in roles
+    # Согласует роль «Согласование закупок» (своя или по замещению — она тоже в roles) и, резервом,
+    # руководитель отдела (D-34, A-37).
+    is_appr = "po_approver" in roles or "dept_head" in roles
     received_any = any(p[1] > 0 for p in pairs)
     no = o.get("order_no")
     # Чего не хватает для согласования (как проверит сервер): строки, валюта, режим цен, ставки.
@@ -263,14 +319,20 @@ def _order(o: dict, sup: dict, it: dict, needs: dict, roles: list, online: bool,
         "currency": cur or o.get("currency"), "currency_label": cur or o.get("currency") or "валюта не указана",
         "prices_visible": prices,
         "total_label": (total_label(t["total"], cur, t["unpriced_count"], len(raw)) if prices
-                        else "цены видят закупка, бухгалтерия и согласующий"),
+                        else "цены видят закупка, бухгалтерия и согласующие"),
         # Короткая сумма для списков (карточка поставщика): «с НДС», если НДС посчитан, иначе сумма строк как есть;
         # пометка «итог неполный» сохраняется всегда — строки без цены не прячутся за суммой с НДС.
         "amount_label": (_amount_label(t, vs, cur, len(raw)) if prices
-                         else "цены видят закупка, бухгалтерия и согласующий"),
+                         else "цены видят закупка, бухгалтерия и согласующие"),
         # НДС (A-35): режим цен виден всем; суммы без НДС / НДС / с НДС — тем, кто видит цены.
         "vat_mode": mode, "vat_mode_label": pu.VAT_MODES.get(mode, "не указано (с НДС или без НДС)"),
         "vat": vs,
+        # Сверка со счётом и контроль расчёта (D-34, A-38) — тем, кто видит цены.
+        "invoice_gross": o.get("invoice_gross") if prices else None,
+        "invoice_vat": o.get("invoice_vat") if prices else None,
+        "invoice_gross_label": fmt_money(o.get("invoice_gross"), cur) if prices and o.get("invoice_gross") else "",
+        "invoice_vat_label": fmt_money(o.get("invoice_vat"), cur) if prices and o.get("invoice_vat") else "",
+        "control": control_view(ok, mode, o.get("invoice_gross"), o.get("invoice_vat")) if prices and not problems else None,
         # Договор (A-34): из справочника договоров в кэше; если его там нет — то, что прислал сервер.
         "contract_id": o.get("contract_id"), "contract_label": contract_label(contract, today) or "без договора",
         # Согласование (D-33).
@@ -329,7 +391,8 @@ def orders_view(orders: list, suppliers: list, items: list, needs: list, roles: 
     nd = {n["id"]: n for n in needs}
     nd = {k: {**v, "title": f"{v.get('project_code', '')} · {v.get('kit_code', '')} v{v.get('calc_version_no', '')}"}
           for k, v in nd.items()}
-    prices = bool({"procurement", "accountant", "po_approver"} & set(roles))
+    # Цены видят закупка, бухгалтерия, согласующий и руководитель отдела (D-34) — как po.read_prices на сервере.
+    prices = bool({"procurement", "accountant", "po_approver", "dept_head"} & set(roles))
     views = [_order(o, sup.get(o.get("supplier_id")), it, nd, roles, online, prices, cmap, people, me, today)
              for o in orders]
     views.sort(key=lambda v: (v["order_no"] is not None, -(v["order_no"] or 0)))
@@ -343,7 +406,7 @@ def orders_view(orders: list, suppliers: list, items: list, needs: list, roles: 
     counts["waiting"] = sum(1 for v in views if v["status"] == "placed" and v["delivery"] != "full")
     counts["on_approval"] = sum(1 for v in views if v["on_approval"])
     return {"as_of": as_of_label(last_pull), "online": online, "orders": shown, "counts": counts, "filter": flt,
-            "can_create": "procurement" in roles, "sees_prices": prices, "is_approver": "po_approver" in roles,
+            "can_create": "procurement" in roles, "sees_prices": prices, "is_approver": bool({"po_approver", "dept_head"} & set(roles)),
             "suppliers": [{"id": s["id"], "label": f"{s['code']} · {s['name']}", "vat_rate": s.get("vat_rate") or ""}
                           for s in sorted(suppliers, key=lambda s: s.get("code") or "") if s.get("active", True)],
             # Договоры для выбора в форме заказа: только действующие (выбор фильтруется по поставщику в QML).

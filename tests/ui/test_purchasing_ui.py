@@ -167,7 +167,7 @@ def test_warehouse_receives_line_and_sees_no_prices(ui):
     pov = _v(pane, "pov")
     assert pov["can_create"] is False and pov["sees_prices"] is False
     o1 = _order(pane, 1)
-    assert o1["total_label"] == "цены видят закупка, бухгалтерия и согласующий" and o1["lines"][0]["price_label"] == ""
+    assert o1["total_label"] == "цены видят закупка, бухгалтерия и согласующие" and o1["lines"][0]["price_label"] == ""
     assert o1.get("vat") is None and o1["lines"][0]["vat_rate_label"] == "22 %"   # ставку видит, НДС в деньгах — нет
     assert o1["can_receive"] is True
     pane.setProperty("selectedId", o1["id"])
