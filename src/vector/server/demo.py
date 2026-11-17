@@ -371,7 +371,13 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
                                             "valid_from": (today + timedelta(days=10)).isoformat(),
                                             "valid_until": (today + timedelta(days=23)).isoformat(),
                                             "reason": "Отпуск (приказ № 112-о)"})["delegation"]
+    # Замещение роли в проекте (D-35): ГИП в командировке — его роль в проекте П-2026-014 на неделю у ведущего
+    # инженера (он уже участник проекта). Действует сразу: Лебедев видит «ГИП в проекте … (замещение до …)», а
+    # руководитель отдела и Лебедев получают уведомления.
+    pdeleg = cmd(gip, "delegation.create", {"to_user_id": people["m.lebedev"], "role": "gip", "project_id": pid,
+                                            "valid_until": (today + timedelta(days=6)).isoformat(),
+                                            "reason": "Командировка на объект (приказ № 118-к)"})["delegation"]
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
             "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
-            "suppliers": sups, "contracts": contracts, "delegations": [deleg["id"]],
+            "suppliers": sups, "contracts": contracts, "delegations": [deleg["id"], pdeleg["id"]],
             "purchase_orders": [o1["id"], o2["id"], o3["id"], o4["id"], o5["id"]]}
