@@ -18,7 +18,7 @@
 | R-04 | Предварительная смета: источники цен, налоги, валюта, версии; отсутствующее ≠ 0 | 10.4 | commerce, calc | 4 | 🟡 продукт: расчёт комплекта с версиями, валюта без умолчания, «цена неизвестна» ≠ 0 (A-19); источники цен и налоги — нет (Q2/Q3) | 02 С3; `tests/core/test_calc_rules.py`, `tests/server/test_calc.py` |
 | R-05 | КП: редактируемый проект, версии; экспорт ≠ защищённая выдача | 10.5 | commerce | 2/gate | 📐 / ⛔ защищённый выпуск | 13-protected-kp.md |
 | R-06 | Проекты: комплекты, ГИП/РП, участники, явные действия | 10.6 | projects | 0 | ✅ | `_project_assign`, `_kit_create`; `test_project_role_scope`, `test_second_gip_requires_explicit_revoke` |
-| R-07 | Задачи: срок, перенос с основанием, доска, связи, уведомления | 10.7 | projects | 3 | 📐 | 02 С2, 04, 06 |
+| R-07 | Задачи: срок, перенос с основанием, доска, связи, уведомления | 10.7 | projects | 3 | 🟡 задачи со статусами и исполнителем (в т. ч. замещающим участника, D-35); уведомления в программе — пока о заказах и замещениях (D-35, A-41); перенос срока, доска, связи — 📐 | 02 С2, 04, 06; `server/notify.py`; `tests/server/test_project_delegation_notify.py`, `tests/client/test_notify_project_client.py`, `tests/ui/test_notify_project_ui.py` |
 | R-08 | Документы: устойчивые ID, версии, монотонная последовательность ≠ метка, WIP, архив | 10.8 | documents | 3 | 📐 (принцип revision ≠ label реализован на ТКП) | 03 §4, 08 §2.4; `tkp.revision` vs `label` в `schema.py` |
 | R-09 | Замечания к версии; draft/согласование/выдача/отправка/получение различаются | 10.9 | documents | 3 | 📐 (различие «регистрация отправки ≠ получение» реализовано для ТКП) | 02 С2; `_tkp_record_sent` |
 | R-10 | Перенос файлов: одобрение РП, preview, hash, восстановление, источник до проверки | 10.10, реш. 8 | documents, files | 3 | 📐 | 03 §4, 05 §5, spike S5 |
@@ -50,7 +50,7 @@
 | R-36 | Широкая офлайн-работа: локальное хранилище, очередь, operation ID, дедупликация, конфликты | 2.4, 7 | sync | 0 | ✅ семантика / 📐 шифрование и native | `client.py`; `test_offline_sync.py`; 06 |
 | R-37 | Центр конфигурации: scope, версии, preview, публикация, rollback, границы | 8 | config | 7 | 📐 | 07 |
 | R-38 | Права «действие × объект × контекст», проверка сервером в момент эффекта, generation | 6 | identity | 0 | ✅ | `authz.py`; `test_authz.py`; `contracts/permissions.slice1.json` |
-| R-39 | Роли: минимум 11 функций, замещение, ГИП — только admin, без guest | 6 | identity | 0 | ✅ роли, срок (замещение), ГИП-admin; 📐 UI замещения | `test_expired_grant`, `test_gip_assignment_admin_only` |
+| R-39 | Роли: минимум 11 функций, замещение, ГИП — только admin, без guest | 6 | identity | 0 | ✅ роли, ГИП-admin; замещение глобальных ролей (D-34) и ролей в проекте — ГИП, РП, участник (D-35) с основанием решения, покрытие ролей, раздел «Замещения» | `test_expired_grant`, `test_gip_assignment_admin_only`; `tests/server/test_delegation.py`, `tests/server/test_project_delegation_notify.py`, `tests/ui/test_delegation_ui.py`, `tests/ui/test_notify_project_ui.py` |
 | R-40 | Центр помощи: по ролям, шаги, скриншоты по версии UI, поиск | 13 | help | 2→7 | 📐 | 08 §6 |
 | R-41 | Терминология и бренд ВЕКТОР/VECTOR, русский основной, пояснение BOM/CAPA/CAPP/ЕСТД | 13 | ui | 0→2 | 🟡 термины и сообщения сервера на русском | 01 §4; `message_ru` в `server.py` |
 | R-42 | Темы, токены, контраст, фокус, состояния, DPI, клавиатура | 13 | ui | 1–2 | 📐 | 08 §4–5 |
