@@ -471,8 +471,9 @@ class StockMixin:
             lines.append({"pos": r.pos, "line_id": r.line_id, "code": r.code, "name": r.name, "unit": r.unit,
                           "qty": money.to_json(r.qty), "item_id": r.item_id, "match_note": r.match_note, "coverage": cov})
         last = self._latest_version(conn, o["kit_id"])
-        kit = self._get(conn, kits, o["kit_id"])
-        return {"id": o["id"], "project_id": o["project_id"], "kit_id": o["kit_id"], "kit_code": kit["code"],
+        kit, pr = self._get(conn, kits, o["kit_id"]), self._get(conn, projects, o["project_id"])
+        return {"id": o["id"], "project_id": o["project_id"], "project_code": pr["code"], "project_title": pr["title"],
+                "kit_id": o["kit_id"], "kit_code": kit["code"], "kit_title": kit["title"],
                 "calc_version_id": o["calc_version_id"], "calc_version_no": o["calc_version_no"],
                 "latest_calc_version_no": last["version_no"] if last else None,
                 "superseded": bool(last and last["id"] != o["calc_version_id"]),
@@ -488,7 +489,8 @@ class StockMixin:
     # ------------------------------------------------------------ данные для pull
     def _pull_stock(self, conn, uid: str, now) -> dict:
         out: dict[str, Any] = {"warehouses": [], "stock_items": [], "stock_balances": [], "stock_reservations": [],
-                               "stock_movements": [], "stock_movements_truncated": False, "needs": [], "stock_projects": []}
+                               "stock_movements": [], "stock_movements_truncated": False, "needs": [], "stock_projects": [],
+                               "need_candidates": []}
         can_stock = self.policy.can(conn, uid, "stock.read", now)
         if can_stock:
             out["warehouses"] = [self.v_warehouse(dict(r._mapping)) for r in conn.execute(sa.select(warehouses).order_by(warehouses.c.code))]
@@ -508,6 +510,21 @@ class StockMixin:
             out["stock_projects"] = [{"id": r.id, "code": r.code, "title": r.title, "status": r.status}
                                      for r in conn.execute(sa.select(projects.c.id, projects.c.code, projects.c.title,
                                                                      projects.c.status).order_by(projects.c.code))]
+        # Кандидаты для «Сформировать потребность»: последняя зафиксированная версия каждого комплекта, по которой
+        # потребности ещё нет. Без цен и сумм — закупке нужен только факт версии (A-22).
+        out["need_candidates"] = []
+        have = {r.calc_version_id for r in conn.execute(sa.select(procurement_needs.c.calc_version_id))}
+        latest: dict[str, dict] = {}
+        for v in conn.execute(sa.select(calc_versions).order_by(calc_versions.c.kit_id, calc_versions.c.version_no)):
+            latest[v.kit_id] = dict(v._mapping)
+        for kit_id, v in sorted(latest.items(), key=lambda kv: kv[1]["frozen_at"]):
+            if v["id"] in have or not self.policy.can(conn, uid, "need.generate", now, v["project_id"]):
+                continue
+            k, pr = self._get(conn, kits, kit_id), self._get(conn, projects, v["project_id"])
+            out["need_candidates"].append({"calc_version_id": v["id"], "version_no": v["version_no"], "kit_id": kit_id,
+                                           "kit_code": k["code"], "kit_title": k["title"], "project_id": pr["id"],
+                                           "project_code": pr["code"], "project_title": pr["title"],
+                                           "line_count": v["line_count"], "frozen_at": iso(v["frozen_at"])})
         available = self._available_by_item(conn) if can_stock else None
         for n in conn.execute(sa.select(procurement_needs).order_by(procurement_needs.c.created_at, procurement_needs.c.id)):
             if self.policy.can(conn, uid, "need.read", now, n.project_id):

@@ -268,6 +268,10 @@ def test_need_from_latest_frozen_version_matches_items_exactly(world, st):
     lines = [calc_line("Кабель", "КВВГ-4x1.5", "м", "120"), calc_line("Кабель, но в км", "КВВГ-4x1.5", "км", "1"),
              calc_line("Шкаф", "ШК-1", "шт", "1"), calc_line("Без кода", None, "шт", "2")]
     ver = _freeze(st.proj, lines)
+    # Закупка видит кандидата (последняя версия без потребности) — без цен; склад кандидатов не видит.
+    cand = st.pr.query("pull")["result"]["need_candidates"]
+    assert [(c["calc_version_id"], c["kit_code"], c["version_no"]) for c in cand] == [(ver["id"], "АТХ", 1)]
+    assert "total" not in cand[0] and st.wh.query("pull")["result"]["need_candidates"] == []
     # Права: закупка формирует; склад и ГИП — нет.
     assert st.wh.cmd("need.generate", {"id": new_id(), "calc_version_id": ver["id"]})["status"] == "denied"
     assert st.proj.gip.cmd("need.generate", {"id": new_id(), "calc_version_id": ver["id"]})["status"] == "denied"
@@ -285,6 +289,7 @@ def test_need_from_latest_frozen_version_matches_items_exactly(world, st):
     # Одна потребность на версию.
     r = st.pr.cmd("need.generate", {"id": new_id(), "calc_version_id": ver["id"]})
     assert (r["code"], r["details"]["need_id"]) == ("need_exists", need["id"])
+    assert st.pr.query("pull")["result"]["need_candidates"] == [] and need["project_code"] == "П-100"
     # ГИП/РП проекта видят потребность (без складских остатков — «неизвестно»), посторонний — нет.
     g = st.proj.gip.query("pull")["result"]["needs"]
     assert len(g) == 1 and g[0]["lines"][0]["coverage"]["available"] is None
