@@ -33,7 +33,7 @@ from vector.core import money
 #   v9 — перемещение со статусом «в пути»: отгрузка → приёмка получателем или возврат отправителю (D-29, A-29);
 #   v10–v13 — акты, подписи, поставщики и заказы, согласование и НДС (D-30…D-33, см. migrate.py);
 #   v14 — замещение (передача роли на время), основания решений, сверка заказа со счётом поставщика (D-34).
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -931,6 +931,28 @@ purchase_order_invoice_checks = sa.Table("purchase_order_invoice_checks", metada
     sa.CheckConstraint("state IN ('none','match','mismatch','unknown')", name="state"),
     sa.CheckConstraint("state NOT IN ('mismatch','unknown') OR reason IS NOT NULL", name="reason_when_needed"))
 
+# Замещение роли В ПРОЕКТЕ (A-40 → D-35): расширение role_delegations. Есть строка — role_delegations.role это роль в
+# проекте (gip / rp / participant) и действует только в project_id; нет строки — глобальная роль (D-34). Неизменяемо:
+# проект замещения не меняется (нужен другой проект — новое замещение).
+role_delegation_projects = sa.Table("role_delegation_projects", metadata,
+    sa.Column("delegation_id", BIGID, sa.ForeignKey("role_delegations.id"), primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True))
+
+# Уведомления в программе (A-40 → D-35): кому, о чём (kind, заголовок, текст), по какому объекту, кто вызвал.
+# Создаются в той же транзакции, что и событие (отказ команды — уведомления нет). Меняется только read_at
+# (прочитано); удаления нет — уведомления старше срока просто не приходят в pull.
+notifications = sa.Table("notifications", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("user_id", ID, sa.ForeignKey("users.id"), nullable=False, index=True),
+    sa.Column("kind", U(32), nullable=False),
+    sa.Column("title", U(200), nullable=False),
+    sa.Column("body", U(1000)),
+    sa.Column("object_type", U(32)),
+    sa.Column("object_id", U(64)),
+    sa.Column("actor_id", ID),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("read_at", UtcDateTime))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -1018,7 +1040,8 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (procurement_need_line_match_units, 50011), (stock_transfers, 50012),
                  (stock_transfer_acts, 50013), (stock_shipment_terms, 50014), (stock_shipment_losses, 50015),
                  (signatures, 50016), (purchase_receipts, 50017), (purchase_order_approvals, 50018),
-                 (approval_bases, 50019), (purchase_order_invoice_checks, 50020)):
+                 (approval_bases, 50019), (purchase_order_invoice_checks, 50020),
+                 (role_delegation_projects, 50021)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

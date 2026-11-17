@@ -428,7 +428,9 @@ def test_v13_to_v14_adds_delegations_bases_and_invoice_checks(backend, tmp_path,
     before = counts(eng, mg.tables_of_version(13))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version, rep.created_tables) == (
-        13, 14, ["role_delegations", "approval_bases", "purchase_order_invoices", "purchase_order_invoice_checks"])
+        13, db.SCHEMA_VERSION, [t.name for v in range(14, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]])
+    assert rep.created_tables[:4] == ["role_delegations", "approval_bases", "purchase_order_invoices",
+                                      "purchase_order_invoice_checks"]
     after = counts(eng, mg.tables_of_version(13))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
 
@@ -458,4 +460,44 @@ def test_v13_to_v14_adds_delegations_bases_and_invoice_checks(backend, tmp_path,
         c.execute(db.purchase_order_invoice_checks.insert().values(order_id=oid, seq=1, state="mismatch",
                                                                    diff_gross=Decimal("0.01"), reason="Счёт округлён"))
     bad(db.purchase_order_invoice_checks.update().values(reason="другая"))
-    assert db.check_schema(eng) == 14
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+
+
+def test_v14_to_v15_adds_project_delegations_and_notifications(backend, tmp_path, clock, keys):
+    """v14 → v15 (D-35): замещение роли в проекте (расширение role_delegations) и уведомления. Данные v14 не
+    меняются; проект замещения неизменяем; уведомление можно отметить прочитанным, но не без адресата."""
+    from datetime import date
+    eng = make_v3(backend, tmp_path, clock, version=14)
+    now, uid, uid2, pid = clock.now(), new_id(), new_id(), new_id()
+    with eng.begin() as c:
+        for u, login in ((uid, "u1"), (uid2, "u2")):
+            c.execute(db.users.insert().values(id=u, login=login, display_name=login, pwd_hash="x",
+                                               must_change_password=False, password_changed_at=now, failed_attempts=0,
+                                               active=True, created_at=now))
+        c.execute(db.projects.insert().values(id=pid, code="П-1", title="Проект", status="rkd_in_progress", version=1,
+                                              created_by=uid, created_at=now, updated_by=uid, updated_at=now))
+        did = c.execute(db.role_delegations.insert().values(
+            from_user_id=uid, to_user_id=uid2, role="gip", valid_from=date(2026, 11, 16), valid_until=date(2026, 11, 30),
+            reason="Отпуск", created_by=uid, created_at=now)).inserted_primary_key[0]
+    before = counts(eng, mg.tables_of_version(14))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version, rep.created_tables) == (
+        14, db.SCHEMA_VERSION, ["role_delegation_projects", "notifications"])
+    after = counts(eng, mg.tables_of_version(14))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    with eng.begin() as c:
+        c.execute(db.role_delegation_projects.insert().values(delegation_id=did, project_id=pid))
+    bad(db.role_delegation_projects.insert().values(delegation_id=did, project_id=pid))       # одна область
+    bad(db.role_delegation_projects.update().values(project_id=new_id()))                     # неизменяемо
+    bad(db.role_delegation_projects.delete())
+    bad(db.notifications.insert().values(user_id=None, kind="po_submitted", title="x", created_at=now))
+    with eng.begin() as c:
+        nid = c.execute(db.notifications.insert().values(user_id=uid, kind="po_submitted", title="Заказ № 1",
+                                                         created_at=now)).inserted_primary_key[0]
+        c.execute(db.notifications.update().where(db.notifications.c.id == nid).values(read_at=now))
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
