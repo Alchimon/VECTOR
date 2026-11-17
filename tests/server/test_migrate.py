@@ -1,4 +1,4 @@
-"""Миграция схемы v3 → v4 → v5 (vector-server migrate): копия до миграции, всё-или-ничего, только добавление.
+"""Миграция схемы v3 → v4 → v5 → v6 (vector-server migrate): копия до миграции, всё-или-ничего, только добавление.
 
 БД версии 3 строится честно: создаются только таблицы v3 и запись schema_version=3, затем данные среза 1
 вносятся обычными командами сервиса (они не касаются таблиц расчётов).
@@ -56,8 +56,8 @@ def test_v3_to_v4_keeps_data_backs_up_first_and_enables_calc(backend, tmp_path, 
         db.check_schema(eng)                       # программа v4 на БД v3 не запускается (fail-closed)
 
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
-    # v3 → v4 → v5 одной транзакцией: 6 таблиц расчётов + 7 таблиц склада и закупки.
-    assert (rep.from_version, rep.to_version) == (3, db.SCHEMA_VERSION) and len(rep.created_tables) == 13
+    # v3 → … → v6 одной транзакцией: 6 таблиц расчётов + 7 таблиц склада и закупки + 1 таблица сопоставлений.
+    assert (rep.from_version, rep.to_version) == (3, db.SCHEMA_VERSION) and len(rep.created_tables) == 14
     assert db.check_schema(eng) == db.SCHEMA_VERSION
     # Данные не тронуты (schema_meta получила одну служебную запись о миграции).
     after = counts(eng, mg.tables_of_version(3))
@@ -97,8 +97,8 @@ def test_v4_to_v5_adds_stock_without_touching_calc(backend, tmp_path, clock, key
     before = counts(eng, mg.tables_of_version(4))
 
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
-    assert (rep.from_version, rep.to_version) == (4, 5)
-    assert rep.created_tables == [t.name for t in mg.ADDED_IN[5]]
+    assert (rep.from_version, rep.to_version) == (4, db.SCHEMA_VERSION)
+    assert rep.created_tables == [t.name for t in mg.ADDED_IN[5] + mg.ADDED_IN[6]]
     after = counts(eng, mg.tables_of_version(4))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
     vr = bk.verify_backup(rep.backup_path, keys)

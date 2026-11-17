@@ -20,12 +20,14 @@ from sqlalchemy.types import TypeDecorator
 
 from vector.core import money
 
-# История версий схемы (до первой эксплуатации миграций нет: схема создаётся заново, см. D-15/D-20):
+# История версий схемы. Начиная с v3 базы обновляются командой `vector-server migrate` (migrate.py, D-22):
+# каждый шаг только ДОБАВЛЯЕТ таблицы, существующие данные не меняются.
 #   v2 — срез 1: заказчики, тендеры, ТКП, проекты, назначения, комплекты, учётные записи, аудит;
 #   v3 — задачи, документы, неизменяемые версии документов, хранилище файлов в БД (блоками);
-#   v4 — расчёт комплекта: черновик, неизменяемые версии K.n, неизменяемые ревизии проектного итога (С3).
-#        Переход v3 → v4 только добавляет таблицы: `vector-server migrate` (migrate.py).
-SCHEMA_VERSION = 5
+#   v4 — расчёт комплекта: черновик, неизменяемые версии K.n, неизменяемые ревизии проектного итога (С3);
+#   v5 — склад и закупка: номенклатура, склады, остатки, резервы, журнал движений, потребность (С4, D-23);
+#   v6 — ручное сопоставление строк потребности с номенклатурой (неизменяемая история, A-25).
+SCHEMA_VERSION = 6
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -476,6 +478,23 @@ procurement_need_lines = sa.Table("procurement_need_lines", metadata,
     sa.Column("match_note", U(200)),
     sa.UniqueConstraint("need_id", "line_id", name="uq_procurement_need_lines_line"))
 
+# Ручное сопоставление строки потребности с номенклатурой (A-25). Сама строка — неизменяемый снимок расчёта,
+# поэтому решение закупки хранится отдельно и ТОЖЕ неизменяемо: каждое пересопоставление — новая запись со
+# следующим seq, действует запись с наибольшим seq (история «кто, когда, на что и почему поменял» сохраняется).
+# previous_item_id — что действовало до этой записи (автоматическое или прошлое ручное; NULL — не сопоставлена).
+procurement_need_line_matches = sa.Table("procurement_need_line_matches", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("need_id", ID, sa.ForeignKey("procurement_needs.id"), nullable=False),
+    sa.Column("line_id", ID, nullable=False),
+    sa.Column("seq", sa.Integer, nullable=False),
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id"), nullable=False),
+    sa.Column("previous_item_id", ID),
+    sa.Column("reason", U(2000), nullable=False),
+    sa.Column("matched_by", ID, nullable=False),
+    sa.Column("matched_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("need_id", "line_id", "seq", name="uq_need_line_matches_seq"),
+    sa.CheckConstraint("seq > 0", name="seq_pos"))
+
 # Резерв: active → consumed (израсходован выдачами полностью) | released (снят; неизрасходованное вернулось
 # в доступное). Срок резерва и автоснятие — не в этом срезе: срок по умолчанию не утверждён (A-23).
 stock_reservations = sa.Table("stock_reservations", metadata,
@@ -606,7 +625,8 @@ BEGIN THROW {ms_error}, '{n} are immutable', 1; END""").execute_if(dialect="mssq
 
 
 for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_calc_revisions, 50005),
-                 (project_calc_revision_items, 50006), (stock_movements, 50007), (procurement_need_lines, 50008)):
+                 (project_calc_revision_items, 50006), (stock_movements, 50007), (procurement_need_lines, 50008),
+                 (procurement_need_line_matches, 50009)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):
