@@ -33,6 +33,7 @@ Item {
     // Подсказки видимости разделов (решает сервер: без права pull просто не вернёт данные).
     readonly property bool seesStock: backend.hint("stock.read", backend.permRevision)
     readonly property bool seesNeeds: seesStock || (backend.needsOverview.needs || []).length > 0
+        || (backend.me.roles || []).indexOf("accountant") >= 0   // бухгалтерия видит заказы поставщикам (D-32)
     Shortcut { sequence: "F5"; onActivated: backend.syncNow() }
 
     RowLayout {

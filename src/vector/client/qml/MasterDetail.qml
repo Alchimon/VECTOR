@@ -18,11 +18,19 @@ Item {
     property string emptyAction: ""
     property string noSelectionText: "Выберите запись слева"
     signal emptyActionTriggered()
+    // Необязательные вкладки раздела под заголовком (как в «Закупке»: потребности / заказы / поставщики):
+    // tabs — [{id, label, icon}], tab — выбранная; выбор сообщается сигналом tabPicked (состояние хранит раздел).
+    property var tabs: []
+    property string tab: ""
+    property string tabsName: "sectionTabs"
+    signal tabPicked(string id)
 
     ColumnLayout {
         anchors.fill: parent; anchors.margins: 28; anchors.bottomMargin: 20
         spacing: 20
         PageHeader { id: hdr; title: md.title; subtitle: md.subtitle }
+        VSegmented { visible: md.tabs.length > 0; objectName: md.tabsName; model: md.tabs; current: md.tab
+                     onPicked: id => md.tabPicked(id) }
         RowLayout {
             Layout.fillWidth: true; Layout.fillHeight: true
             spacing: 20

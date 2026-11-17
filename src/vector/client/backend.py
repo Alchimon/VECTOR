@@ -23,7 +23,7 @@ from vector import __version__
 from vector.core import stock
 from vector.core.contracts import Contracts
 
-from . import calc_view, stock_view
+from . import calc_view, purchasing_view, stock_view
 from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
 from .vault import KeyringStore, MemoryStore, VaultError
@@ -96,10 +96,36 @@ def _clean_lines(lines) -> list[dict]:
     return out
 
 
+def _clean_po_lines(lines) -> list[dict]:
+    """Строки заказа поставщику из формы QML → payload (D-32).
+
+    Как у расчёта: числа не превращаются во float («1 234,5» → «1234.5»); пустая цена = «неизвестна» (None), а
+    не ноль; пустые ссылки на потребность не передаются. Строгая проверка — vector.core.purchasing.
+    """
+    out = []
+    for raw in lines or []:
+        raw = raw if isinstance(raw, dict) else {}
+        ln = {}
+        for k in ("line_id", "item_id", "qty", "unit_price", "need_id", "need_line_id", "note"):
+            v = raw.get(k)
+            if isinstance(v, str):
+                v = v.strip()
+                if k in ("qty", "unit_price"):
+                    v = v.replace(" ", "").replace("\u00a0", "").replace(",", ".")
+            v = None if v in ("", None) else v
+            if v is not None or k in ("qty", "unit_price"):
+                ln[k] = v
+        out.append(ln)
+    return out
+
+
 def _conflict_value(field: str, value, obj) -> str:
     """Значение поля для экрана конфликта. Позиции расчёта — кратко (число позиций и итог), а не сырой список."""
     if value is None:
         return ""
+    if field == "lines" and isinstance(value, list) and any(isinstance(x, dict) and "item_id" in x for x in value):
+        # Строки заказа поставщику (D-32): кратко — число строк (цены и итог видны в самом заказе).
+        return f"{len(value)} стр. заказа"
     if field == "lines" and isinstance(value, list):
         pv = calc_view.preview(_clean_lines(value), (obj or {}).get("currency"))
         return f"{len(value)} поз. · {pv['total_label']}"
@@ -152,7 +178,9 @@ class Backend(QObject):
         self._problems = 0
         self._me: dict = {}
         self._data: dict[str, list] = {"customer": [], "tender": [], "tkp": [], "project": [], "kit": [], "task": [], "document": [],
-                                       "calc_draft": [], "warehouse": [], "stock_item": []}
+                                       "calc_draft": [], "warehouse": [], "stock_item": [], "supplier": [], "purchase_order": []}
+        # Фильтр вкладки «Заказы поставщикам» (active / draft / placed / closed / all) — состояние экрана.
+        self._po_filter = "active"
         # Склад: снимок остатков/резервов/журнала/потребностей на момент последнего обновления (meta кэша).
         self._stock: dict = {}
         # Метаданные версий документов (номер, имя файла, размер, SHA-256) из зашифрованного кэша клиента.
@@ -370,7 +398,9 @@ class Backend(QObject):
             order = {"in_progress": 0, "open": 1, "done": 2, "cancelled": 3}
             return sorted(out, key=lambda d: (order.get(d.get("status"), 9), str(d.get("title") or "").lower()))
         key = {"customer": "name", "tender": "title", "tkp": "label", "project": "code", "kit": "code", "document": "code",
-               "warehouse": "code", "stock_item": "code"}[kind]
+               "warehouse": "code", "stock_item": "code", "supplier": "code",
+               # Порядок заказов задаёт purchasing_view.orders_view (по номеру); здесь — любой стабильный.
+               "purchase_order": "id"}[kind]
         return sorted(out, key=lambda d: (str(d.get(key) or "")).lower())
 
     def _decorate_task(self, o: dict) -> dict:
@@ -496,6 +526,55 @@ class Backend(QObject):
         """Настройки компании для раздела «Администрирование» (D-26, A-26): значение, кто/когда/почему задал."""
         return qml_safe(stock_view.settings_view(self._stock.get("config") or [], self._me.get("roles", []),
                                                  self._online and self._session_mode == "online"))
+
+    # ------------------------------------------------------------ заказы поставщикам и поставщики (D-32)
+    @Property("QVariantMap", notify=dataChanged)
+    def ordersOverview(self):
+        """Вкладка «Заказы поставщикам»: черновики (в т. ч. не отправленные), размещённые, «поставлено / ждём»."""
+        return qml_safe(purchasing_view.orders_view(
+            self._decorate("purchase_order"), self._decorate("supplier"), self._decorate("stock_item"),
+            self._stock.get("needs") or [], self._me.get("roles", []), self._online and self._session_mode == "online",
+            self._last_pull, self._po_filter))
+
+    @Property("QVariantMap", notify=dataChanged)
+    def suppliersOverview(self):
+        """Вкладка «Поставщики»: справочник (ведёт закупка, A-34)."""
+        return qml_safe(purchasing_view.suppliers_view(self._decorate("supplier"), self._me.get("roles", [])))
+
+    @Slot(str)
+    def setOrdersFilter(self, flt: str):
+        """Сменить фильтр списка заказов (active / draft / placed / closed / all)."""
+        self._po_filter = flt if flt in ("active", "draft", "placed", "closed", "all") else "active"
+        self.dataChanged.emit()
+
+    @Slot("QVariantList", str, result="QVariantMap")
+    def poPreview(self, lines, currency: str) -> dict:
+        """Проверка строк черновика заказа в форме (без сервера): суммы, замечания по строкам, итог."""
+        lines = lines.toVariant() if hasattr(lines, "toVariant") else lines
+        return qml_safe(purchasing_view.preview(_clean_po_lines(lines), currency.strip().upper() or None,
+                                                self._decorate("stock_item")))
+
+    @Slot(str, result=str)
+    def innProblem(self, text: str) -> str:
+        """Проверка ИНН в форме поставщика (10/12 цифр с контрольной суммой; пусто — можно)."""
+        return purchasing_view.inn_problem(text)
+
+    @Slot(str, "QVariantMap")
+    def savePoDraft(self, tag: str, payload):
+        """«Сохранить черновик заказа»: через очередь (можно без связи). Создание или правка и expected_version —
+        решает SyncClient.save_po_draft.
+        """
+        p = dict(payload.toVariant() if hasattr(payload, "toVariant") else payload)
+        p["lines"] = _clean_po_lines(p.get("lines") or [])
+        for k in ("currency", "supplier_ref", "expected_on", "note"):
+            v = (p.get(k) or "").strip() if isinstance(p.get(k), str) else p.get(k)
+            p[k] = (v.upper() if k == "currency" else v) or None
+
+        def job():
+            """Сохранить черновик в рабочем потоке и снять снимок данных."""
+            r = self.client.save_po_draft(p)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "po.update", res))
 
     @Slot(str, result=str)
     def qtyProblem(self, text: str) -> str:
@@ -799,7 +878,7 @@ class Backend(QObject):
         self._run(job, lambda res: self._finish_command(tag, "config.publish", res))
 
     # Справочник и настройки тоже приходят только с pull — после их команд снимок перечитывается.
-    _STOCK_PREFIXES = frozenset({"stock", "need", "item_alias", "unit_conversion", "config"})
+    _STOCK_PREFIXES = frozenset({"stock", "need", "item_alias", "unit_conversion", "config", "po"})
 
     def _finish_command(self, tag: str, command: str, res: dict):
         """Общий разбор результата команды: снимок данных, уведомление, сигнал commandDone для формы."""

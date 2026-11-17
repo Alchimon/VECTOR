@@ -72,7 +72,10 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v_enc TEXT NOT NULL) STRICT
 # Склад: справочники (склады, номенклатура) правятся офлайн через очередь — обычные объекты кэша.
 OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp"), ("project", "projects"), ("kit", "kits"),
                 ("task", "tasks"), ("document", "documents"), ("calc_draft", "calc_drafts"),
-                ("warehouse", "warehouses"), ("stock_item", "stock_items"))
+                ("warehouse", "warehouses"), ("stock_item", "stock_items"),
+                # Закупка (D-32): поставщики и черновики заказов правятся офлайн через очередь; размещение, приём,
+                # закрытие и отмена — онлайн-командами, их ответ (заказ) тоже кладётся сюда.
+                ("supplier", "suppliers"), ("purchase_order", "purchase_orders"))
 # Объекты из результата команды → список в meta (ключ результата, ключ meta); заменяются по id.
 # Движения склада, резервы и потребности меняются ТОЛЬКО онлайн-командами (online_required): в кэше это
 # снимок «на момент последнего обновления», офлайн он только читается.
@@ -95,6 +98,23 @@ def _calc_same(local: dict, payload: dict) -> bool:
     except calc.CalcError:
         return False
     return (ca, (local.get("note") or None)) == (cb, payload.get("note")) and [x.to_json() for x in a] == [x.to_json() for x in b]
+
+
+def _po_same(local: dict, payload: dict) -> bool:
+    """Совпадает ли черновик заказа в кэше с сохраняемым: справочные поля и строки в канонической форме ядра."""
+    from vector.core import purchasing as pu
+
+    def canon(o):
+        """Каноническая форма черновика (строки — через правила ядра; не разобрались — None, т. е. «не равно»)."""
+        try:
+            lines, cur = pu.parse_lines([{k: ln.get(k) for k in pu.LINE_KEYS if k in ln} for ln in o.get("lines") or []],
+                                        o.get("currency"))
+        except pu.PurchaseError:
+            return None
+        return (o.get("supplier_id"), cur, o.get("supplier_ref") or None, o.get("expected_on") or None,
+                o.get("note") or None, [x.to_json() for x in lines])
+    a = canon(local)
+    return a is not None and a == canon(payload)
 
 
 @dataclass
@@ -399,6 +419,29 @@ class SyncClient:
         if local is not None and _calc_same(local, payload):
             return LocalResult("accepted", message_ru="Изменений нет — сохранять нечего.", response={"unchanged": True})
         return self.execute("calc.save_draft", payload, ev)
+
+    def save_po_draft(self, payload: dict) -> LocalResult:
+        """«Сохранить черновик заказа поставщику»: po.create (заказа ещё нет ни на сервере, ни в очереди) или
+        po.update — через офлайн-очередь (D-32).
+
+        expected_version — по той же цепочке, что у черновика расчёта: если в очереди уже есть неотправленные
+        правки этого заказа, версия = версия предыдущей правки + 1 (создание идёт без версии → следующая правка
+        основана на версии 1); иначе — версия серверной копии. Ошибка цепочки даёт только конфликт, не перезапись.
+        Сохранение без изменений в очередь не ставится (сервер ответил бы «нет изменений» и цепочка разошлась бы).
+        """
+        if self.db is None:
+            return LocalResult("unauthenticated", message_ru="Войдите в систему.")
+        oid = payload["id"]
+        row = self.db.execute("SELECT server_version FROM cache WHERE object_type='purchase_order' AND id=?", (oid,)).fetchone()
+        prev = self.db.execute("SELECT expected_version FROM outbox WHERE command IN ('po.create','po.update') AND object_id=? "
+                               "AND state IN ('pending','conflict','rejected') ORDER BY seq DESC LIMIT 1", (oid,)).fetchone()
+        if prev is None and (row is None or row[0] is None):
+            return self.execute("po.create", payload)
+        local = self.get_local("purchase_order", oid) or {}
+        if _po_same(local, payload):
+            return LocalResult("accepted", message_ru="Изменений нет — сохранять нечего.", response={"unchanged": True})
+        ev = (prev[0] or 0) + 1 if prev is not None else row[0]
+        return self.execute("po.update", payload, ev)
 
     def retry_online(self, op_id: str) -> LocalResult:
         """Повторить операцию с неизвестным исходом с ТЕМ ЖЕ operation_id: сервер либо выполнит её впервые, либо вернёт

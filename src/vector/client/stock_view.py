@@ -344,6 +344,8 @@ def needs_view(needs: list, candidates: list, items: list, last_pull: str, onlin
             lines.append({**ln, "qty_label": qty_label(ln["qty"], unit), "reserved_label": qty_label(cov["reserved"], cu),
                           "item_qty_label": qty_label(ln.get("item_qty"), cu) if ln.get("factor") else "",
                           "open_label": qty_label(cov["open"], cu),
+                          # «Заказано, ждём» — по размещённым заказам поставщикам (D-32); нет данных — пусто.
+                          "on_order_label": qty_label(ln.get("on_order"), cu) if _d(ln.get("on_order")) > 0 else "",
                           "available_label": qty_label(cov["available"], cu) if cov["available"] is not None else "неизвестно",
                           "state_label": st, "state_tone": tone,
                           "item_label": (it[ln["item_id"]]["code"] + " · " + it[ln["item_id"]]["name"]) if ln.get("item_id") in it
