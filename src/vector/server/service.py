@@ -27,9 +27,10 @@ from vector.core.errors import CommandOutcome, Conflict, Denied, Rejected, Unaut
 from vector.core.redact import LEGACY_SECRET_COMMANDS, without_secrets
 
 from . import db, security
-from .authz import Authority, Policy, active_grants, grant_is_active
+from .authz import Authority, Policy, grant_is_active
 from .calc import CalcMixin
 from .config_store import ConfigMixin
+from .delegation import DelegationMixin
 from .purchasing import PurchasingMixin
 from .stock import StockMixin
 from .work import WorkMixin
@@ -82,9 +83,10 @@ class Ctx:
                                version_before=before, version_after=after, details=details or {}))
 
 
-class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin):
+class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
-    склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py).
+    склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py);
+    замещение и основания решений — DelegationMixin (delegation.py, D-34).
 
     Как устроен обработчик команды (все _xxx_yyy(ctx, p, ev) следуют одной схеме — так их легко проверять):
 
@@ -160,6 +162,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin):
             "contract.create": self._contract_create, "contract.update": self._contract_update,
             "po.submit": self._po_submit, "po.withdraw": self._po_withdraw, "po.approve": self._po_approve,
             "po.return": self._po_return,
+            # Замещение — передача роли на время (delegation.py, D-34).
+            "delegation.create": self._delegation_create, "delegation.revoke": self._delegation_revoke,
         }
         diff = set(self.contracts.catalog["commands"]) ^ set(self.handlers)
         if diff:
@@ -688,8 +692,12 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin):
         if o["last_edited_by"] == ctx.user_id:
             raise Denied("self_approval", "Автор последней правки не может согласовать ТКП сам (разделение обязанностей).")
         h = self._tkp_hash(o)
-        ctx.conn.execute(tkp_approvals.insert().values(tkp_id=o["id"], tkp_revision=o["revision"], content_hash=h,
-                                                       approver_id=ctx.user_id, grant_id=auth.ref_id, approved_at=ctx.now))
+        # grant_id — выдача роли, давшей право; при замещении (D-34) — выдача НОСИТЕЛЯ роли: согласование остаётся
+        # действительным, пока действует его роль. Основание (кто за кого) — в approval_bases.
+        aid = ctx.conn.execute(tkp_approvals.insert().values(tkp_id=o["id"], tkp_revision=o["revision"], content_hash=h,
+                                                             approver_id=ctx.user_id, grant_id=auth.ref_id,
+                                                             approved_at=ctx.now)).inserted_primary_key[0]
+        self._record_basis(ctx, "tkp_approval", str(aid), 1, auth)
         n = self._update_versioned(ctx, tkp, o, {"status": "approved", "updated_at": ctx.now})
         ctx.log("tkp", o["id"], auth, o["version"], n["version"], {"approved_revision": o["revision"], "content_hash": h,
                                                                   "comment": opt_str(p, "comment", 2000)})
@@ -728,8 +736,11 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin):
         ap = ctx.conn.execute(sa.select(tkp_approvals).where(tkp_approvals.c.tkp_id == o["id"], tkp_approvals.c.superseded_at.is_(None))
                               .order_by(tkp_approvals.c.id.desc()).limit(1)).first()
         roles = self.policy.roles_for("tkp.approve", "global_role")
+        # Чья выдача роли дала право: согласующего или — если он действовал по замещению (D-34) — носителя роли.
+        basis = self._basis(ctx.conn, "tkp_approval", str(ap.id)) if ap else None
+        grant_owner = (basis["on_behalf_of"] if basis and basis["on_behalf_of"] else ap.approver_id) if ap else None
         if (not ap or ap.tkp_revision != o["revision"] or ap.content_hash != self._tkp_hash(o)
-                or not grant_is_active(ctx.conn, ap.grant_id, ap.approver_id, roles, ctx.now)):
+                or not grant_is_active(ctx.conn, ap.grant_id, grant_owner, roles, ctx.now)):
             raise Rejected("approval_invalid",
                            "Согласование недействительно: изменилось содержимое, или полномочие согласующего отозвано/истекло. "
                            "Повторная выдача роли не восстанавливает прежнее согласование — нужно новое.",
@@ -1103,12 +1114,17 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin):
         out.update(self._pull_purchasing(conn, uid, now))
         # Настройки компании — всем (правила работы, по ним клиент показывает подсказки).
         out["config"] = self._pull_config(conn)
-        if out["tenders"] or out["projects"] or out["calc_revisions"] or out["warehouses"] or out["needs"] or out["purchase_orders"]:
+        # Замещения (свои; все — руководителю отдела и администратору) и покрытие ролей (D-34).
+        out.update(self._pull_delegations(conn, uid, now))
+        me_roles = self._me_roles(conn, uid, now)
+        # Справочник людей нужен и для выбора замещающего — поэтому он приходит всем, у кого есть хоть одна роль.
+        if (out["tenders"] or out["projects"] or out["calc_revisions"] or out["warehouses"] or out["needs"]
+                or out["purchase_orders"] or me_roles["roles"] or out["delegations"]):
             # Минимальный справочник людей (имя для отображения ответственного) — без логинов и контактов.
             out["people"] = [{"id": r["id"], "display_name": r["display_name"]} for r in
                              self._rows(conn, sa.select(users.c.id, users.c.display_name).where(users.c.active == sa.true()))]
         out["me"] = {"user_id": uid, "display_name": user["display_name"], "login": user["login"],
-                     "roles": [r for _, r in active_grants(conn, uid, now)],
+                     **me_roles,
                      "note_ru": "Роли в кэше клиента служат только подсказкой интерфейса; решение принимает сервер в момент эффекта."}
         return out
 

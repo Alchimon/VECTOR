@@ -54,7 +54,8 @@ import sqlalchemy as sa
 from vector.core import money, purchasing as pu, stock
 from vector.core.errors import Rejected
 
-from .db import (procurement_need_lines, procurement_needs, purchase_order_approvals, purchase_order_line_taxes,
+from .db import (approval_bases, procurement_need_lines, procurement_needs, purchase_order_approvals,
+                 purchase_order_invoice_checks, purchase_order_invoices, purchase_order_line_taxes,
                  purchase_order_lines, purchase_order_terms, purchase_orders, purchase_receipts, stock_items,
                  stock_movements, supplier_contracts, supplier_requisites, suppliers, warehouses)
 from .stock import _code, _qty, _stock_rejected
@@ -65,8 +66,12 @@ PULL_CLOSED_ORDERS_LIMIT = 300
 
 # Поля, которые после отправки на согласование (и после размещения) не меняются: это «условия» заказа, их хэш
 # согласуют и замораживают. Справочные поля (счёт поставщика, ожидаемая дата, примечание) меняются всегда.
-FROZEN_FIELDS = {"supplier_id", "currency", "lines", "contract_id", "vat_mode"}
-ORDER_KEYS = {"id", "supplier_id", "currency", "supplier_ref", "expected_on", "note", "lines", "contract_id", "vat_mode"}
+# С D-34 к условиям относятся и суммы по счёту поставщика: сверка с ними — часть того, что согласуют.
+FROZEN_FIELDS = {"supplier_id", "currency", "lines", "contract_id", "vat_mode", "invoice_gross", "invoice_vat"}
+ORDER_KEYS = {"id", "supplier_id", "currency", "supplier_ref", "expected_on", "note", "lines", "contract_id", "vat_mode",
+              "invoice_gross", "invoice_vat"}
+# Пустые условия заказа (нет строк-расширений v13/v14).
+NO_TERMS = {"contract_id": None, "vat_mode": None, "invoice_gross": None, "invoice_vat": None}
 SUPPLIER_KEYS = {"name", "inn", "contact", "note", "vat_rate", *pu.REQUISITE_KEYS}
 
 
@@ -101,9 +106,17 @@ class PurchasingMixin:
         return {k: v for k, v in r.items() if k != "supplier_id"} if r else {}
 
     def _terms(self, conn, oid: str) -> dict:
-        """Условия заказа сверх v12: договор и режим цен (None — не указаны)."""
+        """Условия заказа сверх v12: договор и режим цен (v13), суммы по счёту поставщика (v14); None — не указаны."""
         r = self._get(conn, purchase_order_terms, oid, "order_id")
-        return {"contract_id": r["contract_id"] if r else None, "vat_mode": r["vat_mode"] if r else None}
+        inv = self._get(conn, purchase_order_invoices, oid, "order_id")
+        return {"contract_id": r["contract_id"] if r else None, "vat_mode": r["vat_mode"] if r else None,
+                "invoice_gross": inv["invoice_gross"] if inv else None, "invoice_vat": inv["invoice_vat"] if inv else None}
+
+    @staticmethod
+    def _hash(supplier_id: str, currency: Optional[str], lines: list[pu.Line], terms: dict) -> str:
+        """SHA-256 содержания заказа: поставщик, валюта, строки и условия (договор, режим цен, суммы по счёту)."""
+        return pu.content_hash(supplier_id, currency, lines, terms["contract_id"], terms["vat_mode"],
+                               terms.get("invoice_gross"), terms.get("invoice_vat"))
 
     def _line_taxes(self, conn, oid: str) -> dict[str, str]:
         """Ставки НДС строк заказа: line_id → код ставки."""
@@ -111,10 +124,30 @@ class PurchasingMixin:
             sa.select(purchase_order_line_taxes).where(purchase_order_line_taxes.c.order_id == oid))}
 
     def _approvals(self, conn, oid: str) -> list[dict]:
-        """События согласования заказа по порядку."""
-        return [dict(r._mapping) for r in conn.execute(
+        """События согласования заказа по порядку — с основанием решения и результатом сверки со счётом (D-34)."""
+        events = {oid: [dict(r._mapping) for r in conn.execute(
             sa.select(purchase_order_approvals).where(purchase_order_approvals.c.order_id == oid)
-            .order_by(purchase_order_approvals.c.seq))]
+            .order_by(purchase_order_approvals.c.seq))]}
+        self._attach_bases(conn, events, oid)
+        return events[oid]
+
+    @staticmethod
+    def _attach_bases(conn, events: dict[str, list], oid: Optional[str] = None) -> None:
+        """Дополнить события согласования (order_id → [события]) основанием решения (approval_bases: своя роль,
+        роль руководителя отдела или замещение) и результатом сверки со счётом при отправке (invoice_check).
+        oid — только для одного заказа (иначе — все). У событий до D-34 этих сведений нет (None).
+        """
+        qb = sa.select(approval_bases).where(approval_bases.c.object_type == "purchase_order")
+        qc = sa.select(purchase_order_invoice_checks)
+        if oid is not None:
+            qb = qb.where(approval_bases.c.object_id == oid)
+            qc = qc.where(purchase_order_invoice_checks.c.order_id == oid)
+        bases = {(r.object_id, r.seq): dict(r._mapping) for r in conn.execute(qb)}
+        checks = {(r.order_id, r.seq): dict(r._mapping) for r in conn.execute(qc)}
+        for order_id, evs in events.items():
+            for e in evs:
+                e["basis"] = bases.get((order_id, e["seq"]))
+                e["invoice_check"] = checks.get((order_id, e["seq"]))
 
     @staticmethod
     def _approval_state(events: list[dict]) -> Optional[str]:
@@ -183,10 +216,9 @@ class PurchasingMixin:
 
     def _order_hash(self, conn, o: dict) -> str:
         """SHA-256 содержания заказа сейчас — для сверки с согласованным и замороженным (placed_hash)."""
-        t = self._terms(conn, o["id"])
-        return pu.content_hash(o["supplier_id"], o["currency"],
-                               self._core_lines(self._order_lines(conn, o["id"]), self._line_taxes(conn, o["id"])),
-                               t["contract_id"], t["vat_mode"])
+        return self._hash(o["supplier_id"], o["currency"],
+                          self._core_lines(self._order_lines(conn, o["id"]), self._line_taxes(conn, o["id"])),
+                          self._terms(conn, o["id"]))
 
     def v_order(self, conn, o: dict, with_prices: bool, pre: Optional[dict] = None) -> dict:
         """Заказ для клиента: реквизиты, поставщик, договор, строки с НДС и «поставлено / ждём», итоги, согласование.
@@ -206,7 +238,7 @@ class PurchasingMixin:
             ids = {r["item_id"] for r in rows}
             items = {r.id: dict(r._mapping) for r in conn.execute(sa.select(stock_items).where(stock_items.c.id.in_(ids)))} if ids else {}
         sup = (pre["sups"].get(o["supplier_id"]) if "sups" in pre else self._get(conn, suppliers, o["supplier_id"])) or {}
-        terms = pre["terms"].get(o["id"], {"contract_id": None, "vat_mode": None}) if "terms" in pre else self._terms(conn, o["id"])
+        terms = pre["terms"].get(o["id"], NO_TERMS) if "terms" in pre else self._terms(conn, o["id"])
         taxes = pre["taxes"].get(o["id"], {}) if "taxes" in pre else self._line_taxes(conn, o["id"])
         events = pre["approvals"].get(o["id"], []) if "approvals" in pre else self._approvals(conn, o["id"])
         cid = terms["contract_id"]
@@ -231,7 +263,7 @@ class PurchasingMixin:
                           "received": money.to_json(got), "remaining": money.to_json(pu.remaining(r["qty"], got))})
         delivery = pu.delivery_state(pairs) if o["status"] in ("placed", "closed") else None
         t = pu.totals(core)
-        h_now = pu.content_hash(o["supplier_id"], o["currency"], core, cid, mode)
+        h_now = self._hash(o["supplier_id"], o["currency"], core, terms)
         state = self._approval_state(events)
         last_approve = next((e for e in reversed(events) if e["kind"] == "approve"), None)
         last_submit = next((e for e in reversed(events) if e["kind"] == "submit"), None)
@@ -248,18 +280,35 @@ class PurchasingMixin:
                 "prices_visible": with_prices,
                 "total": t["total"] if with_prices else None, "unpriced_count": t["unpriced_count"] if with_prices else None,
                 "vat_totals": pu.vat_totals(core, mode) if with_prices else None,
+                # Сверка со счётом и «Контроль расчёта» (D-34) — только тем, кто видит цены.
+                "invoice_gross": money.to_json(terms["invoice_gross"]) if with_prices else None,
+                "invoice_vat": money.to_json(terms["invoice_vat"]) if with_prices else None,
+                "calc_control": (pu.calc_control(core, mode, terms["invoice_gross"], terms["invoice_vat"])
+                                 if with_prices else None),
                 "hash_ok": (o["placed_hash"] == h_now) if o["placed_hash"] else None,
                 "approval": {"state": state, "label": pu.APPROVAL_LABELS_RU[state],
                              # Совпадает ли содержание с последним согласованным (для «Разместить»).
                              "hash_ok": (last_approve["content_hash"] == h_now) if last_approve and state == "approve" else None,
                              "submitted_by": last_submit["actor_id"] if last_submit else None,
-                             "events": [{"seq": e["seq"], "kind": e["kind"], "label": pu.APPROVAL_LABELS_RU[e["kind"]],
-                                         "actor_id": e["actor_id"], "at": iso(e["at"]), "comment": e["comment"]}
-                                        for e in events]},
+                             "events": [self._v_event(e, with_prices) for e in events]},
                 "placed_by": o["placed_by"], "placed_at": iso(o["placed_at"]) if o["placed_at"] else None,
                 "closed_by": o["closed_by"], "closed_at": iso(o["closed_at"]) if o["closed_at"] else None,
                 "close_reason": o["close_reason"], "version": o["version"], "created_by": o["created_by"],
                 "created_at": iso(o["created_at"]), "lines": lines}
+
+    @staticmethod
+    def _v_event(e: dict, with_prices: bool) -> dict:
+        """Событие согласования для клиента: кто, когда, комментарий; с D-34 — чьим правом (роль, замещение — за
+        кого) и сверка со счётом при отправке (состояние и причина; разницы в деньгах — только тем, кто видит цены).
+        """
+        b, c = e.get("basis"), e.get("invoice_check")
+        return {"seq": e["seq"], "kind": e["kind"], "label": pu.APPROVAL_LABELS_RU[e["kind"]], "actor_id": e["actor_id"],
+                "at": iso(e["at"]), "comment": e["comment"],
+                "role": b["role"] if b else None, "on_behalf_of": b["on_behalf_of"] if b else None,
+                "delegation_id": b["delegation_id"] if b else None,
+                "invoice_state": c["state"] if c else None, "invoice_reason": c["reason"] if c else None,
+                "diff_gross": money.to_json(c["diff_gross"]) if c and with_prices else None,
+                "diff_vat": money.to_json(c["diff_vat"]) if c and with_prices else None}
 
     def _order_view(self, ctx, oid: str) -> dict:
         """Заказ oid глазами текущего пользователя (с ценами — если у него есть право их видеть)."""
@@ -472,11 +521,24 @@ class PurchasingMixin:
             if ln.vat_rate is not None:
                 ctx.conn.execute(purchase_order_line_taxes.insert().values(order_id=oid, line_id=ln.line_id, vat_rate=ln.vat_rate))
 
-    def _write_terms(self, ctx, oid: str, contract_id: Optional[str], vat_mode: Optional[str]) -> None:
-        """Записать условия заказа (договор, режим цен); оба пустые — строки-расширения нет."""
+    def _write_terms(self, ctx, oid: str, terms: dict) -> None:
+        """Записать условия заказа: договор и режим цен (v13), суммы по счёту (v14); пустые — строк-расширений нет."""
         ctx.conn.execute(purchase_order_terms.delete().where(purchase_order_terms.c.order_id == oid))
-        if contract_id is not None or vat_mode is not None:
-            ctx.conn.execute(purchase_order_terms.insert().values(order_id=oid, contract_id=contract_id, vat_mode=vat_mode))
+        if terms["contract_id"] is not None or terms["vat_mode"] is not None:
+            ctx.conn.execute(purchase_order_terms.insert().values(order_id=oid, contract_id=terms["contract_id"],
+                                                                  vat_mode=terms["vat_mode"]))
+        ctx.conn.execute(purchase_order_invoices.delete().where(purchase_order_invoices.c.order_id == oid))
+        if terms.get("invoice_gross") is not None or terms.get("invoice_vat") is not None:
+            ctx.conn.execute(purchase_order_invoices.insert().values(order_id=oid, invoice_gross=terms.get("invoice_gross"),
+                                                                     invoice_vat=terms.get("invoice_vat")))
+
+    @staticmethod
+    def _invoice_amount(p: dict, key: str) -> Optional[Decimal]:
+        """Сумма по счёту поставщика из запроса (invoice_gross / invoice_vat): None — не введена; иначе проверка."""
+        try:
+            return pu.check_invoice_amount(p.get(key), key)
+        except pu.PurchaseError as e:
+            raise _purchase_rejected(e)
 
     def _supplier_ref(self, ctx, sid: str, must_be_active: bool) -> dict:
         """Поставщик по id (для согласования и размещения — действующий) или отказ."""
@@ -495,8 +557,9 @@ class PurchasingMixin:
             raise _purchase_rejected(e)
 
     def _po_create(self, ctx, p, ev):
-        """po.create {id, supplier_id, currency?, contract_id?, vat_mode?, supplier_ref?, expected_on?, note?, lines[]}
-        — черновик заказа. Можно офлайн (очередь). Номер заказа — сквозной, назначает сервер при создании.
+        """po.create {id, supplier_id, currency?, contract_id?, vat_mode?, invoice_gross?, invoice_vat?, supplier_ref?,
+        expected_on?, note?, lines[]} — черновик заказа. Можно офлайн (очередь). Номер заказа — сквозной, назначает
+        сервер при создании. invoice_* — суммы по счёту поставщика для сверки (D-34), в целых копейках.
         """
         only_keys(p, ORDER_KEYS)
         auth = self.policy.check(ctx.conn, ctx.user_id, "po.create", ctx.now)
@@ -510,6 +573,7 @@ class PurchasingMixin:
         mode = self._vat_mode(p)
         cid = req_uuid(p, "contract_id") if p.get("contract_id") is not None else None
         self._contract_ref(ctx, cid, sup["id"], for_use=False)
+        inv_g, inv_v = self._invoice_amount(p, "invoice_gross"), self._invoice_amount(p, "invoice_vat")
         self._check_order_lines(ctx, lines, for_place=False)
         no = (ctx.conn.execute(sa.select(sa.func.max(purchase_orders.c.order_no))).scalar() or 0) + 1
         ctx.conn.execute(purchase_orders.insert().values(
@@ -518,10 +582,11 @@ class PurchasingMixin:
             note=opt_str(p, "note", 2000), version=1, created_by=ctx.user_id, created_at=ctx.now,
             updated_by=ctx.user_id, updated_at=ctx.now))
         self._write_lines(ctx, oid, lines)
-        self._write_terms(ctx, oid, cid, mode)
+        self._write_terms(ctx, oid, {"contract_id": cid, "vat_mode": mode, "invoice_gross": inv_g, "invoice_vat": inv_v})
         ctx.log("purchase_order", oid, auth, None, 1, {"order_no": no, "supplier_code": sup["code"], "status": "draft",
                                                        "lines": len(lines), "currency": cur, "vat_mode": mode,
-                                                       "contract_id": cid, **pu.totals(lines)})
+                                                       "contract_id": cid, "invoice_gross": money.to_json(inv_g),
+                                                       "invoice_vat": money.to_json(inv_v), **pu.totals(lines)})
         return {"purchase_order": self._order_view(ctx, oid)}
 
     def _po_update(self, ctx, p, ev):
@@ -560,6 +625,9 @@ class PurchasingMixin:
             new_terms["vat_mode"] = self._vat_mode(p)
         if "contract_id" in p:
             new_terms["contract_id"] = req_uuid(p, "contract_id") if p["contract_id"] is not None else None
+        for key in ("invoice_gross", "invoice_vat"):
+            if key in p:
+                new_terms[key] = self._invoice_amount(p, key)
         # Договор — того же поставщика (в том числе если сменили поставщика, а договор оставили прежним).
         self._contract_ref(ctx, new_terms["contract_id"], ch.get("supplier_id", o["supplier_id"]), for_use=False)
         lines_changed = False
@@ -583,13 +651,14 @@ class PurchasingMixin:
         if not ch and not lines_changed and not terms_ch:
             raise Rejected("no_changes", "Нет изменений.")
         if terms_ch:
-            self._write_terms(ctx, o["id"], new_terms["contract_id"], new_terms["vat_mode"])
+            self._write_terms(ctx, o["id"], new_terms)
         n = self._update_versioned(ctx, purchase_orders, o, {**ch, "updated_by": ctx.user_id, "updated_at": ctx.now})
-        enc = lambda v: v.isoformat() if hasattr(v, "isoformat") else v  # noqa: E731 — даты в журнал аудита строкой
+        # Даты и суммы — в журнал аудита строкой (Decimal → «12.5000»).
+        enc = lambda v: v.isoformat() if hasattr(v, "isoformat") else (money.to_json(v) if isinstance(v, Decimal) else v)  # noqa: E731
         ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
                 {"order_no": o["order_no"], "changed": sorted(ch) + sorted(terms_ch) + (["lines"] if lines_changed else []),
-                 "before": {**{k: enc(o[k]) for k in ch}, **{k: terms[k] for k in terms_ch}},
-                 "after": {**{k: enc(v) for k, v in ch.items()}, **terms_ch}})
+                 "before": {**{k: enc(o[k]) for k in ch}, **{k: enc(terms[k]) for k in terms_ch}},
+                 "after": {**{k: enc(v) for k, v in ch.items()}, **{k: enc(v) for k, v in terms_ch.items()}}})
         return {"purchase_order": self._order_view(ctx, o["id"])}
 
     # ------------------------------------------------------------ согласование (D-33)
@@ -610,15 +679,20 @@ class PurchasingMixin:
             raise _purchase_rejected(pu.PurchaseError(probs))
         self._check_order_lines(ctx, lines, for_place=True)
         self._contract_ref(ctx, terms["contract_id"], o["supplier_id"], for_use=True)
-        return lines, sup, terms, pu.content_hash(o["supplier_id"], cur, lines, terms["contract_id"], terms["vat_mode"])
+        return lines, sup, terms, self._hash(o["supplier_id"], cur, lines, terms)
 
-    def _add_approval(self, ctx, o: dict, kind: str, content_hash: Optional[str], comment: Optional[str]) -> None:
-        """Добавить событие в неизменяемый журнал согласования заказа (seq — следующий номер)."""
+    def _add_approval(self, ctx, o: dict, kind: str, content_hash: Optional[str], comment: Optional[str],
+                      auth) -> int:
+        """Добавить событие в неизменяемый журнал согласования заказа (seq — следующий номер) вместе с основанием
+        решения (D-34: своя роль, роль руководителя отдела или замещение — за кого). Возвращает seq.
+        """
         seq = (ctx.conn.execute(sa.select(sa.func.max(purchase_order_approvals.c.seq))
                                 .where(purchase_order_approvals.c.order_id == o["id"])).scalar() or 0) + 1
         ctx.conn.execute(purchase_order_approvals.insert().values(order_id=o["id"], seq=seq, kind=kind,
                                                                   content_hash=content_hash, comment=comment,
                                                                   actor_id=ctx.user_id, at=ctx.now))
+        self._record_basis(ctx, "purchase_order", o["id"], seq, auth)
+        return seq
 
     def _draft_for_approval(self, ctx, p, ev, action: str) -> tuple[dict, Any, list[dict]]:
         """Общее начало команд согласования: право, заказ, версия, статус «черновик». → (заказ, основание, события)."""
@@ -631,22 +705,39 @@ class PurchasingMixin:
         return o, auth, self._approvals(ctx.conn, o["id"])
 
     def _po_submit(self, ctx, p, ev):
-        """po.submit {id, comment?} + версия — отправить черновик на согласование (закупка, онлайн).
+        """po.submit {id, comment?, invoice_reason?} + версия — отправить черновик на согласование (закупка, онлайн).
 
         Черновик проверяется так же полно, как при размещении; согласующему уходит именно это содержание (SHA-256).
+        Сверка со счётом (D-34, A-38): если суммы по счёту не сходятся с расчётом или сверить нельзя (расчёт
+        неполный) — нужна причина invoice_reason, иначе отказ invoice_reason_required (в details — сверка).
+        Результат сверки и причина записываются неизменяемо и показываются согласующему.
         """
-        only_keys(p, {"id", "comment"})
+        only_keys(p, {"id", "comment", "invoice_reason"})
         o, auth, events = self._draft_for_approval(ctx, p, ev, "po.submit")
         state = self._approval_state(events)
         if state in ("submit", "approve"):
             raise Rejected("order_state", f"Заказ № {o['order_no']} уже {pu.APPROVAL_LABELS_RU[state].lower()}.")
         lines, sup, terms, h = self._check_ready(ctx, o)
+        control = pu.calc_control(lines, terms["vat_mode"], terms["invoice_gross"], terms["invoice_vat"])
+        inv = control["invoice"]
+        reason = opt_str(p, "invoice_reason", 2000)
+        if control["needs_reason"] and not reason:
+            raise Rejected("invoice_reason_required",
+                           pu.INVOICE_STATE_LABELS_RU[inv["state"]] + ". Проверьте цены и суммы по счёту; если всё "
+                           "верно (например, поставщик считает НДС от итога) — укажите причину расхождения, её увидит "
+                           "согласующий.", {"field": "invoice_reason", "invoice": inv})
         comment = opt_str(p, "comment", 2000)
-        self._add_approval(ctx, o, "submit", h, comment)
+        seq = self._add_approval(ctx, o, "submit", h, comment, auth)
+        ctx.conn.execute(purchase_order_invoice_checks.insert().values(
+            order_id=o["id"], seq=seq, state=inv["state"],
+            diff_gross=Decimal(inv["diff_gross"]) if inv["diff_gross"] is not None else None,
+            diff_vat=Decimal(inv["diff_vat"]) if inv["diff_vat"] is not None else None,
+            reason=reason if control["needs_reason"] else None))
         n = self._update_versioned(ctx, purchase_orders, o, {"updated_by": ctx.user_id, "updated_at": ctx.now})
         ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
                 {"order_no": o["order_no"], "approval": "submit", "content_hash": h, "comment": comment,
                  "supplier_code": sup["code"], "lines": len(lines), "vat_mode": terms["vat_mode"],
+                 "invoice_state": inv["state"], "invoice_reason": reason if control["needs_reason"] else None,
                  **{k: v for k, v in pu.vat_totals(lines, terms["vat_mode"]).items() if k in ("net", "vat", "gross")}})
         return {"purchase_order": self._order_view(ctx, o["id"])}
 
@@ -660,7 +751,7 @@ class PurchasingMixin:
         if state not in ("submit", "approve"):
             raise Rejected("order_state", f"Заказ № {o['order_no']} не на согласовании — отзывать нечего.")
         reason = opt_str(p, "reason", 2000)
-        self._add_approval(ctx, o, "withdraw", None, reason)
+        self._add_approval(ctx, o, "withdraw", None, reason, auth)
         n = self._update_versioned(ctx, purchase_orders, o, {"updated_by": ctx.user_id, "updated_at": ctx.now})
         ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
                 {"order_no": o["order_no"], "approval": "withdraw", "from": state, "reason": reason})
@@ -675,7 +766,8 @@ class PurchasingMixin:
         sub = events[-1]
         if ctx.user_id in (sub["actor_id"], o["created_by"]):
             raise Rejected("self_approval", "Нельзя согласовать заказ, который вы сами создали или отправили на "
-                           "согласование: решение принимает другой сотрудник с ролью «Согласование закупок».")
+                           "согласование: решение принимает другой сотрудник — согласующий закупки, его замещающий "
+                           "или руководитель отдела.")
         return sub
 
     def _po_approve(self, ctx, p, ev):
@@ -692,11 +784,11 @@ class PurchasingMixin:
             raise Rejected("approval_stale", f"Содержание заказа № {o['order_no']} изменилось после отправки на "
                            "согласование — согласовать нельзя. Закупка должна отправить его заново.")
         comment = opt_str(p, "comment", 2000)
-        self._add_approval(ctx, o, "approve", h, comment)
+        self._add_approval(ctx, o, "approve", h, comment, auth)
         n = self._update_versioned(ctx, purchase_orders, o, {"updated_by": ctx.user_id, "updated_at": ctx.now})
         ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
                 {"order_no": o["order_no"], "approval": "approve", "content_hash": h, "comment": comment,
-                 "submitted_by": sub["actor_id"]})
+                 "submitted_by": sub["actor_id"], "on_behalf_of": auth.on_behalf_of})
         return {"purchase_order": self._order_view(ctx, o["id"])}
 
     def _po_return(self, ctx, p, ev):
@@ -707,7 +799,7 @@ class PurchasingMixin:
         o, auth, events = self._draft_for_approval(ctx, p, ev, "po.return")
         self._decision_checks(ctx, o, events)
         reason = req_str(p, "reason", 2000)
-        self._add_approval(ctx, o, "return", None, reason)
+        self._add_approval(ctx, o, "return", None, reason, auth)
         n = self._update_versioned(ctx, purchase_orders, o, {"updated_by": ctx.user_id, "updated_at": ctx.now})
         ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
                 {"order_no": o["order_no"], "approval": "return", "reason": reason})
@@ -891,10 +983,13 @@ class PurchasingMixin:
         for r in conn.execute(sa.select(purchase_order_approvals).order_by(purchase_order_approvals.c.order_id,
                                                                            purchase_order_approvals.c.seq)):
             approvals[r.order_id].append(dict(r._mapping))
+        self._attach_bases(conn, approvals)
+        terms = {r.order_id: {**NO_TERMS, "contract_id": r.contract_id, "vat_mode": r.vat_mode}
+                 for r in conn.execute(sa.select(purchase_order_terms))}
+        for r in conn.execute(sa.select(purchase_order_invoices)):
+            terms.setdefault(r.order_id, dict(NO_TERMS)).update(invoice_gross=r.invoice_gross, invoice_vat=r.invoice_vat)
         pre = {"received": self._received_by_line(conn),
                "items": {r.id: dict(r._mapping) for r in conn.execute(sa.select(stock_items))},
-               "sups": sups, "contracts": contracts, "taxes": taxes, "approvals": approvals,
-               "terms": {r.order_id: {"contract_id": r.contract_id, "vat_mode": r.vat_mode}
-                         for r in conn.execute(sa.select(purchase_order_terms))}}
+               "sups": sups, "contracts": contracts, "taxes": taxes, "approvals": approvals, "terms": terms}
         out["purchase_orders"] = [self.v_order(conn, o, prices, pre) for o in rows]
         return out

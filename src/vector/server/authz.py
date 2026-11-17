@@ -2,11 +2,17 @@
 
 Роль из клиентского запроса не используется никогда. Нет правила — нет доступа (fail-closed).
 Generation = id выдачи роли / назначения; повторная выдача создаёт новый id.
+
+Замещение (D-34): глобальная роль действует и у замещающего, пока действует замещение (срок, не отменено) и пока
+у носителя есть своя действующая выдача этой роли (без цепочек: роль, полученная замещением, дальше не передаётся).
+Основание такого действия — Authority(kind="delegated_role", ref_id = выдача носителя, delegation_id,
+on_behalf_of = носитель): в журнале видно, кто действовал и за кого.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Optional
 
 import sqlalchemy as sa
 from sqlalchemy.engine import Connection
@@ -14,7 +20,9 @@ from sqlalchemy.engine import Connection
 from vector.core.errors import Denied
 
 from .db import project_assignments as pa
+from .db import role_delegations as rd
 from .db import role_grants as rg
+from .db import users as us
 
 
 @dataclass(frozen=True)
@@ -22,20 +30,26 @@ class Authority:
     """Найденное основание доступа — что именно разрешило действие. Записывается в журнал аудита и показывается в
     истории объекта («Основание доступа: роль „Закупка“ (выдача №9)»).
 
-    * kind — global_role (глобальная роль пользователя), project_role (назначение в проект) или self (действие над
-      своей учётной записью);
+    * kind — global_role (глобальная роль пользователя), delegated_role (роль, полученная замещением, D-34),
+      project_role (назначение в проект) или self (действие над своей учётной записью);
     * role — код роли (gip, rp, warehouse…);
-    * ref_id — id выдачи роли / назначения. Отзыв и повторная выдача дают новый id, поэтому старые согласования не
-      «оживают» (решение владельца).
+    * ref_id — id выдачи роли / назначения (для замещения — выдача роли НОСИТЕЛЯ). Отзыв и повторная выдача дают
+      новый id, поэтому старые согласования не «оживают» (решение владельца);
+    * delegation_id, on_behalf_of — замещение и носитель роли (только для delegated_role).
     """
-    kind: str      # global_role | project_role | self
+    kind: str      # global_role | delegated_role | project_role | self
     role: str
     ref_id: int
+    delegation_id: Optional[int] = None
+    on_behalf_of: Optional[str] = None
 
     def describe(self) -> str:
-        """Короткая машинная запись основания для журнала: «global_role:warehouse#grant:9»."""
+        """Короткая машинная запись основания для журнала: «global_role:warehouse#grant:9»,
+        «delegated_role:po_approver#grant:9#delegation:3»."""
         if self.kind == "self":
             return "self"
+        if self.kind == "delegated_role":
+            return f"{self.kind}:{self.role}#grant:{self.ref_id}#delegation:{self.delegation_id}"
         src = "grant" if self.kind == "global_role" else "assignment"
         return f"{self.kind}:{self.role}#{src}:{self.ref_id}"
 
@@ -52,6 +66,37 @@ def active_grants(conn: Connection, user_id: str, now: datetime) -> list[tuple[i
     """Действующие глобальные роли пользователя на момент now: список (id выдачи, роль)."""
     rows = conn.execute(sa.select(rg.c.id, rg.c.role).where(rg.c.user_id == user_id, _active(rg, now)).order_by(rg.c.id))
     return [(r.id, r.role) for r in rows]
+
+
+def active_delegated(conn: Connection, user_id: str, now: datetime) -> list[tuple[int, str, int, str]]:
+    """Роли, полученные пользователем замещением и действующие на момент now (D-34).
+
+    Список (id выдачи носителя, роль, id замещения, id носителя). Замещение действует, если: срок включает
+    сегодняшнюю дату сервера, оно не отменено, учётная запись носителя активна и у носителя есть СВОЯ действующая
+    выдача этой роли (замещение замещения не считается — цепочек нет).
+    """
+    today = now.date()
+    q = (sa.select(rg.c.id.label("gid"), rd.c.role, rd.c.id.label("did"), rd.c.from_user_id)
+         .select_from(rd.join(rg, sa.and_(rg.c.user_id == rd.c.from_user_id, rg.c.role == rd.c.role))
+                      .join(us, us.c.id == rd.c.from_user_id))
+         .where(rd.c.to_user_id == user_id, rd.c.revoked_at.is_(None), rd.c.valid_from <= today,
+                rd.c.valid_until >= today, us.c.active == sa.true(), _active(rg, now))
+         .order_by(rd.c.id, rg.c.id))
+    out, seen = [], set()
+    for r in conn.execute(q):
+        if r.did not in seen:            # у носителя может быть несколько выдач одной роли — берём первую
+            seen.add(r.did)
+            out.append((r.gid, r.role, r.did, r.from_user_id))
+    return out
+
+
+def effective_roles(conn: Connection, user_id: str, now: datetime) -> list[str]:
+    """Все действующие глобальные роли пользователя: свои и полученные замещением (без повторов, по порядку)."""
+    out: list[str] = []
+    for role in [r for _, r in active_grants(conn, user_id, now)] + [r for _, r, _, _ in active_delegated(conn, user_id, now)]:
+        if role not in out:
+            out.append(role)
+    return out
 
 
 def active_project_roles(conn: Connection, user_id: str, project_id: str, now: datetime) -> list[tuple[int, str]]:
@@ -101,7 +146,7 @@ class Policy:
         только если до них дошла очередь.
         """
         rule = self.rule(action)
-        grants = proles = None
+        grants = proles = deleg = None
         for cond in rule["any_of"]:
             if cond.get("authenticated"):
                 return Authority("self", "self", 0)
@@ -110,6 +155,11 @@ class Policy:
                 for gid, role in grants:
                     if role in cond["global_role"]:
                         return Authority("global_role", role, gid)
+                # Своей роли нет — роль, полученная замещением (D-34); своя всегда важнее (основание точнее).
+                deleg = deleg if deleg is not None else active_delegated(conn, user_id, now)
+                for gid, role, did, holder in deleg:
+                    if role in cond["global_role"]:
+                        return Authority("delegated_role", role, gid, did, holder)
             if "project_role" in cond and project_id is not None:
                 proles = proles if proles is not None else active_project_roles(conn, user_id, project_id, now)
                 for aid, role in proles:
