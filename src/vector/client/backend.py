@@ -12,6 +12,7 @@ import platform
 import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -22,7 +23,7 @@ from vector import __version__
 from vector.core import stock
 from vector.core.contracts import Contracts
 
-from . import calc_view, delegation_view, purchasing_view, stock_view
+from . import calc_view, delegation_view, notification_view, purchasing_view, stock_view
 from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
 from .vault import KeyringStore, MemoryStore, VaultError
@@ -190,6 +191,8 @@ class Backend(QObject):
                                        "supplier_contract": []}
         # Фильтр вкладки «Заказы поставщикам» (active / approval / draft / placed / closed / all) — состояние экрана.
         self._po_filter = "active"
+        # Наибольший id уведомления, о котором уже сказали (None — ещё не было снимка после входа, D-35).
+        self._notify_seen: Optional[int] = None
         # Склад: снимок остатков/резервов/журнала/потребностей на момент последнего обновления (meta кэша).
         self._stock: dict = {}
         # Метаданные версий документов (номер, имя файла, размер, SHA-256) из зашифрованного кэша клиента.
@@ -552,7 +555,57 @@ class Backend(QObject):
         """Раздел «Замещения» (D-34): мои замещения, все — для руководителя отдела и администратора, покрытие ролей."""
         return qml_safe(delegation_view.delegations_view(
             self._stock.get("delegations") or [], self._stock.get("role_coverage") or [], self._people, self._me,
-            ROLE_LABELS, self._online and self._session_mode == "online", self.hint("delegation.manage", 0)))
+            ROLE_LABELS, self._online and self._session_mode == "online", self.hint("delegation.manage", 0),
+            self._assignments, {p["id"]: p.get("code") or "" for p in self._data.get("project", [])}))
+
+    @Property("QVariantList", notify=dataChanged)
+    def projectDeputies(self):
+        """Кто сейчас замещает в проектах (D-35) — для списка команды проекта: имя, за кого, роль, до какого числа."""
+        return qml_safe([{**d, "user_name": self._people.get(d["user_id"], "—"),
+                          "for_name": self._people.get(d["for_user_id"], "—"),
+                          "role_label": PROJECT_ROLE_LABELS.get(d["project_role"], d["project_role"]),
+                          "until_label": delegation_view._day(d.get("valid_until"))}
+                         for d in self._stock.get("project_deputies") or []])
+
+    # ------------------------------------------------------------ уведомления (D-35)
+    @Property("QVariantMap", notify=dataChanged)
+    def notificationsOverview(self):
+        """Раздел «Уведомления»: свои уведомления (новые сверху), число непрочитанных, можно ли отметить."""
+        return qml_safe(notification_view.notifications_view(
+            self._stock.get("notifications") or [], self._people, self._online and self._session_mode == "online",
+            datetime.now(timezone.utc)))
+
+    @Slot(str, "QVariantList")
+    def markNotificationsRead(self, tag: str, ids):
+        """Отметить прочитанными уведомления ids (только при связи). Числа из QML приходят как float — приводим."""
+        clean = [int(i) for i in (ids.toVariant() if hasattr(ids, "toVariant") else ids) or []]
+        if clean:
+            self.execute(tag, "notification.read", {"ids": clean}, 0)
+
+    @Slot(str)
+    def markAllNotificationsRead(self, tag: str):
+        """«Прочитать все» (только при связи)."""
+        self.execute(tag, "notification.read", {"all": True}, 0)
+
+    @Slot(str, result=str)
+    def orderFilterFor(self, order_id: str) -> str:
+        """Фильтр списка заказов, в котором виден заказ order_id (для перехода из уведомления): закрытые и
+        отменённые — «Архив», остальные — «В работе»."""
+        o = next((x for x in self._data.get("purchase_order", []) if x.get("id") == order_id), None)
+        return "closed" if o and o.get("status") in ("closed", "cancelled") else "active"
+
+    def _announce_notifications(self):
+        """После снимка: сообщить всплывающей подсказкой о новых непрочитанных уведомлениях (не о тех, что были к
+        моменту входа — их показывает бейдж «Уведомления»)."""
+        items = self._stock.get("notifications") or []
+        top = max([int(n.get("id") or 0) for n in items] or [0])
+        if self._notify_seen is None:
+            self._notify_seen = top
+            return
+        text = notification_view.toast_text(notification_view.new_since(items, self._notify_seen))
+        self._notify_seen = max(self._notify_seen, top)
+        if text:
+            self.toast.emit("info", text)
 
     @Property("QVariantMap", notify=dataChanged)
     def suppliersOverview(self):
@@ -671,7 +724,8 @@ class Backend(QObject):
 
     @Slot(str, result=str)
     def authorityLabel(self, authority: str) -> str:
-        """global_role:rp#grant:2 → «роль РП (выдача №2)»; delegated_role:… → «… по замещению №N»; без внутренних кодов."""
+        """global_role:rp#grant:2 → «роль РП (выдача №2)»; delegated_role:… / delegated_project_role:… → «… по
+        замещению №N»; без внутренних кодов."""
         if not authority:
             return "—"
         if authority == "self":
@@ -681,6 +735,11 @@ class Backend(QObject):
         if d:
             role, grant, deleg = d.groups()
             return f"роль «{ROLE_LABELS.get(role, role)}» по замещению №{deleg} (выдача носителя №{grant})"
+        # Роль в проекте по замещению (D-35): назначение носителя в этом проекте.
+        d = re.fullmatch(r"delegated_project_role:([a-z_]+)#assignment:(\w+)#delegation:(\w+)", authority)
+        if d:
+            role, aid, deleg = d.groups()
+            return f"«{PROJECT_ROLE_LABELS.get(role, role)}» по замещению №{deleg} (назначение носителя №{aid})"
         m = re.fullmatch(r"(global_role|project_role):([a-z_]+)#(grant|assignment):(\w+)", authority)
         if not m:
             return authority
@@ -784,6 +843,7 @@ class Backend(QObject):
         def done(_):
             """Сбросить состояние интерфейса после выхода."""
             self._screen, self._session_mode, self._me = "login", "none", {}
+            self._notify_seen = None
             self._data = {k: [] for k in self._data}
             # Снимки из кэша тоже убираются из памяти: после выхода на экране входа не должно оставаться данных.
             self._stock, self._calc_versions, self._calc_revisions, self._doc_versions = {}, [], [], []
@@ -831,6 +891,7 @@ class Backend(QObject):
         if not s["token"] and self._session_mode == "online":
             self._session_mode = "offline"
             self.toast.emit("warning", "Сеанс с сервером завершён. Работа продолжается локально; войдите снова, чтобы отправить очередь.")
+        self._announce_notifications()
         self.changed.emit()
         self.dataChanged.emit()
 
@@ -921,8 +982,10 @@ class Backend(QObject):
         self._run(job, lambda res: self._finish_command(tag, "config.publish", res))
 
     # Справочник и настройки тоже приходят только с pull — после их команд снимок перечитывается.
-    # Замещение (D-34) меняет роли — после него перечитываются и роли (me), и права в интерфейсе.
-    _STOCK_PREFIXES = frozenset({"stock", "need", "item_alias", "unit_conversion", "config", "po", "delegation"})
+    # Замещение (D-34) меняет роли — после него перечитываются и роли (me), и права в интерфейсе; после «прочитано»
+    # (D-35) — список уведомлений и бейдж.
+    _STOCK_PREFIXES = frozenset({"stock", "need", "item_alias", "unit_conversion", "config", "po", "delegation",
+                                 "notification"})
 
     def _finish_command(self, tag: str, command: str, res: dict):
         """Общий разбор результата команды: снимок данных, уведомление, сигнал commandDone для формы."""

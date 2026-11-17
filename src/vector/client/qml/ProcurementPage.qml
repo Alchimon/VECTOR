@@ -12,7 +12,9 @@ Item {
     property var shell
     readonly property bool seesNeeds: (backend.needsOverview.needs || []).length > 0 || (backend.me.roles || []).some(r => r === "procurement" || r === "warehouse")
     readonly property bool seesOrders: (backend.me.roles || []).some(r => r === "procurement" || r === "warehouse" || r === "accountant" || r === "po_approver" || r === "dept_head")
-    property string tab: seesNeeds ? "needs" : "orders"
+    // Переход из уведомления (D-35): shell.go("procurement", id заказа) — сразу вкладка заказов с этим заказом.
+    readonly property string targetOrder: shell && shell.navTarget.page === "procurement" ? (shell.navTarget.id || "") : ""
+    property string tab: targetOrder !== "" ? "orders" : (seesNeeds ? "needs" : "orders")
     readonly property var tabsModel: [].concat(
         seesNeeds ? [{ id: "needs", label: "Потребности", icon: "shopping-cart" }] : [],
         seesOrders ? [{ id: "orders", label: "Заказы поставщикам" + ((backend.ordersOverview.counts || {}).waiting ? " (" + backend.ordersOverview.counts.waiting + ")" : ""), icon: "clipboard-list" },
@@ -20,7 +22,7 @@ Item {
 
     NeedsPane { anchors.fill: parent; visible: page.tab === "needs"; shell: page.shell
                 tabs: page.tabsModel.length > 1 ? page.tabsModel : []; tab: page.tab; onTabPicked: id => page.tab = id }
-    OrdersPane { anchors.fill: parent; visible: page.tab === "orders"; shell: page.shell
+    OrdersPane { anchors.fill: parent; visible: page.tab === "orders"; shell: page.shell; selectedId: page.targetOrder
                  tabs: page.tabsModel; tab: page.tab; onTabPicked: id => page.tab = id }
     SuppliersPane { anchors.fill: parent; visible: page.tab === "suppliers"; shell: page.shell
                     tabs: page.tabsModel; tab: page.tab; onTabPicked: id => page.tab = id }

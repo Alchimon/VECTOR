@@ -14,6 +14,8 @@ MasterDetail {
     readonly property var sel: backend.projects.find(p => p.id === selectedId) || null
     readonly property var selKits: sel ? backend.kits.filter(k => k.project_id === sel.id) : []
     readonly property var team: sel ? backend.assignments.filter(a => a.project_id === sel.id) : []
+    // Кто сейчас замещает в проекте (D-35): «Лебедев Максим — ГИП, замещает Волкова Павла до 22.11.2026».
+    readonly property var deputies: sel ? backend.projectDeputies.filter(d => d.project_id === sel.id) : []
     // Итог проекта видят ГИП/РП проекта и бухгалтерия (A-18); сервер всё равно не пришлёт ревизии остальным.
     readonly property bool canSeeTotal: sel !== null && ((backend.me.roles || []).indexOf("accountant") >= 0
         || team.some(a => a.user_id === backend.me.user_id && (a.project_role === "gip" || a.project_role === "rp")))
@@ -76,6 +78,21 @@ MasterDetail {
         }
     }
     Text { visible: page.team.length === 0; text: "Назначений нет (или список недоступен офлайн)."; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
+    Flow {
+        objectName: "projectDeputies"
+        visible: page.deputies.length > 0
+        Layout.fillWidth: true; spacing: 8
+        Repeater {
+            model: page.deputies
+            delegate: Rectangle {
+                height: 36; width: dr.implicitWidth + 20; radius: 18; color: Theme.surface; border.color: Theme.border
+                RowLayout { id: dr; anchors.centerIn: parent; spacing: 8
+                    Icon { name: "user-check"; size: 14; color: Theme.primary }
+                    Text { text: modelData.user_name + " — " + modelData.role_label + ", замещает " + modelData.for_name + " до " + modelData.until_label
+                           color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS } }
+            }
+        }
+    }
 
     // ---------- комплекты
     RowLayout { Layout.fillWidth: true; Layout.topMargin: 6
@@ -113,7 +130,7 @@ MasterDetail {
     Text { visible: page.selKits.length === 0; text: "Комплектов пока нет. Создать комплект может РП проекта."; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
     Text { visible: page.selKits.length > 1 && page.selKit === null; text: "Выберите комплект, чтобы увидеть его задачи и документы."
            color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
-    KitWork { Layout.fillWidth: true; kit: page.selKit; team: page.team }
+    KitWork { Layout.fillWidth: true; kit: page.selKit; team: page.team; deputies: page.deputies }
 
     // ---------- официальный итог проекта: только из зафиксированных версий расчётов комплектов (R-12)
     ProjectTotal { Layout.fillWidth: true; Layout.topMargin: 6; projectId: page.selectedId

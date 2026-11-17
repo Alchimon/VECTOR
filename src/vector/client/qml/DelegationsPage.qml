@@ -8,6 +8,8 @@ import QtQuick.Layouts
 // * Руководитель отдела и администратор оформляют замещение ЗА отсутствующего (заболел, не может сам) и видят
 //   «покрытие ролей»: роли, которые сейчас у одного человека или ни у кого.
 // * Замещающий действует ролью носителя; в журнале решений видно «замещает такого-то».
+// * Роль в проекте (ГИП, РП, участник) тоже передаётся (D-35, A-40) — пункт «ГИП в проекте П-…» в списке ролей;
+//   действует только в этом проекте. Ключ пункта «gip@<id проекта>» раскладывается на role и project_id.
 // Данные — снимок pull (dv = backend.delegationsOverview); оформить и отменить — только при связи (решает сервер).
 Item {
     id: page
@@ -93,7 +95,7 @@ Item {
                             VButton { visible: modelData.state === "single" && modelData.delegable && page.dv.can_manage === true
                                       && modelData.holder_id !== backend.me.user_id
                                       text: "Оформить замещение"; compact: true; kind: "soft"
-                                      onClicked: create.openFor(true, modelData.holder_id, modelData.role) } }
+                                      onClicked: create.openFor(true, modelData.holder_id, modelData.role_key) } }
                     }
                 }
 
@@ -114,7 +116,7 @@ Item {
         subtitle: forOther ? "Когда сотрудник отсутствует и не может оформить сам. Назначить замещающим себя нельзя."
                            : "Замещающий получит вашу роль на указанные дни; его решения записываются «за вас». Вы роль не теряете."
         confirmText: "Оформить"
-        note: "Роль «Администратор» не передаётся. Замещение заканчивается само в последний день срока; отменить можно раньше."
+        note: "Роль «Администратор» не передаётся. Роль в проекте действует только в этом проекте. Замещение заканчивается само в последний день срока; отменить можно раньше."
         canConfirm: dTo.currentValue !== "" && dRole.currentValue !== "" && (!forOther || dFrom.currentValue !== "")
                     && /^\d{4}-\d{2}-\d{2}$/.test(dUntil.text.trim()) && dFromDay.error === "" && dReason.text.trim() !== ""
         function idx(list, id) { for (var i = 0; i < list.length; i++) if (list[i].id === id) return i; return id ? -1 : 0 }
@@ -126,9 +128,13 @@ Item {
             dFromDay.text = ""; dUntil.text = page.dv.default_until || ""; dReason.text = ""
             open()
         }
-        onConfirmed: dCmd.run("delegation.create", { from_user_id: forOther ? dFrom.currentValue : "", to_user_id: dTo.currentValue,
-                                                    role: dRole.currentValue, valid_from: dFromDay.text.trim(),
-                                                    valid_until: dUntil.text.trim(), reason: dReason.text.trim() })
+        // «gip@<id проекта>» → роль в проекте; без «@» — глобальная роль (project_id "" не передаётся).
+        onConfirmed: {
+            var key = String(dRole.currentValue || ""), at = key.indexOf("@")
+            dCmd.run("delegation.create", { from_user_id: forOther ? dFrom.currentValue : "", to_user_id: dTo.currentValue,
+                                            role: at < 0 ? key : key.substring(0, at), project_id: at < 0 ? "" : key.substring(at + 1),
+                                            valid_from: dFromDay.text.trim(), valid_until: dUntil.text.trim(), reason: dReason.text.trim() })
+        }
         VSelect { id: dFrom; objectName: "dFrom"; visible: create.forOther; label: "Чью роль (отсутствующий сотрудник)"; model: page.dv.people_options || [] }
         VSelect { id: dRole; objectName: "dRole"; label: "Роль"; model: create.forOther ? (page.dv.all_role_options || []) : (page.dv.role_options || []) }
         VSelect { id: dTo; objectName: "dTo"; label: "Замещающий"; model: page.dv.people_options || [] }

@@ -85,11 +85,16 @@ META_LISTS = (("calc_version", "calc_versions"), ("calc_revision", "calc_revisio
               ("movement", "stock_movements"), ("reservation", "stock_reservations"), ("need", "needs"),
               ("transfer", "stock_transfers"))
 # Данные из pull, которые хранятся в meta как есть (снимок; время снимка — last_pull): склад, потребности,
-# справочник аналогов/пересчёта (D-25, A-27), настройки компании (config, D-26), замещения и покрытие ролей (D-34). Всё это меняется только
-# онлайн-командами, офлайн — только читается.
+# справочник аналогов/пересчёта (D-25, A-27), настройки компании (config, D-26), замещения и покрытие ролей
+# (D-34), замещающие в проектах и уведомления (D-35). Всё это меняется только онлайн-командами, офлайн — только
+# читается.
 STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_movements_truncated", "needs",
               "stock_transfers", "stock_projects", "need_candidates", "item_aliases", "unit_conversions", "config",
-              "delegations", "role_coverage")
+              "delegations", "role_coverage", "project_deputies", "notifications")
+
+
+# Онлайн-команды, которым не нужно сначала отправить очередь (их результат не зависит от неотправленных правок).
+ORDER_FREE = frozenset({"account.change_password", "notification.read"})
 
 
 def _calc_same(local: dict, payload: dict) -> bool:
@@ -358,7 +363,8 @@ class SyncClient:
             if not self.token:
                 return LocalResult("refused_offline", message_ru=f"«{label}» требует актуальной проверки сервера (права, статус, версия). "
                                                                  "Сейчас нет сеанса с сервером — действие не выполнено и не поставлено в очередь.")
-            if self.pending_count() and command != "account.change_password":
+            # Смена пароля и «прочитано» (D-35) не зависят от порядка очереди — не ждут её.
+            if self.pending_count() and command not in ORDER_FREE:
                 rep = self.sync()
                 if self.pending_count():
                     return LocalResult("blocked", message_ru="Сначала синхронизируйте или разрешите ожидающие изменения в очереди.",

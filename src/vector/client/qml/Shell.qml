@@ -74,6 +74,9 @@ Item {
                 Text { text: "СИСТЕМА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
                 NavItem { text: "Синхронизация"; iconName: "refresh-cw"; active: shellRoot.page === "sync"; onClicked: shellRoot.go("sync")
                           badge: backend.problemCount > 0 ? backend.problemCount : backend.pendingCount; badgeTone: backend.problemCount > 0 ? "danger" : "warning" }
+                // Уведомления (D-35): свои — заказы на согласовании, решения, замещения; бейдж — непрочитанные.
+                NavItem { objectName: "navNotifications"; text: "Уведомления"; iconName: "bell"; active: shellRoot.page === "notifications"
+                          onClicked: shellRoot.go("notifications"); badge: backend.notificationsOverview.unread || 0; badgeTone: "primary" }
                 // Замещения — всем: свою роль может передать каждый (D-34). Бейдж: руководителю — роли, которые заменить
                 // некем; остальным — сколько ролей коллег он сейчас замещает.
                 NavItem { objectName: "navDelegations"; text: "Замещения"; iconName: "user-check"; active: shellRoot.page === "delegations"; onClicked: shellRoot.go("delegations")
@@ -112,7 +115,8 @@ Item {
         Loader {
             anchors.fill: parent
             sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC, finance: financeC,
-                               stock: stockC, procurement: procurementC, delegations: delegationsC })[shellRoot.page]
+                               stock: stockC, procurement: procurementC, delegations: delegationsC,
+                               notifications: notificationsC })[shellRoot.page]
         }
         }
     }
@@ -125,6 +129,7 @@ Item {
     Component { id: stockC; StockPage { shell: shellRoot } }
     Component { id: procurementC; ProcurementPage { shell: shellRoot } }
     Component { id: delegationsC; DelegationsPage { shell: shellRoot } }
+    Component { id: notificationsC; NotificationsPage { shell: shellRoot } }
 
     FormDialog {
         id: reconnect

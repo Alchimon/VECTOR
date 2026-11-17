@@ -16,15 +16,20 @@ ColumnLayout {
     id: kw
     property var kit: null                  // выбранный комплект (объект из backend.kits)
     property var team: []                   // назначения проекта (для выбора исполнителя)
+    property var deputies: []               // замещающие в проекте (D-35) — им тоже можно передать задачу
     property string tab: "tasks"            // tasks | documents | calc
     readonly property var kitTasks: kit ? backend.tasks.filter(t => t.kit_id === kit.id) : []
     readonly property var kitDocs: kit ? backend.documents.filter(d => d.kit_id === kit.id) : []
-    // Исполнителем может быть только участник проекта (сервер проверит: assignee_not_in_project).
+    // Исполнителем может быть только участник проекта или его замещающий (сервер проверит: assignee_not_in_project).
     readonly property var assigneeOptions: {
         var seen = {}, out = [{ id: "", label: "Не назначен" }]
         for (var i = 0; i < team.length; i++) {
             var a = team[i]
             if (!seen[a.user_id]) { seen[a.user_id] = true; out.push({ id: a.user_id, label: a.user_name }) }
+        }
+        for (var j = 0; j < deputies.length; j++) {
+            var d = deputies[j]
+            if (!seen[d.user_id]) { seen[d.user_id] = true; out.push({ id: d.user_id, label: d.user_name + " (замещает " + d.for_name + ")" }) }
         }
         return out
     }

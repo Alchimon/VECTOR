@@ -414,6 +414,19 @@ def main():
         h.shot(out / f"{theme}-32-delegations.png")
         h.backend.logout()
         h.wait_idle()
+        # Уведомления (D-35, A-40): руководитель отдела — заказ № 5 на согласовании и замещение ГИП.
+        h.login("e.orlova")
+        h.go("notifications")
+        h.shot(out / f"{theme}-33-notifications.png")
+        h.backend.logout()
+        h.wait_idle()
+        # Замещение роли в проекте (D-35): m.lebedev замещает ГИП П-2026-014 — профиль ролей и команда проекта.
+        h.login("m.lebedev")
+        dp = _plain(h.backend.property("me"))["delegated_project_roles"][0]
+        h.go("projects", dp["project_id"])
+        h.shot(out / f"{theme}-34-project-deputy.png")
+        h.backend.logout()
+        h.wait_idle()
         # Настройки компании (D-26, A-26): администратор, вкладка «Настройки компании».
         h.login("admin")
         h.go("admin")
