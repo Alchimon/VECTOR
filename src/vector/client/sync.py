@@ -61,10 +61,18 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v_enc TEXT NOT NULL) STRICT
 # поэтому хранятся списком в зашифрованной meta (как назначения проекта).
 # Черновик расчёта комплекта (calc_draft) — обычный объект кэша: id = id комплекта, правится офлайн через очередь.
 # Зафиксированные версии расчёта и ревизии проектного итога неизменяемы — хранятся списками в meta.
+# Склад: справочники (склады, номенклатура) правятся офлайн через очередь — обычные объекты кэша.
 OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp"), ("project", "projects"), ("kit", "kits"),
-                ("task", "tasks"), ("document", "documents"), ("calc_draft", "calc_drafts"))
-# Неизменяемые объекты из результата команды → список в meta (ключ результата, ключ meta).
-META_LISTS = (("calc_version", "calc_versions"), ("calc_revision", "calc_revisions"))
+                ("task", "tasks"), ("document", "documents"), ("calc_draft", "calc_drafts"),
+                ("warehouse", "warehouses"), ("stock_item", "stock_items"))
+# Объекты из результата команды → список в meta (ключ результата, ключ meta); заменяются по id.
+# Движения склада, резервы и потребности меняются ТОЛЬКО онлайн-командами (online_required): в кэше это
+# снимок «на момент последнего обновления», офлайн он только читается.
+META_LISTS = (("calc_version", "calc_versions"), ("calc_revision", "calc_revisions"),
+              ("movement", "stock_movements"), ("reservation", "stock_reservations"), ("need", "needs"))
+# Складские данные из pull, которые хранятся в meta как есть (снимок; время снимка — last_pull).
+STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_movements_truncated", "needs",
+              "stock_projects", "need_candidates")
 
 
 def _calc_same(local: dict, payload: dict) -> bool:
@@ -405,6 +413,8 @@ class SyncClient:
         self._set_meta("document_versions", res.get("document_versions", []))
         for _, key in META_LISTS:
             self._set_meta(key, res.get(key, []))
+        for key in STOCK_META:
+            self._set_meta(key, res.get(key, False if key.endswith("_truncated") else []))
         self.db.execute("COMMIT")
         return True
 
@@ -643,6 +653,21 @@ class SyncClient:
             if obj:
                 items = [x for x in (self.get_meta(mkey) or []) if x.get("id") != obj["id"]]
                 self._set_meta(mkey, items + [obj])
+        res = r.get("result") or {}
+        # Остаток после проводки/резерва — сразу в снимок (без ожидания pull); сторно помечает исходное движение.
+        bal = res.get("balance")
+        if isinstance(bal, dict) and bal.get("warehouse_id"):
+            key = (bal["warehouse_id"], bal["item_id"])
+            rows = [x for x in (self.get_meta("stock_balances") or []) if (x.get("warehouse_id"), x.get("item_id")) != key]
+            self._set_meta("stock_balances", rows + [bal])
+        mv = res.get("movement")
+        if isinstance(mv, dict) and mv.get("reverses_id"):
+            self._set_meta("stock_movements", [dict(x, reversed_by=mv["id"]) if x.get("id") == mv["reverses_id"] else x
+                                               for x in (self.get_meta("stock_movements") or [])])
+        need = res.get("need")
+        if isinstance(need, dict):
+            self._set_meta("need_candidates", [c for c in (self.get_meta("need_candidates") or [])
+                                               if c.get("calc_version_id") != need.get("calc_version_id")])
         for otype, _ in OBJECT_TYPES:
             obj = (r.get("result") or {}).get(otype)
             if not obj:

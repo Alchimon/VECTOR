@@ -488,3 +488,58 @@ def test_document_versions_cached_encrypted(world, team):
     blob = b"".join((r[0] if isinstance(r[0], bytes) else r[0].encode()) for r in raw.execute("SELECT v_enc FROM meta"))
     blob += b"".join((r[0] if isinstance(r[0], bytes) else r[0].encode()) for r in raw.execute("SELECT data_enc FROM cache"))
     assert "Секретный".encode() not in blob and "СЕКРЕТ-1".encode() not in blob
+
+
+# --------------------------------------------------------------------------- склад (С4)
+def test_stock_refs_queue_offline_postings_refused_and_snapshot_updates(world, mk):
+    """Справочники склада — в очередь офлайн; проводки — только онлайн (не ставятся в очередь);
+    принятая проводка сразу обновляет локальный снимок остатков, сторно помечает исходное движение."""
+    world.make_user("wh1", "warehouse")
+    wh = mk("wh1")
+    wh.t.online = False
+    w, it = new_id(), new_id()
+    assert wh.execute("warehouse.create", {"id": w, "code": "СК-1", "name": "Центральный"}).status == "queued"
+    assert wh.execute("item.create", {"id": it, "code": "КАБ-1", "name": "Кабель", "unit": "м"}).status == "queued"
+    assert wh.get_local("stock_item", it)["_pending"] is True
+    r = wh.execute("stock.receive", {"id": new_id(), "warehouse_id": w, "item_id": it, "qty": "10", "source_doc": "ТН 1"})
+    # «blocked» — проводка ссылается на ещё не отправленный склад; в любом случае в очередь она не попадает.
+    assert r.status in ("refused_offline", "blocked") and wh.pending_count() == 2
+    assert count(world, "stock_movements") == 0
+
+    wh.t.online = True
+    assert wh.sync().accepted == 2
+    assert wh.get_local("stock_item", it)["_pending"] is False
+    wh.t.online = False                       # склад уже на сервере — теперь отказ именно «нужна связь»
+    r = wh.execute("stock.receive", {"id": new_id(), "warehouse_id": w, "item_id": it, "qty": "10", "source_doc": "ТН 1"})
+    assert r.status == "refused_offline" and wh.pending_count() == 0
+    wh.t.online = True
+    m = new_id()
+    r = wh.execute("stock.receive", {"id": m, "warehouse_id": w, "item_id": it, "qty": "12.5", "source_doc": "ТН 1"})
+    assert r.status == "accepted", r
+    bal = [b for b in wh.get_meta("stock_balances") if b["item_id"] == it]
+    assert [(b["on_hand"], b["available"]) for b in bal] == [("12.5000", "12.5000")]
+    assert [x["id"] for x in wh.get_meta("stock_movements")] == [m]
+    # Сторно — тоже онлайн; исходное движение в снимке помечается reversed_by.
+    s = new_id()
+    assert wh.execute("stock.reverse", {"id": s, "movement_id": m, "reason": "ошибка"}).status == "accepted"
+    mv = {x["id"]: x for x in wh.get_meta("stock_movements")}
+    assert mv[m]["reversed_by"] == s and mv[s]["kind_label"] == "Сторно прихода"
+    assert [b["on_hand"] for b in wh.get_meta("stock_balances") if b["item_id"] == it] == ["0.0000"]
+    # Полный pull даёт тот же результат, что и локальное применение ответов.
+    wh.pull()
+    assert [b["on_hand"] for b in wh.get_meta("stock_balances") if b["item_id"] == it] == ["0.0000"]
+    assert {x["id"] for x in wh.get_meta("stock_movements")} == {m, s}
+
+
+def test_stock_snapshot_hidden_without_stock_role(world, mk):
+    """Пользователь без складской роли не получает остатков и движений (пустые списки, а не ошибка)."""
+    world.make_user("wh1", "warehouse")
+    wh = mk("wh1")
+    w, it = new_id(), new_id()
+    wh.execute("warehouse.create", {"id": w, "code": "СК-1", "name": "Центральный"})
+    wh.execute("item.create", {"id": it, "code": "КАБ-1", "name": "Кабель", "unit": "м"})
+    assert wh.execute("stock.receive", {"id": new_id(), "warehouse_id": w, "item_id": it, "qty": "1", "source_doc": "ТН"}).status == "accepted"
+    rp = mk("rp1")
+    rp.pull()
+    assert rp.get_meta("stock_balances") in (None, []) and rp.get_meta("stock_movements") in (None, [])
+    assert rp.list_local("stock_item") == [] and rp.list_local("warehouse") == []

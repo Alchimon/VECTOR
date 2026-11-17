@@ -20,10 +20,11 @@ from typing import Any, Callable, Optional
 from PySide6.QtCore import Property, QObject, QSettings, QTimer, QUrl, Signal, Slot
 
 from vector import __version__
+from vector.core import stock
 from vector.core.contracts import Contracts
 
-from . import calc_view
-from .sync import SyncClient
+from . import calc_view, stock_view
+from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
 from .vault import KeyringStore, MemoryStore, VaultError
 
@@ -134,7 +135,9 @@ class Backend(QObject):
         self._problems = 0
         self._me: dict = {}
         self._data: dict[str, list] = {"customer": [], "tender": [], "tkp": [], "project": [], "kit": [], "task": [], "document": [],
-                                       "calc_draft": []}
+                                       "calc_draft": [], "warehouse": [], "stock_item": []}
+        # Склад: снимок остатков/резервов/журнала/потребностей на момент последнего обновления (meta кэша).
+        self._stock: dict = {}
         # Метаданные версий документов (номер, имя файла, размер, SHA-256) из зашифрованного кэша клиента.
         # Сами файлы в кэш не попадают: их скачивают по явной команде пользователя.
         self._doc_versions: list = []
@@ -323,7 +326,8 @@ class Backend(QObject):
             # Сначала то, что требует работы (в работе → открытые → выполненные → отменённые), внутри — по названию.
             order = {"in_progress": 0, "open": 1, "done": 2, "cancelled": 3}
             return sorted(out, key=lambda d: (order.get(d.get("status"), 9), str(d.get("title") or "").lower()))
-        key = {"customer": "name", "tender": "title", "tkp": "label", "project": "code", "kit": "code", "document": "code"}[kind]
+        key = {"customer": "name", "tender": "title", "tkp": "label", "project": "code", "kit": "code", "document": "code",
+               "warehouse": "code", "stock_item": "code"}[kind]
         return sorted(out, key=lambda d: (str(d.get(key) or "")).lower())
 
     def _decorate_task(self, o: dict) -> dict:
@@ -409,6 +413,43 @@ class Backend(QObject):
     def financeOverview(self):
         """Итоги проектов (официальные — только из зафиксированных версий): для ГИП/РП и бухгалтерии."""
         return qml_safe(calc_view.finance_overview(self._calc_revisions, self._people))
+
+    # ------------------------------------------------------------ склад и закупка (С4)
+    warehouses = _lst("warehouse", dataChanged)
+    stockItems = _lst("stock_item", dataChanged)
+
+    @Property("QVariantMap", notify=dataChanged)
+    def stockOverview(self):
+        """Экран «Склад»: остатки по позициям и складам, резервы, журнал — снимок «на момент …»."""
+        st = self._stock
+        return qml_safe(stock_view.overview(
+            self._decorate("warehouse"), self._decorate("stock_item"), st.get("stock_balances") or [],
+            st.get("stock_reservations") or [], st.get("stock_movements") or [], st.get("stock_projects") or [],
+            self._people, self._last_pull, self._online and self._session_mode == "online", self._me.get("roles", [])))
+
+    @Property("QVariantMap", notify=dataChanged)
+    def needsOverview(self):
+        """Экран «Закупка»: потребности из зафиксированных версий и их покрытие складом."""
+        st = self._stock
+        return qml_safe(stock_view.needs_view(
+            st.get("needs") or [], st.get("need_candidates") or [], self._decorate("stock_item"), self._last_pull,
+            self._online and self._session_mode == "online", self._me.get("roles", [])))
+
+    @Slot(str, result=str)
+    def qtyProblem(self, text: str) -> str:
+        """Проверка количества в форме теми же правилами, что и на сервере (> 0, ≤ 4 знаков, без float)."""
+        t = text.strip().replace(",", ".").replace(" ", "").replace("\u00a0", "")
+        if not t:
+            return ""
+        try:
+            stock.parse_qty(t)
+            return ""
+        except stock.StockError as e:
+            return e.message_ru
+
+    @Slot(str, result=str)
+    def normalizeQty(self, text: str) -> str:
+        return text.strip().replace(",", ".").replace(" ", "").replace("\u00a0", "")
 
     @Slot(str, str, str, str, "QVariantList")
     def saveCalcDraft(self, tag: str, kit_id: str, currency: str, note: str, lines):
@@ -535,6 +576,8 @@ class Backend(QObject):
         def done(_):
             self._screen, self._session_mode, self._me = "login", "none", {}
             self._data = {k: [] for k in self._data}
+            # Снимки из кэша тоже убираются из памяти: после выхода на экране входа не должно оставаться данных.
+            self._stock, self._calc_versions, self._calc_revisions, self._doc_versions = {}, [], [], []
             self.changed.emit()
             self.dataChanged.emit()
         self._run(lambda: self.client.logout() if self.client else None, done)
@@ -547,7 +590,8 @@ class Backend(QObject):
             rep = c.sync()
         data = {k: c.list_local(k) for k in self._data}
         return {"data": data, "doc_versions": c.get_meta("document_versions") or [],
-                "calc_versions": c.get_meta("calc_versions") or [], "calc_revisions": c.get_meta("calc_revisions") or [], "me": c.get_meta("me") or c.get_meta("session") or {}, "people": c.get_meta("people") or [], "assignments": c.get_meta("assignments") or [],
+                "calc_versions": c.get_meta("calc_versions") or [], "calc_revisions": c.get_meta("calc_revisions") or [],
+                "stock": {k: c.get_meta(k) for k in STOCK_META}, "me": c.get_meta("me") or c.get_meta("session") or {}, "people": c.get_meta("people") or [], "assignments": c.get_meta("assignments") or [],
                 "pending": c.pending_count(), "problems": c.problem_count(), "last_pull": c.get_meta("last_pull") or "",
                 "online": c.t.online and c.token is not None, "token": c.token is not None, "rep": rep.__dict__ if rep else None}
 
@@ -560,6 +604,7 @@ class Backend(QObject):
         self._doc_versions = s.get("doc_versions", [])
         self._calc_versions = s.get("calc_versions", [])
         self._calc_revisions = s.get("calc_revisions", [])
+        self._stock = s.get("stock") or {}
         self._data_rev += 1
         if s["me"] != self._me:
             self._perm_rev += 1
