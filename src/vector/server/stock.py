@@ -39,6 +39,7 @@ operation_id, аудит и проверка версий — в service.py; з�
 """
 from __future__ import annotations
 
+import hashlib
 import uuid
 from collections import defaultdict
 from decimal import Decimal
@@ -51,20 +52,65 @@ from vector.core.errors import Conflict, Denied, Rejected
 
 from .db import (calc_version_lines, calc_versions, item_aliases, kits, procurement_need_line_match_units,
                  procurement_need_line_matches, procurement_need_lines, procurement_needs, projects, unit_conversions,
-                 stock_balances, stock_items, stock_movements, stock_reservations, stock_shipment_terms,
-                 stock_shipments, stock_transfer_acts, stock_transfers, users, warehouses)
-from .validation import iso, only_keys, opt_date, opt_str, req_str, req_uuid
+                 signatures, stock_balances, stock_items, stock_movements, stock_reservations, stock_shipment_losses,
+                 stock_shipment_terms, stock_shipments, stock_transfer_acts, stock_transfers, users, warehouses)
+from . import security
+from .validation import canon, iso, only_keys, opt_date, opt_str, req_str, req_uuid
 
 # Сколько последних движений отдаётся в pull (полный журнал — запросом истории/отчётом позже).
 PULL_MOVEMENTS_LIMIT = 1000
 
 
-def _v_act(a: dict) -> dict:
-    """Акт недостачи (D-30) для клиента: номер, отгружено / принято / недостача, причина, кто и когда подписал."""
+def _act_content(sh: dict, a: dict) -> dict:
+    """Каноническое содержание акта недостачи (D-30) — то, что подписывает приёмщик (D-31). Строится из строк БД
+    одинаково при подписи и при проверке: количества — ровно 4 знака, время — ISO UTC.
+    """
+    return {"doc": "stock_transfer_act", "act_no": a["act_no"], "shipment_id": sh["id"], "item_id": sh["item_id"],
+            "from_warehouse_id": sh["from_warehouse_id"], "to_warehouse_id": sh["to_warehouse_id"],
+            "shipped_qty": money.to_json(a["shipped_qty"]), "accepted_qty": money.to_json(a["accepted_qty"]),
+            "shortage_qty": money.to_json(a["shortage_qty"]), "reason": a["reason"], "signed_by": a["signed_by"],
+            "signer_name": a["signer_name"], "signed_at": iso(a["signed_at"])}
+
+
+def _loss_content(sh: dict, lo: dict) -> dict:
+    """Каноническое содержание акта об утрате (D-31) — что подписывает приёмщик."""
+    return {"doc": "stock_loss_act", "act_no": lo["act_no"], "shipment_id": sh["id"], "item_id": sh["item_id"],
+            "from_warehouse_id": sh["from_warehouse_id"], "to_warehouse_id": sh["to_warehouse_id"],
+            "qty": money.to_json(lo["qty"]), "reason": lo["reason"], "signed_by": lo["signed_by"],
+            "signer_name": lo["signer_name"], "signed_at": iso(lo["signed_at"])}
+
+
+def _digest(content: dict) -> str:
+    """SHA-256 канонического JSON содержания документа (hex)."""
+    return hashlib.sha256(canon(content).encode("utf-8")).hexdigest()
+
+
+def _v_signature(sig: Optional[dict], content: dict) -> Optional[dict]:
+    """Подпись документа для клиента: способ, кто и когда, и совпадает ли содержание с подписанным (content_ok).
+    None — документ подписан до появления способов подписи (акты схемы v10): подписант и время есть в самом акте.
+    """
+    if not sig or not sig.get("id"):
+        return None
+    return {"method": sig["method"], "method_label": stock.SIGNATURE_METHOD_LABELS_RU.get(sig["method"], sig["method"]),
+            "signer_name": sig["signer_name"], "signed_at": iso(sig["signed_at"]),
+            "content_ok": sig["content_sha256"] == _digest(content)}
+
+
+def _v_act(a: dict, sh: Optional[dict] = None, sig: Optional[dict] = None) -> dict:
+    """Акт недостачи (D-30) для клиента: номер, отгружено / принято / недостача, причина, кто и когда подписал,
+    подпись (D-31: способ и проверка содержания).
+    """
     return {"id": a["id"], "act_no": a["act_no"], "shipped_qty": money.to_json(a["shipped_qty"]),
             "accepted_qty": money.to_json(a["accepted_qty"]), "shortage_qty": money.to_json(a["shortage_qty"]),
             "reason": a["reason"], "signed_by": a["signed_by"], "signer_name": a["signer_name"],
-            "signed_at": iso(a["signed_at"])}
+            "signed_at": iso(a["signed_at"]), "signature": _v_signature(sig, _act_content(sh, a)) if sh else None}
+
+
+def _v_loss(lo: dict, sh: dict, sig: Optional[dict]) -> dict:
+    """Акт об утрате (D-31) для клиента."""
+    return {"act_no": lo["act_no"], "qty": money.to_json(lo["qty"]), "reason": lo["reason"],
+            "signed_by": lo["signed_by"], "signer_name": lo["signer_name"], "signed_at": iso(lo["signed_at"]),
+            "signature": _v_signature(sig, _loss_content(sh, lo))}
 
 
 def _qty(p: dict, key: str = "qty") -> Decimal:
@@ -170,20 +216,24 @@ class StockMixin:
                 "posted_by": o["posted_by"], "posted_at": iso(o["posted_at"])}
 
     @staticmethod
-    def v_shipment(o: dict, expected_on=None, act: Optional[dict] = None) -> dict:
+    def v_shipment(o: dict, expected_on=None, act: Optional[dict] = None, act_sig: Optional[dict] = None,
+                   loss: Optional[dict] = None, loss_sig: Optional[dict] = None) -> dict:
         """Перемещение (D-29) для клиента: позиция, маршрут, количество, статус с подписью, движения отгрузки и закрытия
         (приёмки или возврата), основание, кто и когда отгрузил и закрыл, версия (для приёмки/возврата).
 
-        expected_on — ожидаемая дата прибытия «для справки» (D-30) или None; act — акт недостачи (D-30) или None.
-        accepted_qty — сколько фактически пришло на получатель (у принятых; без акта — всё отгруженное).
+        expected_on — ожидаемая дата прибытия «для справки» (D-30) или None; act — акт недостачи (D-30) или None;
+        loss — акт об утрате (D-31) или None: тогда действующий статус «lost», хотя в БД строка осталась in_transit.
+        act_sig / loss_sig — подписи актов (D-31). accepted_qty — сколько фактически пришло на получатель.
         """
-        a = _v_act(act) if act else None
-        accepted = (act["accepted_qty"] if act else o["qty"]) if o["status"] == "received" else None
+        status = "lost" if loss else o["status"]
+        a = _v_act(act, o, act_sig) if act else None
+        accepted = (act["accepted_qty"] if act else o["qty"]) if status == "received" else None
         return {"id": o["id"], "item_id": o["item_id"], "from_warehouse_id": o["from_warehouse_id"],
-                "to_warehouse_id": o["to_warehouse_id"], "qty": money.to_json(o["qty"]), "status": o["status"],
-                "status_label": stock.SHORTAGE_STATUS_LABEL_RU if act else stock.TRANSFER_STATUS_LABELS_RU[o["status"]],
+                "to_warehouse_id": o["to_warehouse_id"], "qty": money.to_json(o["qty"]), "status": status,
+                "status_label": stock.SHORTAGE_STATUS_LABEL_RU if act else stock.TRANSFER_STATUS_LABELS_RU[status],
                 "accepted_qty": money.to_json(accepted) if accepted is not None else None,
                 "expected_on": expected_on.isoformat() if expected_on else None, "act": a,
+                "loss": _v_loss(loss, o, loss_sig) if loss else None,
                 "out_movement_id": o["out_movement_id"], "close_movement_id": o["close_movement_id"],
                 "source_doc": o["source_doc"], "reason": o["reason"], "close_reason": o["close_reason"],
                 "version": o["version"], "created_by": o["created_by"], "created_at": iso(o["created_at"]),
@@ -202,7 +252,7 @@ class StockMixin:
                 "source_doc": o["source_doc"], "reason": o["reason"], "close_reason": None, "version": None,
                 "created_by": o["posted_by"], "created_at": iso(o["posted_at"]), "closed_by": o["posted_by"],
                 "closed_at": iso(o["posted_at"]), "legacy": True, "accepted_qty": money.to_json(o["qty"]),
-                "expected_on": None, "act": None}
+                "expected_on": None, "act": None, "loss": None}
 
     def _shipment_view(self, conn, sid: str) -> dict:
         """Перемещение sid в виде для клиента — вместе со сроком прибытия и актом недостачи (если есть)."""
@@ -213,19 +263,67 @@ class StockMixin:
         """Перемещения по условию where — одним запросом с внешними соединениями к срокам и актам (D-30), без длинных
         списков id в запросе (у MS SQL предел ~2100 параметров).
         """
-        act_cols = [c.label("act__" + c.name) for c in stock_transfer_acts.c]
-        q = (sa.select(stock_shipments, stock_shipment_terms.c.expected_on, *act_cols)
+        asig, lsig = signatures.alias("asig"), signatures.alias("lsig")
+        cols = ([c.label("act__" + c.name) for c in stock_transfer_acts.c] +
+                [c.label("los__" + c.name) for c in stock_shipment_losses.c] +
+                [c.label("asg__" + c.name) for c in asig.c] + [c.label("lsg__" + c.name) for c in lsig.c])
+        q = (sa.select(stock_shipments, stock_shipment_terms.c.expected_on, *cols)
              .select_from(stock_shipments.outerjoin(stock_shipment_terms,
                                                     stock_shipment_terms.c.shipment_id == stock_shipments.c.id)
-                          .outerjoin(stock_transfer_acts, stock_transfer_acts.c.shipment_id == stock_shipments.c.id))
+                          .outerjoin(stock_transfer_acts, stock_transfer_acts.c.shipment_id == stock_shipments.c.id)
+                          .outerjoin(stock_shipment_losses, stock_shipment_losses.c.shipment_id == stock_shipments.c.id)
+                          .outerjoin(asig, sa.and_(asig.c.object_type == "stock_transfer_act",
+                                                   asig.c.object_id == stock_transfer_acts.c.id, asig.c.purpose == "act"))
+                          .outerjoin(lsig, sa.and_(lsig.c.object_type == "stock_loss_act",
+                                                   lsig.c.object_id == stock_shipments.c.id, lsig.c.purpose == "act")))
              .where(where))
         out = []
         for r in conn.execute(q):
             m = dict(r._mapping)
-            act = {k[5:]: m.pop(k) for k in list(m) if k.startswith("act__")}
+            part = {pre: {k[5:]: m.pop(k) for k in list(m) if k.startswith(pre + "__")} for pre in ("act", "los", "asg", "lsg")}
             exp = m.pop("expected_on")
-            out.append(StockMixin.v_shipment(m, exp, act if act.get("id") else None))
+            act = part["act"] if part["act"].get("id") else None
+            loss = part["los"] if part["los"].get("shipment_id") else None
+            out.append(StockMixin.v_shipment(m, exp, act, part["asg"], loss, part["lsg"]))
         return out
+
+    def _sign(self, ctx, p: dict, object_type: str, object_id: str, content: dict) -> dict:
+        """Подписать документ приёмщиком склада способом из настройки stock.act_signature (D-31).
+
+        * sign_act = true — явное «подписываю» в любом способе (подпись не ставится «по умолчанию»);
+        * password — ещё и пароль вошедшего пользователя (sign_password): защищает от действия с чужого незаблокированного
+          компьютера. Частота попыток ограничена (как у смены пароля); пароль никуда не сохраняется и в хэш запроса не
+          входит (vector.core.redact);
+        * qes — КЭП: пока не подключена → отказ (fail-closed; опубликовать такое значение настройки тоже нельзя).
+
+        Записывает неизменяемую строку signatures с SHA-256 содержания документа. Вызывается внутри транзакции команды:
+        любой отказ откатывает и сам документ.
+        """
+        if p.get("sign_act") is not True:
+            raise Rejected("act_not_signed", "Акт не подписан: подтвердите, что вы — приёмщик и количество пересчитано.",
+                           {"field": "sign_act"})
+        method = self.config_value(ctx.conn, "stock.act_signature")
+        if method == "qes":
+            raise Rejected("qes_unavailable", "В настройках выбрана подпись КЭП, но она ещё не подключена — акт подписать "
+                           "нельзя. Обратитесь к администратору.")
+        if method == "password":
+            pwd = p.get("sign_password")
+            if not isinstance(pwd, str) or not pwd:
+                raise Rejected("sign_password_required", "Для подписи акта введите свой пароль.", {"field": "sign_password"})
+            if not self.pwd_rate.allow(ctx.user_id, ctx.now.timestamp()):
+                raise Rejected("rate_limited", "Слишком много попыток ввода пароля. Подождите минуту.")
+            if not security.verify_password(ctx.user["pwd_hash"], pwd)[0]:
+                raise Rejected("bad_sign_password", "Пароль неверный — акт не подписан, ничего не проведено.",
+                               {"field": "sign_password"})
+        sig = {"id": str(uuid.uuid5(uuid.UUID(object_id), "signature/" + object_type)), "object_type": object_type,
+               "object_id": object_id, "purpose": "act", "method": method, "signer_id": ctx.user_id,
+               "signer_name": content["signer_name"], "signed_at": ctx.now, "content_sha256": _digest(content)}
+        ctx.conn.execute(signatures.insert().values(**sig))
+        return sig
+
+    def _loss_of(self, conn, sid: str):
+        """Акт об утрате перемещения sid (строка) или None."""
+        return conn.execute(sa.select(stock_shipment_losses).where(stock_shipment_losses.c.shipment_id == sid)).first()
 
     @staticmethod
     def _legs(conn, since=None) -> dict[str, dict]:
@@ -619,6 +717,8 @@ class StockMixin:
             a, b = codes[tr["from"]], codes[tr["to"]]
             fix = ("Перемещение ещё в пути: примите его на складе-получателе или верните отправителю."
                    if tr["status"] == "in_transit" else
+                   f"Перемещение утрачено (акт об утрате № {tr.get('loss_act_no')}); нашёлся груз — оформите приход с "
+                   "основанием «найдено по акту об утрате»." if tr["status"] == "lost" else
                    f"Ошибочное перемещение исправляют обратным перемещением «{b} → {a}».")
             raise Rejected("transfer_leg", f"Движение №{orig['doc_no']} — часть перемещения «{a} → {b}». Отдельно его не "
                            f"сторнируют. {fix}", {"transfer_id": tr["id"]})
@@ -649,7 +749,9 @@ class StockMixin:
         t = conn.execute(sa.select(stock_shipments).where(sa.or_(stock_shipments.c.out_movement_id == mid,
                                                                  stock_shipments.c.close_movement_id == mid))).first()
         if t is not None:
-            return {"id": t.id, "from": t.from_warehouse_id, "to": t.to_warehouse_id, "status": t.status}
+            lo = self._loss_of(conn, t.id)              # утраченное в БД остаётся in_transit (D-31)
+            return {"id": t.id, "from": t.from_warehouse_id, "to": t.to_warehouse_id,
+                    "status": "lost" if lo is not None else t.status, "loss_act_no": lo.act_no if lo is not None else None}
         return None
 
     def _stock_transfer(self, ctx, p, ev):
@@ -735,16 +837,11 @@ class StockMixin:
                 shortage = sh["qty"] - qty
             if shortage > 0:
                 # Недостача — только актом, который подписывает приёмщик склада (D-30): причина обязательна, подпись
-                # — явное подтверждение в запросе (sign_act = true) от вошедшего пользователя с правом склада.
+                # ставится ниже (_sign) способом из настройки stock.act_signature (D-31).
                 short_reason = req_str(p, "shortage_reason", 2000)
-                if p.get("sign_act") is not True:
-                    raise Rejected("act_not_signed", "Принято меньше отгруженного: подпишите акт недостачи "
-                                   "(подтвердите, что вы — приёмщик и количество пересчитано).", {"field": "sign_act"})
         else:
             note = req_str(p, "reason", 2000)            # почему возвращаем — обязательно
-        if sh["status"] != "in_transit":
-            raise Rejected("transfer_state", f"Перемещение уже в статусе «{stock.TRANSFER_STATUS_LABELS_RU[sh['status']]}» — "
-                           "повторно принять или вернуть его нельзя.", {"status": sh["status"]})
+        self._ensure_in_transit(ctx.conn, sh)
         it = self._get(ctx.conn, stock_items, sh["item_id"])
         src = self._get(ctx.conn, warehouses, sh["from_warehouse_id"])
         dst = self._get(ctx.conn, warehouses, sh["to_warehouse_id"])
@@ -776,8 +873,11 @@ class StockMixin:
                 id=act_id, shipment_id=sh["id"], act_no=no, shipped_qty=sh["qty"], accepted_qty=qty,
                 shortage_qty=shortage, reason=short_reason, signed_by=ctx.user_id, signer_name=signer,
                 signed_at=ctx.now))
+            act_row = dict(self._get(ctx.conn, stock_transfer_acts, act_id))
+            sig = self._sign(ctx, p, "stock_transfer_act", act_id, _act_content(sh, act_row))
             act_details = {"act_id": act_id, "act_no": no, "shortage_qty": money.to_json(shortage),
-                           "shortage_reason": short_reason, "accepted_qty": money.to_json(qty)}
+                           "shortage_reason": short_reason, "accepted_qty": money.to_json(qty),
+                           "signature_method": sig["method"], "content_sha256": sig["content_sha256"]}
         ctx.log("stock_transfer", sh["id"], auth, sh["version"], n["version"],
                 {**common, "status": outcome, "close_movement_id": mid, "close_reason": note,
                  "item_code": it["code"], "unit": it["unit"], "qty": money.to_json(sh["qty"]), "act": act_details})
@@ -793,12 +893,58 @@ class StockMixin:
         перемещение на складе-получателе (D-29): приход на получатель, статус «Принято». Только онлайн, только склад.
 
         accepted_qty — сколько фактически пришло (по умолчанию всё отгруженное). Если меньше — недостача оформляется
-        актом (D-30): shortage_reason обязательна, sign_act = true — подпись приёмщика. Недостача списывается из учёта
-        актом (не возвращается ни на один склад). Больше отгруженного принять нельзя; «ничего не пришло» (0) актом
-        пока не оформляется — открытый вопрос A-31.
+        актом (D-30): shortage_reason обязательна, подпись приёмщика — sign_act = true и, если так настроено,
+        sign_password (D-31, _sign). Недостача списывается из учёта актом (не возвращается ни на один склад). Больше
+        отгруженного принять нельзя; если не пришло ничего — stock.transfer_lost (акт об утрате).
         """
-        only_keys(p, {"id", "comment", "accepted_qty", "shortage_reason", "sign_act"})
+        only_keys(p, {"id", "comment", "accepted_qty", "shortage_reason", "sign_act", "sign_password"})
         return self._close_shipment(ctx, p, ev, "stock.transfer_accept", "received")
+
+    def _ensure_in_transit(self, conn, sh: dict) -> None:
+        """Перемещение ещё «в пути» (не принято, не возвращено и не утрачено) — иначе отказ transfer_state."""
+        lo = self._loss_of(conn, sh["id"])
+        status = "lost" if lo is not None else sh["status"]
+        if status != "in_transit":
+            raise Rejected("transfer_state", f"Перемещение уже в статусе «{stock.TRANSFER_STATUS_LABELS_RU[status]}» — "
+                           "принять, вернуть или оформить утрату повторно нельзя.", {"status": status})
+
+    def _stock_transfer_lost(self, ctx, p, ev):
+        """stock.transfer_lost {id, reason, sign_act, sign_password?} + версия — оформить УТРАТУ перемещения «в пути»
+        актом об утрате (D-31): не пришло ничего.
+
+        Как правильно (решение D-31 по вопросу A-31): утрата — не возврат (товар к отправителю не вернулся) и не
+        приёмка (на получатель ничего не пришло). Поэтому — отдельный документ: акт об утрате со своей нумерацией,
+        причиной (обязательно: что известно — претензия перевозчику, номер, обстоятельства) и подписью приёмщика
+        способом из настройки. Прихода нет; количество, уже списанное у отправителя при отгрузке, окончательно
+        выбывает из учёта. Ни остатки, ни резервы не меняются — журнал движений сходится с остатками.
+        Нашёлся груз — обычный приход с основанием «найдено по акту об утрате № N» (акт не отменяется).
+        Только склад, только онлайн, по версии перемещения (одновременные «Принять» и «Утрата» — сработает одно).
+        """
+        only_keys(p, {"id", "reason", "sign_act", "sign_password"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "stock.transfer_lost", ctx.now)
+        sh = self._require(ctx.conn, stock_shipments, req_uuid(p, "id"), "Перемещение")
+        self._check_version(sh, ev, lambda o: self._shipment_view(ctx.conn, o["id"]))
+        reason = req_str(p, "reason", 2000)
+        self._ensure_in_transit(ctx.conn, sh)
+        it = self._get(ctx.conn, stock_items, sh["item_id"])
+        src = self._get(ctx.conn, warehouses, sh["from_warehouse_id"])
+        dst = self._get(ctx.conn, warehouses, sh["to_warehouse_id"])
+        no = (ctx.conn.execute(sa.select(sa.func.max(stock_shipment_losses.c.act_no))).scalar() or 0) + 1
+        signer = ctx.conn.execute(sa.select(users.c.display_name).where(users.c.id == ctx.user_id)).scalar_one()
+        ctx.conn.execute(stock_shipment_losses.insert().values(
+            shipment_id=sh["id"], act_no=no, qty=sh["qty"], reason=reason, signed_by=ctx.user_id, signer_name=signer,
+            signed_at=ctx.now))
+        lo = dict(self._loss_of(ctx.conn, sh["id"])._mapping)
+        sig = self._sign(ctx, p, "stock_loss_act", sh["id"], _loss_content(sh, lo))
+        # Версия перемещения растёт (второй кладовщик с той же версией получит конфликт); статус в БД остаётся
+        # in_transit (ограничение v9), действующий — «Утрачено в пути» по акту.
+        n = self._update_versioned(ctx, stock_shipments, sh, {"close_reason": reason})
+        ctx.log("stock_transfer", sh["id"], auth, sh["version"], n["version"],
+                {"transfer_id": sh["id"], "from_warehouse_code": src["code"], "to_warehouse_code": dst["code"],
+                 "status": "lost", "item_code": it["code"], "unit": it["unit"], "qty": money.to_json(sh["qty"]),
+                 "loss_act_no": no, "reason": reason, "signature_method": sig["method"],
+                 "content_sha256": sig["content_sha256"]})
+        return {"transfer": self._shipment_view(ctx.conn, sh["id"]), "movements": [], "balances": []}
 
     def _stock_transfer_cancel(self, ctx, p, ev):
         """stock.transfer_cancel {id, reason} + версия — ВЕРНУТЬ перемещение отправителю, пока оно в пути (D-29): приход
@@ -1208,9 +1354,15 @@ class StockMixin:
             legs = self._legs(conn, since) if rows else {}
             out["stock_movements"] = [self.v_movement(m, rev.get(m["id"]), legs.get(m["id"])) for m in rows]
             # Перемещения: ВСЕ «в пути» (по ним нужны действия) и закрытые/одношаговые — в том же окне, что и движения.
-            cond = stock_shipments.c.status == "in_transit"
+            # «В пути» по-настоящему — без акта об утрате (утраченные в БД тоже in_transit, D-31).
+            # Псевдоним: сама выборка уже соединена с stock_shipment_losses, без него подзапрос «скоррелируется» целиком.
+            la = stock_shipment_losses.alias("la")
+            lost = sa.exists().where(la.c.shipment_id == stock_shipments.c.id)
+            cond = sa.and_(stock_shipments.c.status == "in_transit", ~lost)
             if since is not None:
-                cond = sa.or_(cond, stock_shipments.c.created_at >= since, stock_shipments.c.closed_at >= since)
+                lost_since = sa.exists().where(la.c.shipment_id == stock_shipments.c.id, la.c.signed_at >= since)
+                cond = sa.or_(cond, stock_shipments.c.created_at >= since, stock_shipments.c.closed_at >= since,
+                              lost_since)
             trs = self._shipment_views(conn, cond)
             if since is not None:
                 trs += [self.v_transfer(dict(r._mapping)) for r in conn.execute(

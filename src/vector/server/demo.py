@@ -263,7 +263,15 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
                                     "to_warehouse_id": whs["СК-1"], "qty": "50", "reason": "Пополнение центрального склада",
                                     "source_doc": "Накладная на перемещение № 5"})["transfer"]
     cmd(wh, "stock.transfer_accept", {"id": t2["id"], "accepted_qty": "48", "shortage_reason": "Повреждена упаковка, 2 шт "
-                                      "не пригодны", "sign_act": True}, ev=t2["version"])
+                                      "не пригодны", "sign_act": True, "sign_password": demo_password}, ev=t2["version"])
+    # Утрата в пути (D-31): коробка наконечников не доехала до участка — акт об утрате № 1 (подпись приёмщика с
+    # вводом пароля — способ по умолчанию, настройка stock.act_signature не задана).
+    t3 = cmd(wh, "stock.transfer", {"id": str(uuid.uuid4()), "item_id": items["НШВИ-1.5"], "from_warehouse_id": whs["СК-1"],
+                                    "to_warehouse_id": whs["СК-2"], "qty": "20", "reason": "Добор на монтажный участок",
+                                    "source_doc": "Накладная на перемещение № 6"})["transfer"]
+    cmd(wh, "stock.transfer_lost", {"id": t3["id"], "reason": "Коробка не прибыла с попутным транспортом; служебная "
+                                    "записка водителя, розыск у перевозчика", "sign_act": True,
+                                    "sign_password": demo_password}, ev=t3["version"])
     # Срок прибытия — «для справки» (D-30): через 3 дня после даты демо-данных.
     cmd(wh, "stock.transfer", {"id": str(uuid.uuid4()), "item_id": items["ХМТ-200"], "from_warehouse_id": whs["СК-2"],
                                "to_warehouse_id": whs["СК-1"], "qty": "100", "reason": "Излишек после монтажа трасс",

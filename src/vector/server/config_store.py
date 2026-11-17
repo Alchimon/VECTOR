@@ -109,6 +109,11 @@ class ConfigMixin:
         if item["type"] != "enum" or value not in allowed:
             raise Rejected("bad_value", "Недопустимое значение настройки. Допустимо: " +
                            ", ".join(v["label_ru"] for v in item.get("values", [])) + ".", {"field": "value"})
+        opt = next(v for v in item["values"] if v["value"] == value)
+        if opt.get("available") is False:
+            # Вариант описан в каталоге, но возможность ещё не подключена (например, КЭП): публикация отклоняется,
+            # иначе правило «как подписывать» указало бы на то, чего нет, и работа встала бы (fail-closed).
+            raise Rejected("value_unavailable", opt.get("unavailable_ru") or "Этот вариант пока недоступен.", {"field": "value"})
         reason = req_str(p, "reason", 2000)
         cur = self._config_current(ctx.conn, key)
         cur_version = cur["version"] if cur else 0

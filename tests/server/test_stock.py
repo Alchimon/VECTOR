@@ -14,7 +14,7 @@ from datetime import timedelta
 import pytest
 import sqlalchemy as sa
 
-from conftest import new_id
+from conftest import PWD, new_id
 from test_tasks_documents import audit, proj  # noqa: F401  (фикстура proj переиспользует стенд)
 from vector.server import db
 
@@ -568,13 +568,13 @@ def test_accept_with_shortage_needs_signed_act_and_writes_off_difference(world, 
     receive(st.wh, st, "10")
     t = transfer(st.wh, st, "10", dst=w2)["result"]["transfer"]
     assert accept(st.wh2, t, accepted_qty="11")["code"] == "accepted_exceeds_shipped"
-    assert accept(st.wh2, t, accepted_qty="0")["code"] != "accepted"            # «ничего не пришло» — не актом (A-31)
-    assert accept(st.wh2, t, accepted_qty="7.5", sign_act=True)["code"] == "field_required"  # без причины
+    assert accept(st.wh2, t, accepted_qty="0")["code"] != "accepted"            # «ничего не пришло» — актом об утрате (D-31)
+    assert accept(st.wh2, t, accepted_qty="7.5", sign_act=True, sign_password=PWD)["code"] == "field_required"  # без причины
     assert accept(st.wh2, t, accepted_qty="7.5", shortage_reason="Бой при перевозке")["code"] == "act_not_signed"
     assert accept(st.wh2, t, accepted_qty="7.5", shortage_reason="x", sign_act="да")["code"] == "act_not_signed"
-    assert accept(st.wh2, t, accepted_qty="7.12345", shortage_reason="x", sign_act=True)["code"] == "too_many_fraction_digits"
+    assert accept(st.wh2, t, accepted_qty="7.12345", shortage_reason="x", sign_act=True, sign_password=PWD)["code"] == "too_many_fraction_digits"
     assert bal_at(st.wh, st, w2) is None                                          # отказы ничего не провели
-    a = accept(st.wh2, t, accepted_qty="7.5", shortage_reason="Бой при перевозке, 2,5 шт", sign_act=True,
+    a = accept(st.wh2, t, accepted_qty="7.5", shortage_reason="Бой при перевозке, 2,5 шт", sign_act=True, sign_password=PWD,
                comment="Пересчитано при водителе")
     assert a["status"] == "accepted", a
     t2, (inn,) = a["result"]["transfer"], a["result"]["movements"]
@@ -591,8 +591,8 @@ def test_accept_with_shortage_needs_signed_act_and_writes_off_difference(world, 
     receive(st.wh, st, "5")
     t3 = transfer(st.wh, st, "3", dst=w2)["result"]["transfer"]
     t4 = transfer(st.wh, st, "2", dst=w2)["result"]["transfer"]
-    assert accept(st.wh2, t3, accepted_qty="3", shortage_reason="лишнее", sign_act=True)["result"]["transfer"]["act"] is None
-    assert accept(st.wh2, t4, accepted_qty="1", shortage_reason="Пересорт", sign_act=True)["result"]["transfer"]["act"]["act_no"] == 2
+    assert accept(st.wh2, t3, accepted_qty="3", shortage_reason="лишнее", sign_act=True, sign_password=PWD)["result"]["transfer"]["act"] is None
+    assert accept(st.wh2, t4, accepted_qty="1", shortage_reason="Пересорт", sign_act=True, sign_password=PWD)["result"]["transfer"]["act"]["act_no"] == 2
     pulled = {x["id"]: x for x in st.wh.query("pull")["result"]["stock_transfers"]}
     assert pulled[t["id"]]["act"]["act_no"] == 1 and pulled[t3["id"]]["accepted_qty"] == "3.0000"
     with pytest.raises(sa.exc.DBAPIError):                                         # акт неизменяем на уровне БД
@@ -633,11 +633,138 @@ def test_concurrent_shortage_acts_get_distinct_numbers(world, st):
         results.append(world.svc.handle({"type": "command", "token": sess.token, "operation_id": new_id(),
                                          "command": "stock.transfer_accept", "expected_version": t["version"],
                                          "payload": {"id": t["id"], "accepted_qty": "4", "shortage_reason": "Бой",
-                                                     "sign_act": True}}))
+                                                     "sign_act": True, "sign_password": PWD}}))
     th = [threading.Thread(target=worker, args=(s, t)) for s, t in zip((st.wh, st.wh2), ts)]
     [x.start() for x in th]
     [x.join() for x in th]
     assert [r["status"] for r in results] == ["accepted", "accepted"], results
     assert sorted(r["result"]["transfer"]["act"]["act_no"] for r in results) == [1, 2]
     assert bal_at(st.wh, st, w2) == ("8.0000", "0.0000", "8.0000")
+    assert world.svc.ledger_mismatches() == []
+
+
+# ====================================================================== подпись актов и акт об утрате (D-31)
+SIGN_KEY = "stock.act_signature"
+
+
+def set_signature(world, value):
+    """Администратор публикует способ подписи актов."""
+    c = [x for x in world.admin.query("pull")["result"]["config"] if x["key"] == SIGN_KEY][0]
+    return world.admin.cmd("config.publish", {"key": SIGN_KEY, "value": value, "reason": "Решение руководства"},
+                           expected_version=c["version"])
+
+
+def lost(s, t, reason="Груз не прибыл; претензия перевозчику № 15", **kw):
+    """Оформление утраты перемещения t (акт об утрате)."""
+    return s.cmd("stock.transfer_lost", {"id": t["id"], "reason": reason, **kw}, expected_version=t["version"])
+
+
+def test_act_signature_setting_default_password_and_methods(world, st):
+    """D-31: способ подписи — настройка компании. Не задана → самый строгий доступный: повторный пароль. Неверный или
+    пустой пароль — отказ, ничего не проведено; частота попыток ограничена; пароль не попадает ни в хэш запроса, ни
+    в журнал. confirm — достаточно «подписываю». qes (КЭП) пока не подключена: опубликовать её нельзя."""
+    c = [x for x in st.wh.query("pull")["result"]["config"] if x["key"] == SIGN_KEY][0]
+    assert (c["value"], c["is_set"], c["strictest"]) == ("password", False, "password")
+    assert [v["value"] for v in c["values"] if v.get("available") is False] == ["qes"]
+    w2 = second_warehouse(st)
+    receive(st.wh, st, "10")
+    t = transfer(st.wh, st, "4", dst=w2)["result"]["transfer"]
+    short = dict(accepted_qty="3", shortage_reason="Бой", sign_act=True)
+    assert accept(st.wh2, t, **short)["code"] == "sign_password_required"
+    assert accept(st.wh2, t, **short, sign_password="неверный")["code"] == "bad_sign_password"
+    assert bal_at(st.wh, st, w2) is None
+    op = new_id()
+    a = st.wh2.cmd("stock.transfer_accept", {"id": t["id"], **short, "sign_password": PWD},
+                   expected_version=t["version"], op_id=op)
+    assert a["status"] == "accepted", a
+    sig = a["result"]["transfer"]["act"]["signature"]
+    assert (sig["method"], sig["signer_name"], sig["content_ok"]) == ("password", "WH2", True)
+    with world.svc.engine.connect() as cn:
+        h = cn.execute(sa.select(db.operations.c.request_hash).where(db.operations.c.operation_id == op)).scalar_one()
+        dump = " ".join(str(r) for r in cn.execute(sa.select(db.audit_log)))
+    assert PWD not in dump
+    from vector.server.validation import canon
+    import hashlib
+    assert h == hashlib.sha256(canon({"c": "stock.transfer_accept",
+                                      "p": {"id": t["id"], **short}, "v": t["version"]}).encode()).hexdigest()
+    # Перебор паролей подписи ограничен.
+    t2 = transfer(st.wh, st, "1", dst=w2)["result"]["transfer"]
+    codes = [accept(st.wh2, t2, **short | {"accepted_qty": "0.5"}, sign_password="x")["code"] for _ in range(8)]
+    assert "rate_limited" in codes
+    # confirm: достаточно явного «подписываю».
+    assert set_signature(world, "confirm")["status"] == "accepted"
+    t3 = transfer(st.wh, st, "2", dst=w2)["result"]["transfer"]
+    assert accept(st.wh, t3, accepted_qty="1", shortage_reason="Бой")["code"] == "act_not_signed"
+    r = accept(st.wh, t3, accepted_qty="1", shortage_reason="Бой", sign_act=True)
+    assert r["result"]["transfer"]["act"]["signature"]["method"] == "confirm"
+    # КЭП ещё не подключена — значение видно, но не публикуется (fail-closed).
+    q = set_signature(world, "qes")
+    assert (q["status"], q["code"]) == ("rejected", "value_unavailable"), q
+    assert world.svc.ledger_mismatches() == []
+
+
+def test_qes_in_db_fails_closed(world, st):
+    """Если значение qes всё же оказалось в настройке (например, позже подключат и отключат), подписать акт нельзя —
+    приёмка с недостачей отклоняется, а не подписывается «как-нибудь»."""
+    with world.svc.engine.begin() as cn:
+        cn.execute(db.config_versions.insert().values(
+            id=new_id(), key=SIGN_KEY, scope_type="company", scope_id="", version=1, value_json='"qes"',
+            reason="тест", author=world.admin.user_id, created_at=world.clock.now()))
+    w2 = second_warehouse(st)
+    receive(st.wh, st, "2")
+    t = transfer(st.wh, st, "2", dst=w2)["result"]["transfer"]
+    r = accept(st.wh2, t, accepted_qty="1", shortage_reason="Бой", sign_act=True, sign_password=PWD)
+    assert r["code"] == "qes_unavailable" and bal_at(st.wh, st, w2) is None
+    assert accept(st.wh2, t)["status"] == "accepted"               # полная приёмка акта не требует
+
+
+def test_transfer_lost_act_writes_off_without_receipt(world, st):
+    """D-31 (A-31): не пришло ничего — акт об утрате. Только склад, причина и подпись обязательны; прихода нет,
+    отправителю ничего не возвращается; статус «Утрачено в пути»; после утраты принять/вернуть/утратить повторно
+    нельзя; движение отгрузки по-прежнему нельзя сторнировать; журнал сходится с остатками."""
+    w2 = second_warehouse(st)
+    receive(st.wh, st, "5")
+    t = transfer(st.wh, st, "5", dst=w2)["result"]["transfer"]
+    assert lost(st.pr, t)["status"] == "denied"
+    assert lost(st.wh2, t, reason="")["code"] == "field_required"
+    assert lost(st.wh2, t, sign_password=PWD)["code"] == "act_not_signed"
+    assert lost(st.wh2, t, sign_act=True)["code"] == "sign_password_required"
+    r = lost(st.wh2, t, sign_act=True, sign_password=PWD)
+    assert r["status"] == "accepted", r
+    x = r["result"]["transfer"]
+    assert (x["status"], x["status_label"], x["accepted_qty"]) == ("lost", "Утрачено в пути", None)
+    lo = x["loss"]
+    assert (lo["act_no"], lo["qty"], lo["signer_name"]) == (1, "5.0000", "WH2")
+    assert (lo["signature"]["method"], lo["signature"]["content_ok"]) == ("password", True)
+    assert r["result"]["movements"] == [] and bal_at(st.wh, st, w2) is None
+    assert bal_at(st.wh, st, st.w) == ("0.0000", "0.0000", "0.0000")
+    assert world.svc.ledger_mismatches() == []
+    assert accept(st.wh2, x)["code"] == "transfer_state"
+    assert give_back(st.wh, x)["code"] == "transfer_state"
+    assert lost(st.wh2, x, sign_act=True, sign_password=PWD)["code"] == "transfer_state"
+    assert accept(st.wh2, t)["status"] == "conflict"                   # старая версия
+    out = st.wh.query("pull")["result"]
+    pulled = {y["id"]: y for y in out["stock_transfers"]}
+    assert pulled[t["id"]]["status"] == "lost"
+    rv = st.wh.cmd("stock.reverse", {"id": new_id(), "movement_id": t["out_movement_id"], "reason": "x"})
+    assert rv["code"] == "transfer_leg" and "акт об утрате № 1" in rv["message_ru"]
+    h = st.wh.query("history", object_type="stock_transfer", object_id=t["id"])["result"]
+    assert (h[-1]["details"]["status"], h[-1]["details"]["loss_act_no"]) == ("lost", 1)
+    # Второй акт — следующий номер; в pull после окна «в пути» утраченное не висит вечно (только последние).
+    receive(st.wh, st, "1")
+    t2 = transfer(st.wh, st, "1", dst=w2)["result"]["transfer"]
+    assert lost(st.wh, t2, sign_act=True, sign_password=PWD)["result"]["transfer"]["loss"]["act_no"] == 2
+    with pytest.raises(sa.exc.DBAPIError):
+        with world.svc.engine.begin() as cn:
+            cn.execute(db.stock_shipment_losses.update().values(reason="подмена"))
+
+
+def test_concurrent_accept_and_lost_only_one_wins(world, st):
+    w2 = second_warehouse(st)
+    receive(st.wh, st, "2")
+    t = transfer(st.wh, st, "2", dst=w2)["result"]["transfer"]
+    results = _race(world, [st.wh.token, st.wh2.token],
+                    [("stock.transfer_accept", {"id": t["id"]}),
+                     ("stock.transfer_lost", {"id": t["id"], "reason": "x", "sign_act": True, "sign_password": PWD})])
+    assert sorted(r["status"] for r in results) in (["accepted", "rejected"], ["accepted", "conflict"]), results
     assert world.svc.ledger_mismatches() == []

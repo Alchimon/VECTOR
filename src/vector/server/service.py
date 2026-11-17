@@ -145,6 +145,7 @@ class Service(WorkMixin, CalcMixin, StockMixin, ConfigMixin):
             "stock.receive": self._stock_receive, "stock.issue": self._stock_issue, "stock.reverse": self._stock_reverse,
             "stock.transfer": self._stock_transfer, "stock.transfer_accept": self._stock_transfer_accept,
             "stock.transfer_cancel": self._stock_transfer_cancel,
+            "stock.transfer_lost": self._stock_transfer_lost,
             "stock.reserve": self._stock_reserve, "stock.release": self._stock_release,
             "need.generate": self._need_generate, "need.match_line": self._need_match_line,
         }

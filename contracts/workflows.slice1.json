@@ -1,5 +1,5 @@
 {
-  "contract": "workflows-slice1-v5",
+  "contract": "workflows-slice1-v6",
   "notes": "Переходы и условия — временные предположения A-02/A-05 (Decision Log). Статус меняется только явной командой.",
   "tender": {
     "initial": "draft",
@@ -132,20 +132,23 @@
     "initial": "in_transit",
     "terminal": [
       "received",
-      "returned"
+      "returned",
+      "lost"
     ],
     "transitions": {
       "in_transit": [
         "received",
-        "returned"
+        "returned",
+        "lost"
       ]
     },
     "labels_ru": {
       "in_transit": "В пути",
       "received": "Принято",
-      "returned": "Возвращено отправителю"
+      "returned": "Возвращено отправителю",
+      "lost": "Утрачено в пути"
     },
-    "note": "in_transit — после отгрузки (stock.transfer, расход на отправителе); received — stock.transfer_accept (приход на получателе; при недостаче — акт недостачи, подпись приёмщика, D-30); returned — stock.transfer_cancel (приход обратно на отправителе).",
-    "assumption": "A-30"
+    "note": "in_transit — после отгрузки (stock.transfer, расход на отправителе); received — stock.transfer_accept (приход на получателе; при недостаче — акт недостачи); returned — stock.transfer_cancel (приход обратно на отправителе); lost — stock.transfer_lost (не пришло ничего, акт об утрате, без прихода). Акты подписывает приёмщик склада способом из настройки stock.act_signature (D-30, D-31).",
+    "assumption": "A-33"
   }
 }

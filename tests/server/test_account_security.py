@@ -215,7 +215,8 @@ def test_password_never_enters_request_hash_and_legacy_hashes_can_be_redacted(wo
     fields = set(re.findall(r'"([a-z_]*password[a-z_]*)"', src)) - {"must_change_password", "password_changed",
                                                                     "password_change_required", "bad_current_password",
                                                                     "same_password", "weak_password", "bad_password",
-                                                                    "password_changed_at", "password_reset"}
+                                                                    "password_changed_at", "password_reset",
+                                                                    "sign_password_required", "bad_sign_password"}
     assert fields <= SECRET_FIELDS, fields - SECRET_FIELDS
     # Старая запись с хэшем «как раньше» — находится и зачищается.
     with world.svc.engine.begin() as c:

@@ -200,9 +200,11 @@ def test_demo_seed_only_into_fresh_db(setup):
     sp = svc.handle({"type": "query", "token": wh["token"], "query": "pull"}, "t")["result"]
     assert len(sp["warehouses"]) == 2 and any(m["reverses_id"] for m in sp["stock_movements"])
     # Перемещения: два принятых — по две связанные записи журнала (одно — с актом недостачи № 1), третье ещё
-    # «в пути» — одна (отгрузка), со сроком прибытия для справки.
-    assert sum(1 for m in sp["stock_movements"] if m["transfer_id"]) == 5
-    assert sorted(t["status"] for t in sp["stock_transfers"]) == ["in_transit", "received", "received"]
+    # «в пути» — одна (отгрузка), со сроком прибытия для справки; четвёртое утрачено (акт об утрате № 1, D-31) —
+    # тоже только отгрузка.
+    assert sum(1 for m in sp["stock_movements"] if m["transfer_id"]) == 6
+    assert sorted(t["status"] for t in sp["stock_transfers"]) == ["in_transit", "lost", "received", "received"]
+    assert [(t["loss"]["act_no"], t["loss"]["signature"]["method"]) for t in sp["stock_transfers"] if t["loss"]] == [(1, "password")]
     assert [t["act"]["act_no"] for t in sp["stock_transfers"] if t["act"]] == [1]
     assert [bool(t["expected_on"]) for t in sp["stock_transfers"] if t["status"] == "in_transit"] == [True]
     assert svc.ledger_mismatches() == []
