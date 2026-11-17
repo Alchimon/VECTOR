@@ -48,6 +48,9 @@ TRANSFER_LABELS_RU = {"out": "Расход по перемещению", "in": "
 # Статусы перемещения (D-29): «В пути» — отгружено, ещё не принято; затем либо принято получателем, либо возвращено.
 TRANSFER_STATES = ("in_transit", "received", "returned")
 TRANSFER_STATUS_LABELS_RU = {"in_transit": "В пути", "received": "Принято", "returned": "Возвращено отправителю"}
+# Принято не всё отгруженное — разница оформлена актом недостачи (D-30). Отдельного статуса в БД нет: перемещение
+# «Принято», а недостачу показывает наличие акта.
+SHORTAGE_STATUS_LABEL_RU = "Принято с недостачей"
 RESERVATION_STATES = ("active", "consumed", "released")
 RESERVATION_LABELS_RU = {"active": "Действует", "consumed": "Израсходован", "released": "Снят"}
 

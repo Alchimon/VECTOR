@@ -199,9 +199,12 @@ def test_demo_seed_only_into_fresh_db(setup):
     wh = svc.handle({"type": "login", "login": "i.belova", "password": DEMO_PWD, "device_id": "t"}, "t")
     sp = svc.handle({"type": "query", "token": wh["token"], "query": "pull"}, "t")["result"]
     assert len(sp["warehouses"]) == 2 and any(m["reverses_id"] for m in sp["stock_movements"])
-    # Перемещения: принятое — две связанные записи журнала, второе ещё «в пути» — одна (отгрузка).
-    assert sum(1 for m in sp["stock_movements"] if m["transfer_id"]) == 3
-    assert sorted(t["status"] for t in sp["stock_transfers"]) == ["in_transit", "received"]
+    # Перемещения: два принятых — по две связанные записи журнала (одно — с актом недостачи № 1), третье ещё
+    # «в пути» — одна (отгрузка), со сроком прибытия для справки.
+    assert sum(1 for m in sp["stock_movements"] if m["transfer_id"]) == 5
+    assert sorted(t["status"] for t in sp["stock_transfers"]) == ["in_transit", "received", "received"]
+    assert [t["act"]["act_no"] for t in sp["stock_transfers"] if t["act"]] == [1]
+    assert [bool(t["expected_on"]) for t in sp["stock_transfers"] if t["status"] == "in_transit"] == [True]
     assert svc.ledger_mismatches() == []
     buyer = svc.handle({"type": "login", "login": "s.morozov", "password": DEMO_PWD, "device_id": "t"}, "t")
     needs = svc.handle({"type": "query", "token": buyer["token"], "query": "pull"}, "t")["result"]["needs"]

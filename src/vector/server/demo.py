@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import timedelta
 import uuid
 
 import sqlalchemy as sa
@@ -256,9 +257,18 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
                                     "to_warehouse_id": whs["СК-2"], "qty": "200", "reason": "На монтажный участок",
                                     "source_doc": "Накладная на перемещение № 3"})["transfer"]
     cmd(wh, "stock.transfer_accept", {"id": t1["id"], "comment": "Принято без замечаний"}, ev=t1["version"])
+    # Ещё одна партия хомутов пришла на СК-1 не полностью: принято 48 из 50, недостача 2 шт оформлена актом
+    # недостачи № 1, который подписал приёмщик (D-30). Отгружена раньше — в списке ниже «в пути».
+    t2 = cmd(wh, "stock.transfer", {"id": str(uuid.uuid4()), "item_id": items["ХМТ-200"], "from_warehouse_id": whs["СК-2"],
+                                    "to_warehouse_id": whs["СК-1"], "qty": "50", "reason": "Пополнение центрального склада",
+                                    "source_doc": "Накладная на перемещение № 5"})["transfer"]
+    cmd(wh, "stock.transfer_accept", {"id": t2["id"], "accepted_qty": "48", "shortage_reason": "Повреждена упаковка, 2 шт "
+                                      "не пригодны", "sign_act": True}, ev=t2["version"])
+    # Срок прибытия — «для справки» (D-30): через 3 дня после даты демо-данных.
     cmd(wh, "stock.transfer", {"id": str(uuid.uuid4()), "item_id": items["ХМТ-200"], "from_warehouse_id": whs["СК-2"],
                                "to_warehouse_id": whs["СК-1"], "qty": "100", "reason": "Излишек после монтажа трасс",
-                               "source_doc": "Накладная на перемещение № 4"})
+                               "source_doc": "Накладная на перемещение № 4",
+                               "expected_on": (svc.now().date() + timedelta(days=3)).isoformat()})
 
     # Закупка формирует потребность из последней зафиксированной версии АТХ (v1; черновик v2 не зафиксирован).
     # id версии берётся из БД напрямую: закупка не видит расчёты (цены) через pull — и не должна.

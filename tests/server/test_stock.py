@@ -9,6 +9,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from decimal import Decimal
+from datetime import timedelta
 
 import pytest
 import sqlalchemy as sa
@@ -557,3 +558,86 @@ def test_legacy_one_step_transfers_stay_visible_and_protected(world, st):
     assert (mv[a["id"]]["kind_label"], mv[b["id"]]["kind_label"]) == ("Расход по перемещению", "Приход по перемещению")
     rv = st.wh.cmd("stock.reverse", {"id": new_id(), "movement_id": a["id"], "reason": "x"})
     assert rv["code"] == "transfer_leg"
+
+
+def test_accept_with_shortage_needs_signed_act_and_writes_off_difference(world, st):
+    """D-30: пришло меньше отгруженного — приход фактического количества, разница — актом недостачи, который
+    подписывает приёмщик (причина и явная подпись обязательны). Акт неизменяем, номер сквозной; недостача не
+    возвращается ни на один склад; журнал сходится с остатками."""
+    w2 = second_warehouse(st)
+    receive(st.wh, st, "10")
+    t = transfer(st.wh, st, "10", dst=w2)["result"]["transfer"]
+    assert accept(st.wh2, t, accepted_qty="11")["code"] == "accepted_exceeds_shipped"
+    assert accept(st.wh2, t, accepted_qty="0")["code"] != "accepted"            # «ничего не пришло» — не актом (A-31)
+    assert accept(st.wh2, t, accepted_qty="7.5", sign_act=True)["code"] == "field_required"  # без причины
+    assert accept(st.wh2, t, accepted_qty="7.5", shortage_reason="Бой при перевозке")["code"] == "act_not_signed"
+    assert accept(st.wh2, t, accepted_qty="7.5", shortage_reason="x", sign_act="да")["code"] == "act_not_signed"
+    assert accept(st.wh2, t, accepted_qty="7.12345", shortage_reason="x", sign_act=True)["code"] == "too_many_fraction_digits"
+    assert bal_at(st.wh, st, w2) is None                                          # отказы ничего не провели
+    a = accept(st.wh2, t, accepted_qty="7.5", shortage_reason="Бой при перевозке, 2,5 шт", sign_act=True,
+               comment="Пересчитано при водителе")
+    assert a["status"] == "accepted", a
+    t2, (inn,) = a["result"]["transfer"], a["result"]["movements"]
+    assert (t2["status"], t2["status_label"], t2["accepted_qty"]) == ("received", "Принято с недостачей", "7.5000")
+    act = t2["act"]
+    assert (act["act_no"], act["shipped_qty"], act["accepted_qty"], act["shortage_qty"]) == (1, "10.0000", "7.5000", "2.5000")
+    assert (act["signed_by"], act["signer_name"], act["reason"]) == (st.wh2.user_id, "WH2", "Бой при перевозке, 2,5 шт")
+    assert inn["qty"] == "7.5000" and bal_at(st.wh, st, w2) == ("7.5000", "0.0000", "7.5000")
+    assert bal_at(st.wh, st, st.w) == ("0.0000", "0.0000", "0.0000")             # недостача не вернулась отправителю
+    assert world.svc.ledger_mismatches() == []
+    h = st.wh.query("history", object_type="stock_transfer", object_id=t["id"])["result"]
+    assert h[-1]["details"]["act"]["act_no"] == 1 and h[-1]["details"]["act"]["shortage_qty"] == "2.5000"
+    # Второй акт — следующий номер; полная приёмка — без акта.
+    receive(st.wh, st, "5")
+    t3 = transfer(st.wh, st, "3", dst=w2)["result"]["transfer"]
+    t4 = transfer(st.wh, st, "2", dst=w2)["result"]["transfer"]
+    assert accept(st.wh2, t3, accepted_qty="3", shortage_reason="лишнее", sign_act=True)["result"]["transfer"]["act"] is None
+    assert accept(st.wh2, t4, accepted_qty="1", shortage_reason="Пересорт", sign_act=True)["result"]["transfer"]["act"]["act_no"] == 2
+    pulled = {x["id"]: x for x in st.wh.query("pull")["result"]["stock_transfers"]}
+    assert pulled[t["id"]]["act"]["act_no"] == 1 and pulled[t3["id"]]["accepted_qty"] == "3.0000"
+    with pytest.raises(sa.exc.DBAPIError):                                         # акт неизменяем на уровне БД
+        with world.svc.engine.begin() as c:
+            c.execute(db.stock_transfer_acts.update().values(reason="Подмена"))
+
+
+def test_expected_arrival_is_reference_only(world, st):
+    """D-30: ожидаемая дата прибытия — по желанию, не раньше дня отгрузки; видна в pull; ни на что не влияет —
+    перемещение с прошедшим сроком принимается как обычно."""
+    w2 = second_warehouse(st)
+    receive(st.wh, st, "5")
+    today = world.clock.now().date()
+    assert transfer(st.wh, st, "1", dst=w2, expected_on=(today - timedelta(days=1)).isoformat())["code"] == "expected_before_shipment"
+    assert transfer(st.wh, st, "1", dst=w2, expected_on="2026-02-31")["code"] == "invalid_date"
+    t = transfer(st.wh, st, "1", dst=w2, expected_on=(today + timedelta(days=3)).isoformat())["result"]["transfer"]
+    assert t["expected_on"] == (today + timedelta(days=3)).isoformat()
+    plain = transfer(st.wh, st, "1", dst=w2)["result"]["transfer"]
+    assert plain["expected_on"] is None
+    pulled = {x["id"]: x for x in st.wh.query("pull")["result"]["stock_transfers"]}
+    assert pulled[t["id"]]["expected_on"] == t["expected_on"]
+    world.clock.advance(days=10)                                                   # срок прошёл — только для справки
+    a = accept(world.login("wh2"), t)                                              # (сессия за 10 дней истекла)
+    assert a["status"] == "accepted" and a["result"]["transfer"]["expected_on"] == t["expected_on"]
+
+
+def test_concurrent_shortage_acts_get_distinct_numbers(world, st):
+    """Два приёмщика одновременно подписывают акты по разным перемещениям: номера актов разные и идут подряд
+    (уникальный номер + повтор транзакции), оба прихода проведены."""
+    w2 = second_warehouse(st)
+    receive(st.wh, st, "10")
+    ts = [transfer(st.wh, st, "5", dst=w2)["result"]["transfer"] for _ in range(2)]
+    results, barrier = [], threading.Barrier(2)
+
+    def worker(sess, t):
+        """Дождаться второго потока и принять перемещение t с недостачей 1."""
+        barrier.wait()
+        results.append(world.svc.handle({"type": "command", "token": sess.token, "operation_id": new_id(),
+                                         "command": "stock.transfer_accept", "expected_version": t["version"],
+                                         "payload": {"id": t["id"], "accepted_qty": "4", "shortage_reason": "Бой",
+                                                     "sign_act": True}}))
+    th = [threading.Thread(target=worker, args=(s, t)) for s, t in zip((st.wh, st.wh2), ts)]
+    [x.start() for x in th]
+    [x.join() for x in th]
+    assert [r["status"] for r in results] == ["accepted", "accepted"], results
+    assert sorted(r["result"]["transfer"]["act"]["act_no"] for r in results) == [1, 2]
+    assert bal_at(st.wh, st, w2) == ("8.0000", "0.0000", "8.0000")
+    assert world.svc.ledger_mismatches() == []

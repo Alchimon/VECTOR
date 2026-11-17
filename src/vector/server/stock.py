@@ -51,12 +51,20 @@ from vector.core.errors import Conflict, Denied, Rejected
 
 from .db import (calc_version_lines, calc_versions, item_aliases, kits, procurement_need_line_match_units,
                  procurement_need_line_matches, procurement_need_lines, procurement_needs, projects, unit_conversions,
-                 stock_balances, stock_items, stock_movements, stock_reservations, stock_shipments, stock_transfers,
-                 warehouses)
-from .validation import iso, only_keys, opt_str, req_str, req_uuid
+                 stock_balances, stock_items, stock_movements, stock_reservations, stock_shipment_terms,
+                 stock_shipments, stock_transfer_acts, stock_transfers, users, warehouses)
+from .validation import iso, only_keys, opt_date, opt_str, req_str, req_uuid
 
 # Сколько последних движений отдаётся в pull (полный журнал — запросом истории/отчётом позже).
 PULL_MOVEMENTS_LIMIT = 1000
+
+
+def _v_act(a: dict) -> dict:
+    """Акт недостачи (D-30) для клиента: номер, отгружено / принято / недостача, причина, кто и когда подписал."""
+    return {"id": a["id"], "act_no": a["act_no"], "shipped_qty": money.to_json(a["shipped_qty"]),
+            "accepted_qty": money.to_json(a["accepted_qty"]), "shortage_qty": money.to_json(a["shortage_qty"]),
+            "reason": a["reason"], "signed_by": a["signed_by"], "signer_name": a["signer_name"],
+            "signed_at": iso(a["signed_at"])}
 
 
 def _qty(p: dict, key: str = "qty") -> Decimal:
@@ -162,13 +170,20 @@ class StockMixin:
                 "posted_by": o["posted_by"], "posted_at": iso(o["posted_at"])}
 
     @staticmethod
-    def v_shipment(o: dict) -> dict:
+    def v_shipment(o: dict, expected_on=None, act: Optional[dict] = None) -> dict:
         """Перемещение (D-29) для клиента: позиция, маршрут, количество, статус с подписью, движения отгрузки и закрытия
         (приёмки или возврата), основание, кто и когда отгрузил и закрыл, версия (для приёмки/возврата).
+
+        expected_on — ожидаемая дата прибытия «для справки» (D-30) или None; act — акт недостачи (D-30) или None.
+        accepted_qty — сколько фактически пришло на получатель (у принятых; без акта — всё отгруженное).
         """
+        a = _v_act(act) if act else None
+        accepted = (act["accepted_qty"] if act else o["qty"]) if o["status"] == "received" else None
         return {"id": o["id"], "item_id": o["item_id"], "from_warehouse_id": o["from_warehouse_id"],
                 "to_warehouse_id": o["to_warehouse_id"], "qty": money.to_json(o["qty"]), "status": o["status"],
-                "status_label": stock.TRANSFER_STATUS_LABELS_RU[o["status"]],
+                "status_label": stock.SHORTAGE_STATUS_LABEL_RU if act else stock.TRANSFER_STATUS_LABELS_RU[o["status"]],
+                "accepted_qty": money.to_json(accepted) if accepted is not None else None,
+                "expected_on": expected_on.isoformat() if expected_on else None, "act": a,
                 "out_movement_id": o["out_movement_id"], "close_movement_id": o["close_movement_id"],
                 "source_doc": o["source_doc"], "reason": o["reason"], "close_reason": o["close_reason"],
                 "version": o["version"], "created_by": o["created_by"], "created_at": iso(o["created_at"]),
@@ -186,7 +201,31 @@ class StockMixin:
                 "out_movement_id": o["out_movement_id"], "close_movement_id": o["in_movement_id"],
                 "source_doc": o["source_doc"], "reason": o["reason"], "close_reason": None, "version": None,
                 "created_by": o["posted_by"], "created_at": iso(o["posted_at"]), "closed_by": o["posted_by"],
-                "closed_at": iso(o["posted_at"]), "legacy": True}
+                "closed_at": iso(o["posted_at"]), "legacy": True, "accepted_qty": money.to_json(o["qty"]),
+                "expected_on": None, "act": None}
+
+    def _shipment_view(self, conn, sid: str) -> dict:
+        """Перемещение sid в виде для клиента — вместе со сроком прибытия и актом недостачи (если есть)."""
+        return self._shipment_views(conn, stock_shipments.c.id == sid)[0]
+
+    @staticmethod
+    def _shipment_views(conn, where) -> list[dict]:
+        """Перемещения по условию where — одним запросом с внешними соединениями к срокам и актам (D-30), без длинных
+        списков id в запросе (у MS SQL предел ~2100 параметров).
+        """
+        act_cols = [c.label("act__" + c.name) for c in stock_transfer_acts.c]
+        q = (sa.select(stock_shipments, stock_shipment_terms.c.expected_on, *act_cols)
+             .select_from(stock_shipments.outerjoin(stock_shipment_terms,
+                                                    stock_shipment_terms.c.shipment_id == stock_shipments.c.id)
+                          .outerjoin(stock_transfer_acts, stock_transfer_acts.c.shipment_id == stock_shipments.c.id))
+             .where(where))
+        out = []
+        for r in conn.execute(q):
+            m = dict(r._mapping)
+            act = {k[5:]: m.pop(k) for k in list(m) if k.startswith("act__")}
+            exp = m.pop("expected_on")
+            out.append(StockMixin.v_shipment(m, exp, act if act.get("id") else None))
+        return out
 
     @staticmethod
     def _legs(conn, since=None) -> dict[str, dict]:
@@ -614,7 +653,7 @@ class StockMixin:
         return None
 
     def _stock_transfer(self, ctx, p, ev):
-        """stock.transfer {id, item_id, from_warehouse_id, to_warehouse_id, qty, reason, source_doc?} — ОТГРУЗИТЬ
+        """stock.transfer {id, item_id, from_warehouse_id, to_warehouse_id, qty, reason, source_doc?, expected_on?} — ОТГРУЗИТЬ
         количество позиции на другой склад (A-28, D-29). Только онлайн, только склад.
 
         Одна транзакция: расход (issue) на отправителе + запись перемещения в статусе «В пути». Приход на получателе
@@ -625,8 +664,12 @@ class StockMixin:
         его молча нельзя — сначала снять резерв (перемещение вместе с резервом — открытый вопрос A-28). Получатель
         должен быть действующим складом; отправитель может быть отключён (так освобождают закрываемый склад).
         Позиция может быть отключена: запас компании не растёт.
+
+        expected_on (ГГГГ-ММ-ДД, по желанию) — ожидаемая дата прибытия «для справки» (D-30): не раньше дня отгрузки
+        (UTC), ни на что не влияет.
         """
-        only_keys(p, {"id", "item_id", "from_warehouse_id", "to_warehouse_id", "qty", "reason", "source_doc"})
+        only_keys(p, {"id", "item_id", "from_warehouse_id", "to_warehouse_id", "qty", "reason", "source_doc",
+                      "expected_on"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "stock.transfer", ctx.now)
         tid = req_uuid(p, "id")
         self._ensure_new(ctx.conn, stock_shipments, tid)
@@ -641,6 +684,10 @@ class StockMixin:
         qty = _qty(p)
         reason = req_str(p, "reason", 2000)              # зачем перемещаем — обязательно, как у выдачи (A-24)
         doc = opt_str(p, "source_doc", 200)              # накладная на перемещение — если оформляется
+        expected_on = opt_date(p, "expected_on")         # срок прибытия «для справки» (D-30)
+        if expected_on is not None and expected_on < ctx.now.date():
+            raise Rejected("expected_before_shipment", "Ожидаемая дата прибытия раньше дня отгрузки "
+                           f"({ctx.now.date().strftime('%d.%m.%Y')}, UTC).", {"field": "expected_on"})
         row_s, b_s = self._load_balance(ctx.conn, src["id"], it["id"])
         try:
             nb_s = stock.issue_free(b_s, qty)            # только из доступного на отправителе
@@ -657,12 +704,14 @@ class StockMixin:
             id=tid, item_id=it["id"], from_warehouse_id=src["id"], to_warehouse_id=dst["id"], qty=qty,
             status="in_transit", out_movement_id=out_id, source_doc=doc, reason=reason, version=1,
             created_by=ctx.user_id, created_at=ctx.now))
-        sh = self._get(ctx.conn, stock_shipments, tid)
+        if expected_on is not None:
+            ctx.conn.execute(stock_shipment_terms.insert().values(shipment_id=tid, expected_on=expected_on))
         ctx.log("stock_transfer", tid, auth, None, 1,
                 {**common, "status": "in_transit", "item_code": it["code"], "unit": it["unit"], "qty": money.to_json(qty),
-                 "out_movement_id": out_id, "source_doc": doc, "reason": reason})
+                 "out_movement_id": out_id, "source_doc": doc, "reason": reason,
+                 "expected_on": expected_on.isoformat() if expected_on else None})
         out = self._get(ctx.conn, stock_movements, out_id)
-        return {"transfer": self.v_shipment(sh),
+        return {"transfer": self._shipment_view(ctx.conn, tid),
                 "movements": [self.v_movement(out, leg={"transfer_id": tid, "direction": "out",
                                                         "peer_warehouse_id": dst["id"]})],
                 "balances": [{"warehouse_id": src["id"], "item_id": it["id"], **nb_s.to_json()}]}
@@ -673,9 +722,24 @@ class StockMixin:
         """
         auth = self.policy.check(ctx.conn, ctx.user_id, command, ctx.now)
         sh = self._require(ctx.conn, stock_shipments, req_uuid(p, "id"), "Перемещение")
-        self._check_version(sh, ev, self.v_shipment)
+        self._check_version(sh, ev, lambda o: self._shipment_view(ctx.conn, o["id"]))
+        qty, shortage, short_reason = sh["qty"], Decimal(0), None     # сколько приходуется; недостача по акту
         if outcome == "received":
             note = opt_str(p, "comment", 2000)           # комментарий приёмки — необязателен
+            if p.get("accepted_qty") is not None:
+                qty = _qty(p, "accepted_qty")            # фактически пришло: > 0, ≤ 4 знаков
+                if qty > sh["qty"]:
+                    raise Rejected("accepted_exceeds_shipped", f"Принято ({money.to_json(qty)}) больше, чем отгружено "
+                                   f"({money.to_json(sh['qty'])}). Излишек перемещением не оформляется — проведите "
+                                   "его приходом с основанием.", {"field": "accepted_qty"})
+                shortage = sh["qty"] - qty
+            if shortage > 0:
+                # Недостача — только актом, который подписывает приёмщик склада (D-30): причина обязательна, подпись
+                # — явное подтверждение в запросе (sign_act = true) от вошедшего пользователя с правом склада.
+                short_reason = req_str(p, "shortage_reason", 2000)
+                if p.get("sign_act") is not True:
+                    raise Rejected("act_not_signed", "Принято меньше отгруженного: подпишите акт недостачи "
+                                   "(подтвердите, что вы — приёмщик и количество пересчитано).", {"field": "sign_act"})
         else:
             note = req_str(p, "reason", 2000)            # почему возвращаем — обязательно
         if sh["status"] != "in_transit":
@@ -691,32 +755,49 @@ class StockMixin:
                            "Включите склад или верните перемещение отправителю.")
         to_w = dst if outcome == "received" else src
         row, b = self._load_balance(ctx.conn, to_w["id"], it["id"])
-        nb = stock.receive(b, sh["qty"])
+        nb = stock.receive(b, qty)
         self._save_balance(ctx, to_w["id"], it["id"], row, nb)
         direction = "in" if outcome == "received" else "return"
         mid = str(uuid.uuid5(uuid.UUID(sh["id"]), direction))
         common = {"transfer_id": sh["id"], "from_warehouse_code": src["code"], "to_warehouse_code": dst["code"]}
-        self._post(ctx, auth, mid=mid, kind="receipt", w=to_w, it=it, qty=sh["qty"], source_doc=sh["source_doc"],
+        self._post(ctx, auth, mid=mid, kind="receipt", w=to_w, it=it, qty=qty, source_doc=sh["source_doc"],
                    reason=note or sh["reason"], details={**common, "direction": direction, "balance_after": nb.to_json()})
         n = self._update_versioned(ctx, stock_shipments, sh, {"status": outcome, "close_movement_id": mid,
                                                               "close_reason": note, "closed_by": ctx.user_id,
                                                               "closed_at": ctx.now})
+        act_details = None
+        if shortage > 0:
+            # Акт недостачи: сквозной номер (max + 1; одновременные акты разойдутся по уникальному индексу и повтору
+            # транзакции), имя подписанта — снимок на момент подписи. Неизменяем (триггеры БД).
+            no = (ctx.conn.execute(sa.select(sa.func.max(stock_transfer_acts.c.act_no))).scalar() or 0) + 1
+            signer = ctx.conn.execute(sa.select(users.c.display_name).where(users.c.id == ctx.user_id)).scalar_one()
+            act_id = str(uuid.uuid5(uuid.UUID(sh["id"]), "act"))
+            ctx.conn.execute(stock_transfer_acts.insert().values(
+                id=act_id, shipment_id=sh["id"], act_no=no, shipped_qty=sh["qty"], accepted_qty=qty,
+                shortage_qty=shortage, reason=short_reason, signed_by=ctx.user_id, signer_name=signer,
+                signed_at=ctx.now))
+            act_details = {"act_id": act_id, "act_no": no, "shortage_qty": money.to_json(shortage),
+                           "shortage_reason": short_reason, "accepted_qty": money.to_json(qty)}
         ctx.log("stock_transfer", sh["id"], auth, sh["version"], n["version"],
                 {**common, "status": outcome, "close_movement_id": mid, "close_reason": note,
-                 "item_code": it["code"], "unit": it["unit"], "qty": money.to_json(sh["qty"])})
+                 "item_code": it["code"], "unit": it["unit"], "qty": money.to_json(sh["qty"]), "act": act_details})
         mv = self._get(ctx.conn, stock_movements, mid)
         peer = src["id"] if outcome == "received" else dst["id"]
-        return {"transfer": self.v_shipment(n),
+        return {"transfer": self._shipment_view(ctx.conn, sh["id"]),
                 "movements": [self.v_movement(mv, leg={"transfer_id": sh["id"], "direction": direction,
                                                        "peer_warehouse_id": peer})],
                 "balances": [{"warehouse_id": to_w["id"], "item_id": it["id"], **nb.to_json()}]}
 
     def _stock_transfer_accept(self, ctx, p, ev):
-        """stock.transfer_accept {id, comment?} + версия — ПРИНЯТЬ перемещение на складе-получателе (D-29): приход на
-        получатель, статус «Принято». Только онлайн, только склад. Принимается всё отгруженное количество (частичная
-        приёмка и недостача — открытый вопрос A-29).
+        """stock.transfer_accept {id, comment?, accepted_qty?, shortage_reason?, sign_act?} + версия — ПРИНЯТЬ
+        перемещение на складе-получателе (D-29): приход на получатель, статус «Принято». Только онлайн, только склад.
+
+        accepted_qty — сколько фактически пришло (по умолчанию всё отгруженное). Если меньше — недостача оформляется
+        актом (D-30): shortage_reason обязательна, sign_act = true — подпись приёмщика. Недостача списывается из учёта
+        актом (не возвращается ни на один склад). Больше отгруженного принять нельзя; «ничего не пришло» (0) актом
+        пока не оформляется — открытый вопрос A-31.
         """
-        only_keys(p, {"id", "comment"})
+        only_keys(p, {"id", "comment", "accepted_qty", "shortage_reason", "sign_act"})
         return self._close_shipment(ctx, p, ev, "stock.transfer_accept", "received")
 
     def _stock_transfer_cancel(self, ctx, p, ev):
@@ -1127,12 +1208,10 @@ class StockMixin:
             legs = self._legs(conn, since) if rows else {}
             out["stock_movements"] = [self.v_movement(m, rev.get(m["id"]), legs.get(m["id"])) for m in rows]
             # Перемещения: ВСЕ «в пути» (по ним нужны действия) и закрытые/одношаговые — в том же окне, что и движения.
-            ships = sa.select(stock_shipments).where(stock_shipments.c.status == "in_transit")
+            cond = stock_shipments.c.status == "in_transit"
             if since is not None:
-                ships = sa.select(stock_shipments).where(sa.or_(stock_shipments.c.status == "in_transit",
-                                                                stock_shipments.c.created_at >= since,
-                                                                stock_shipments.c.closed_at >= since))
-            trs = [self.v_shipment(dict(r._mapping)) for r in conn.execute(ships)]
+                cond = sa.or_(cond, stock_shipments.c.created_at >= since, stock_shipments.c.closed_at >= since)
+            trs = self._shipment_views(conn, cond)
             if since is not None:
                 trs += [self.v_transfer(dict(r._mapping)) for r in conn.execute(
                     sa.select(stock_transfers).where(stock_transfers.c.posted_at >= since))]
