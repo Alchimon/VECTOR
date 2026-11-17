@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 _PKG_DIR = Path(__file__).resolve().parent / "contracts_data"
@@ -21,21 +21,24 @@ def contracts_dir() -> Path:
 
 @dataclass(frozen=True)
 class Contracts:
-    """Три контракта системы, загруженные из JSON.
+    """Контракты системы, загруженные из JSON.
 
     * catalog — каталог команд: подпись, офлайн-класс (offline_full / queued / online_required);
     * permissions — правила прав «действие × роль × контекст проекта» (их исполняет server.authz.Policy);
-    * workflows — допустимые переходы статусов (тендер, ТКП, проект, задача, резерв).
+    * workflows — допустимые переходы статусов (тендер, ТКП, проект, задача, резерв);
+    * settings — каталог настроек (ключ, допустимые значения, самое строгое значение «если не задано», кто
+      публикует). Настройка вне каталога не существует: произвольных ключей нет (07 §4).
 
     Одни и те же файлы читают сервер и клиент, поэтому подсказки интерфейса и решения сервера не расходятся.
     """
     catalog: dict
     permissions: dict
     workflows: dict
+    settings: dict = field(default_factory=lambda: {"items": {}})
 
     @staticmethod
     def load(directory: Path | None = None) -> "Contracts":
-        """Прочитать все три файла из каталога (по умолчанию — contracts_dir())."""
+        """Прочитать все файлы контрактов из каталога (по умолчанию — contracts_dir())."""
         d = directory or contracts_dir()
 
         def read(name: str) -> dict:
@@ -43,7 +46,8 @@ class Contracts:
             with open(d / name, encoding="utf-8") as f:
                 return json.load(f)
 
-        return Contracts(read("command-catalog.slice1.json"), read("permissions.slice1.json"), read("workflows.slice1.json"))
+        return Contracts(read("command-catalog.slice1.json"), read("permissions.slice1.json"), read("workflows.slice1.json"),
+                         read("settings.slice1.json"))
 
     def offline_class(self, command: str) -> str:
         """Офлайн-класс команды: можно ли её выполнить без связи (queued — в очередь) или нужна связь

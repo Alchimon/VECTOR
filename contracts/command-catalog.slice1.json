@@ -1,5 +1,5 @@
 {
-  "contract": "command-catalog-slice1-v6",
+  "contract": "command-catalog-slice1-v7",
   "offline_classes": {
     "offline_full": "Полностью доступно офлайн (чтение локального кэша, локальные черновики без эффекта для других).",
     "queued": "Создаёт локальное изменение в очереди синхронизации. До ответа сервера это НЕ подтверждённое действие; сервер заново проверяет права, состояние и версию.",
@@ -124,6 +124,13 @@
       "object": "user",
       "label_ru": "Заблокировать / разблокировать учётную запись"
     },
+    "config.publish": {
+      "offline": "online_required",
+      "object": "config",
+      "label_ru": "Опубликовать настройку",
+      "requires_expected_version": true,
+      "note": "Новая неизменяемая версия настройки из каталога settings (значение, причина). Откат — публикация прежнего значения. expected_version — номер действующей версии (0, если не задавалась)."
+    },
     "task.create": {
       "offline": "queued",
       "object": "task",
@@ -194,6 +201,31 @@
       "label_ru": "Изменить позицию номенклатуры",
       "requires_expected_version": true,
       "note": "Единицу измерения нельзя менять, если по позиции уже есть остатки или движения (пересчёта единиц нет)."
+    },
+    "item_alias.create": {
+      "offline": "online_required",
+      "object": "item_alias",
+      "label_ru": "Добавить другое обозначение позиции",
+      "note": "Аналог/другое обозначение (D-25): по нему потребность сопоставляется автоматически при совпадении единицы."
+    },
+    "item_alias.update": {
+      "offline": "online_required",
+      "object": "item_alias",
+      "label_ru": "Изменить другое обозначение позиции",
+      "requires_expected_version": true
+    },
+    "unit_conversion.create": {
+      "offline": "online_required",
+      "object": "unit_conversion",
+      "label_ru": "Добавить пересчёт единиц",
+      "note": "1 from_unit = factor to_unit; общий или для позиции. Коэффициент вводит человек (A-27)."
+    },
+    "unit_conversion.update": {
+      "offline": "online_required",
+      "object": "unit_conversion",
+      "label_ru": "Изменить пересчёт единиц",
+      "requires_expected_version": true,
+      "note": "Правка не меняет уже принятых решений о сопоставлении — коэффициент в них зафиксирован."
     },
     "stock.receive": {
       "offline": "online_required",

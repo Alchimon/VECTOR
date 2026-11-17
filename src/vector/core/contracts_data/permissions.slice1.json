@@ -1,5 +1,5 @@
 {
-  "contract": "permissions-slice1-v6",
+  "contract": "permissions-slice1-v7",
   "notes": [
     "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
     "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -350,6 +350,17 @@
       ],
       "assumption": "A-09"
     },
+    "config.publish": {
+      "any_of": [
+        {
+          "global_role": [
+            "admin"
+          ]
+        }
+      ],
+      "assumption": "A-26",
+      "note": "Настройки компании публикует администратор (07 §3). Расширить права сверх матрицы настройка не может."
+    },
     "admin.list_users": {
       "any_of": [
         {
@@ -532,6 +543,54 @@
     },
     "item.update": {
       "same_as": "item.create"
+    },
+    "item_alias.create": {
+      "any_of": [
+        {
+          "global_role": [
+            "warehouse",
+            "procurement"
+          ]
+        }
+      ],
+      "assumption": "A-27",
+      "note": "Справочник аналогов и пересчёта ведут те же роли, что и номенклатуру (склад и закупка)."
+    },
+    "item_alias.update": {
+      "any_of": [
+        {
+          "global_role": [
+            "warehouse",
+            "procurement"
+          ]
+        }
+      ],
+      "assumption": "A-27",
+      "note": "Справочник аналогов и пересчёта ведут те же роли, что и номенклатуру (склад и закупка)."
+    },
+    "unit_conversion.create": {
+      "any_of": [
+        {
+          "global_role": [
+            "warehouse",
+            "procurement"
+          ]
+        }
+      ],
+      "assumption": "A-27",
+      "note": "Справочник аналогов и пересчёта ведут те же роли, что и номенклатуру (склад и закупка)."
+    },
+    "unit_conversion.update": {
+      "any_of": [
+        {
+          "global_role": [
+            "warehouse",
+            "procurement"
+          ]
+        }
+      ],
+      "assumption": "A-27",
+      "note": "Справочник аналогов и пересчёта ведут те же роли, что и номенклатуру (склад и закупка)."
     },
     "stock.receive": {
       "any_of": [
