@@ -208,7 +208,7 @@ def _plain(v):
 
 
 def main():
-    """Снять скриншоты 01–21 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
+    """Снять скриншоты 01–22 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
     args = ap.parse_args()
@@ -282,6 +282,12 @@ def main():
         h.wait_idle()
         h.shot(out / f"{theme}-21-stock-transfer.png")
         QMetaObject.invokeMethod(tf, "close")
+        h.wait_idle()
+        # Перемещения «в пути» (D-29): вкладка со списком — демо-отгрузка ХМТ-200 ждёт приёмки, НШВИ уже принято.
+        sp.setProperty("tab", "transit")
+        h.wait_idle()
+        h.shot(out / f"{theme}-22-stock-transit.png")
+        sp.setProperty("tab", "balances")
         h.wait_idle()
         h.backend.logout()
         h.wait_idle()
