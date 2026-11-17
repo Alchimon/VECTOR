@@ -402,7 +402,7 @@ Item {
         id: transferForm
         objectName: "transferForm"
         property var item: null
-        readonly property var fromOptions: item ? item.by_warehouse.filter(b => Number(b.available) > 0).map(b => ({ id: b.warehouse_id, label: b.warehouse_code + " — доступно " + b.available_label })) : []
+        readonly property var fromOptions: item ? item.by_warehouse.filter(b => Number(b.available) > 0).map(b => ({ id: b.warehouse_id, label: b.warehouse_code + " — " + b.available_label })) : []
         readonly property var toOptions: page.whOptions.filter(w => w.id !== tFrom.currentValue)
         title: "Перемещение: " + (item ? item.code : "")
         subtitle: "Количество уйдёт со склада-отправителя и придёт на склад-получатель одной операцией. Перемещается только доступное: резервы остаются на своём складе."
@@ -413,9 +413,9 @@ Item {
                                                        qty: backend.normalizeQty(tQty.text), reason: tReason.text.trim(), source_doc: tDoc.text.trim() })
         Banner { visible: transferForm.fromOptions.length === 0; tone: "warning"; text: "Свободного количества нет ни на одном складе (всё в резерве или нет остатка)." }
         RowLayout { Layout.fillWidth: true; spacing: 12
-            VSelect { id: tFrom; objectName: "tFrom"; label: "Откуда"; model: transferForm.fromOptions }
+            VSelect { id: tFrom; objectName: "tFrom"; Layout.preferredWidth: 200; label: "Откуда (доступно)"; model: transferForm.fromOptions }
             Icon { name: "arrow-left-right"; size: 18; color: Theme.textMuted; Layout.alignment: Qt.AlignBottom; Layout.bottomMargin: 10 }
-            VSelect { id: tTo; objectName: "tTo"; label: "Куда"; model: transferForm.toOptions } }
+            VSelect { id: tTo; objectName: "tTo"; Layout.preferredWidth: 200; label: "Куда"; model: transferForm.toOptions } }
         VField { id: tQty; objectName: "tQty"; label: "Количество" + (transferForm.item ? ", " + transferForm.item.unit : ""); required: true; error: backend.qtyProblem(text) }
         VField { id: tReason; objectName: "tReason"; label: "Зачем перемещаем"; required: true; placeholder: "На монтажный участок, бригада …" }
         VField { id: tDoc; objectName: "tDoc"; label: "Накладная на перемещение (если есть)"; placeholder: "№ 3 от 17.11.2026" }

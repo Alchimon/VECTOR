@@ -306,7 +306,7 @@ def test_transfer_through_form_moves_between_warehouses_without_storno(ui):
     _call(dlg, "openFor", nshvi)
     ui.wait_idle()
     # Откуда — только склады с доступным; куда — любой другой действующий склад.
-    assert [o["label"] for o in _v(dlg, "fromOptions")] == ["СК-1 — доступно 800 шт", "СК-2 — доступно 200 шт"]
+    assert [o["label"] for o in _v(dlg, "fromOptions")] == ["СК-1 — 800 шт", "СК-2 — 200 шт"]
     assert [o["label"].split(" · ")[0] for o in _v(dlg, "toOptions")] == ["СК-2"]
     _popup(ui, "tQty").setProperty("text", "50")
     ui.wait_idle()
