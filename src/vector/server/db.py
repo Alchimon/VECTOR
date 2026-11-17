@@ -32,8 +32,11 @@ from vector.core import money
 #   v8 — перемещения между складами: связка двух движений журнала (A-28);
 #   v9 — перемещение со статусом «в пути»: отгрузка → приёмка получателем или возврат отправителю (D-29, A-29);
 #   v10–v13 — акты, подписи, поставщики и заказы, согласование и НДС (D-30…D-33, см. migrate.py);
-#   v14 — замещение (передача роли на время), основания решений, сверка заказа со счётом поставщика (D-34).
-SCHEMA_VERSION = 15
+#   v14 — замещение (передача роли на время), основания решений, сверка заказа со счётом поставщика (D-34);
+#   v15 — замещение роли в проекте и уведомления (D-35);
+#   v16 — технология и производство: ТП, наряды, неизменяемый снимок, исполнение операций, замены, выдача
+#         материалов на наряд (этап 5, D-36).
+SCHEMA_VERSION = 16
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -953,6 +956,135 @@ notifications = sa.Table("notifications", metadata,
     sa.Column("created_at", UtcDateTime, nullable=False),
     sa.Column("read_at", UtcDateTime))
 
+# ------------------------------------------------------------ D-36 (схема v16): технология и производство
+# ТП — технологический процесс изделия (комплекта): ревизии 1, 2, … по комплекту; черновик правится технологом
+# (в т. ч. офлайн через очередь), утверждённая ревизия не меняется (новая ревизия — новый черновик). Спецификация
+# ТП — ссылка на ЗАФИКСИРОВАННУЮ версию расчёта комплекта (calc_versions): она неизменяема, значит состав
+# изделия, по которому утверждён ТП, не «поплывёт».
+tech_processes = sa.Table("tech_processes", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id"), nullable=False, index=True),
+    sa.Column("revision_no", sa.Integer, nullable=False),
+    sa.Column("title", U(300), nullable=False),
+    sa.Column("spec_version_id", BIGID, sa.ForeignKey("calc_versions.id")),
+    sa.Column("note", U(2000)),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("content_hash", sa.String(64), nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("kit_id", "revision_no", name="uq_tech_processes_rev"),
+    sa.CheckConstraint("status IN ('draft','approved')", name="status"),
+    sa.CheckConstraint("revision_no > 0", name="rev_pos"))
+
+# Операции ТП: заменяются целиком при сохранении черновика; у утверждённого ТП не меняются (проверка сервиса).
+tech_process_ops = sa.Table("tech_process_ops", metadata,
+    sa.Column("tp_id", ID, sa.ForeignKey("tech_processes.id"), primary_key=True),
+    sa.Column("op_no", sa.Integer, primary_key=True),
+    sa.Column("name", U(200), nullable=False),
+    sa.Column("work_center", U(200)),
+    sa.Column("norm_min", Qty, nullable=False),
+    sa.Column("note", U(1000)),
+    sa.CheckConstraint("norm_min >= 0", name="norm_nonneg"))
+
+# Утверждение ТП (неизменяемо): кто, на каком основании, какое именно содержимое (SHA-256). Автор не утверждает.
+tech_process_approvals = sa.Table("tech_process_approvals", metadata,
+    sa.Column("tp_id", ID, sa.ForeignKey("tech_processes.id"), primary_key=True),
+    sa.Column("content_hash", sa.String(64), nullable=False),
+    sa.Column("approved_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("authority", U(120), nullable=False),
+    sa.Column("approved_at", UtcDateTime, nullable=False))
+
+# Наряд (производственное задание) на qty изделий по утверждённому ТП. Жизненный цикл (03 §4):
+# released → in_progress → completed → closed; cancelled с причиной. Выпуск = создание + снимок.
+work_orders = sa.Table("work_orders", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("doc_no", sa.Integer, nullable=False, unique=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id"), nullable=False),
+    sa.Column("tp_id", ID, sa.ForeignKey("tech_processes.id"), nullable=False),
+    sa.Column("qty", sa.Integer, nullable=False),
+    sa.Column("title", U(300), nullable=False),
+    sa.Column("note", U(2000)),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("snapshot_hash", sa.String(64), nullable=False),
+    sa.Column("cancel_reason", U(2000)),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("released_by", ID, nullable=False), sa.Column("released_at", UtcDateTime, nullable=False),
+    sa.Column("closed_by", ID), sa.Column("closed_at", UtcDateTime),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("status IN ('draft','released','in_progress','completed','closed','cancelled')", name="status"),
+    sa.CheckConstraint("qty > 0", name="qty_pos"),
+    sa.CheckConstraint("status <> 'cancelled' OR cancel_reason IS NOT NULL", name="cancel_reason"))
+
+# Снимок наряда (неизменяемо, триггеры ниже): состав без цен + операции ТП на момент выпуска, с SHA-256.
+work_order_snapshots = sa.Table("work_order_snapshots", metadata,
+    sa.Column("work_order_id", ID, sa.ForeignKey("work_orders.id"), primary_key=True),
+    sa.Column("content_hash", sa.String(64), nullable=False),
+    sa.Column("snapshot_json", T, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False))
+
+# Операция наряда — исполнение одной операции ТП: исполнитель, состояние, таймер (по времени устройства), факт.
+wo_operations = sa.Table("wo_operations", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("work_order_id", ID, sa.ForeignKey("work_orders.id"), nullable=False, index=True),
+    sa.Column("op_no", sa.Integer, nullable=False),
+    sa.Column("name", U(200), nullable=False),
+    sa.Column("work_center", U(200)),
+    sa.Column("norm_min", Qty, nullable=False),
+    sa.Column("assignee_id", ID, sa.ForeignKey("users.id"), index=True),
+    sa.Column("state", U(16), nullable=False),
+    sa.Column("qty_done", sa.Integer),
+    sa.Column("fact_seconds", sa.Integer, nullable=False),
+    sa.Column("started_at", UtcDateTime),
+    sa.Column("finished_at", UtcDateTime),
+    sa.Column("running_since", UtcDateTime),
+    sa.Column("last_device_time", UtcDateTime),
+    sa.Column("problem_count", sa.Integer, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("work_order_id", "op_no", name="uq_wo_operations_no"),
+    sa.CheckConstraint("state IN ('pending','running','paused','done')", name="state"),
+    sa.CheckConstraint("fact_seconds >= 0", name="fact_nonneg"))
+
+# События исполнителя (неизменяемо): что, когда по часам устройства и по часам сервера, с какого устройства и под
+# каким operation_id очереди — по ним восстанавливается таймер и разбирается любой спор.
+wo_timer_events = sa.Table("wo_timer_events", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("wo_operation_id", ID, sa.ForeignKey("wo_operations.id"), nullable=False, index=True),
+    sa.Column("kind", U(16), nullable=False),
+    sa.Column("device_time", UtcDateTime, nullable=False),
+    sa.Column("server_time", UtcDateTime, nullable=False),
+    sa.Column("user_id", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("device_id", U(100)),
+    sa.Column("operation_id", ID, nullable=False, unique=True),
+    sa.Column("qty_done", sa.Integer),
+    sa.Column("note", U(2000)),
+    sa.CheckConstraint("kind IN ('start','pause','resume','finish','problem')", name="kind"))
+
+# Замена в снимке (неизменяемо): снимок не переписывается — действующий состав = снимок + замены по порядку.
+# Хранится: какая строка, было/стало, причина, хэш предпросмотра (состав, который видел мастер) и результата.
+wo_substitutions = sa.Table("wo_substitutions", metadata,
+    sa.Column("work_order_id", ID, sa.ForeignKey("work_orders.id"), primary_key=True),
+    sa.Column("seq", sa.Integer, primary_key=True),
+    sa.Column("line_id", U(64), nullable=False),
+    sa.Column("old_json", T, nullable=False),
+    sa.Column("new_json", T, nullable=False),
+    sa.Column("reason", U(2000), nullable=False),
+    sa.Column("preview_hash", sa.String(64), nullable=False),
+    sa.Column("result_hash", sa.String(64), nullable=False),
+    sa.Column("authority", U(120), nullable=False),
+    sa.Column("created_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("seq > 0", name="seq_pos"))
+
+# Выдача материалов на наряд: связь движения журнала склада (выдача) с нарядом. stock_movements не меняется
+# (миграции только добавляют) — поэтому отдельная неизменяемая таблица, как у перемещений.
+work_order_issues = sa.Table("work_order_issues", metadata,
+    sa.Column("movement_id", ID, sa.ForeignKey("stock_movements.id"), primary_key=True),
+    sa.Column("work_order_id", ID, sa.ForeignKey("work_orders.id"), nullable=False, index=True))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -1041,7 +1173,9 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (stock_transfer_acts, 50013), (stock_shipment_terms, 50014), (stock_shipment_losses, 50015),
                  (signatures, 50016), (purchase_receipts, 50017), (purchase_order_approvals, 50018),
                  (approval_bases, 50019), (purchase_order_invoice_checks, 50020),
-                 (role_delegation_projects, 50021)):
+                 (role_delegation_projects, 50021), (tech_process_approvals, 50022),
+                 (work_order_snapshots, 50023), (wo_timer_events, 50024), (wo_substitutions, 50025),
+                 (work_order_issues, 50026)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

@@ -66,6 +66,9 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     14: [db.role_delegations, db.approval_bases, db.purchase_order_invoices, db.purchase_order_invoice_checks],
     # Замещение роли в проекте и уведомления в программе (A-40 → D-35).
     15: [db.role_delegation_projects, db.notifications],
+    # Технология и производство (этап 5, D-36). Порядок — по внешним ключам.
+    16: [db.tech_processes, db.tech_process_ops, db.tech_process_approvals, db.work_orders, db.work_order_snapshots,
+         db.wo_operations, db.wo_timer_events, db.wo_substitutions, db.work_order_issues],
 }
 
 
@@ -100,7 +103,7 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               7: _create_tables(ADDED_IN[8]), 8: _create_tables(ADDED_IN[9]),
                               9: _create_tables(ADDED_IN[10]), 10: _create_tables(ADDED_IN[11]), 11: _create_tables(ADDED_IN[12]),
                               12: _create_tables(ADDED_IN[13]), 13: _create_tables(ADDED_IN[14]),
-                              14: _create_tables(ADDED_IN[15])}
+                              14: _create_tables(ADDED_IN[15]), 15: _create_tables(ADDED_IN[16])}
 
 
 @dataclass

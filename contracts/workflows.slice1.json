@@ -1,5 +1,5 @@
 {
-  "contract": "workflows-slice1-v8",
+  "contract": "workflows-slice1-v9",
   "notes": "Переходы и условия — временные предположения A-02/A-05 (Decision Log). Статус меняется только явной командой.",
   "tender": {
     "initial": "draft",
@@ -207,5 +207,82 @@
     },
     "note": "Согласование черновика заказа (D-33): состояние — последнее событие неизменяемого журнала purchase_order_approvals. submit — po.submit (закупка), approve — po.approve и return — po.return (согласующий, не автор), withdraw — po.withdraw (закупка). po.place — только из approve при совпадении SHA-256 содержания; размещённый заказ из этого процесса выходит.",
     "assumption": "A-37"
+  },
+  "tech_process": {
+    "initial": "draft",
+    "terminal": [
+      "approved"
+    ],
+    "transitions": {
+      "draft": [
+        "approved"
+      ]
+    },
+    "labels_ru": {
+      "draft": "Черновик",
+      "approved": "Утверждён"
+    },
+    "note": "draft — tp.create/tp.update (можно офлайн); approved — tp.approve (технолог не автор или руководитель отдела; содержимое заморожено, SHA-256). Изменить утверждённый ТП нельзя — новая ревизия (tp.create).",
+    "assumption": "A-42"
+  },
+  "work_order": {
+    "initial": "released",
+    "terminal": [
+      "closed",
+      "cancelled"
+    ],
+    "transitions": {
+      "released": [
+        "in_progress",
+        "cancelled"
+      ],
+      "in_progress": [
+        "completed",
+        "cancelled"
+      ],
+      "completed": [
+        "closed"
+      ]
+    },
+    "reason_required_for": [
+      "cancelled"
+    ],
+    "labels_ru": {
+      "draft": "Черновик",
+      "released": "Выпущен",
+      "in_progress": "В работе",
+      "completed": "Выполнен",
+      "closed": "Закрыт",
+      "cancelled": "Отменён"
+    },
+    "note": "released — wo.release (снимок фиксируется); in_progress — автоматически при первом старте операции; completed — автоматически, когда выполнены все операции; closed — wo.close (проверка операций и выдачи материалов); cancelled — wo.cancel с причиной. draft зарезервирован (blueprint 03 §4): в D-36 наряд выпускается сразу из утверждённого ТП.",
+    "assumption": "A-42"
+  },
+  "wo_operation": {
+    "initial": "pending",
+    "terminal": [
+      "done"
+    ],
+    "transitions": {
+      "pending": [
+        "running"
+      ],
+      "running": [
+        "paused",
+        "done"
+      ],
+      "paused": [
+        "running",
+        "done"
+      ]
+    },
+    "labels_ru": {
+      "pending": "Ожидает",
+      "running": "В работе",
+      "paused": "Пауза",
+      "done": "Выполнена"
+    },
+    "note": "Переходы — события исполнителя wo.op_event (start, pause, resume, finish; problem состояние не меняет). Таймер — по времени устройства (A-44).",
+    "assumption": "A-44"
   }
 }

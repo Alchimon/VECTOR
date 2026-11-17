@@ -40,7 +40,10 @@ EXTRA_ACTION_LABELS = {
     "project.assign_participant": "Назначить участника проекта",
     "task.transition_own": "Сменить статус своей задачи (исполнитель)"}
 WORKFLOW_TITLES = {"tender": "Тендер", "tkp": "ТКП", "project": "Проект", "task": "Задача", "document": "Документ",
-                   "stock_reservation": "Складской резерв"}
+                   "stock_reservation": "Складской резерв", "stock_transfer": "Перемещение между складами",
+                   "purchase_order": "Заказ поставщику", "purchase_order_approval": "Согласование заказа",
+                   "tech_process": "Технологический процесс (ТП)", "work_order": "Наряд",
+                   "wo_operation": "Операция наряда"}
 
 
 def _load(name: str) -> dict:

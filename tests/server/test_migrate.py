@@ -481,8 +481,8 @@ def test_v14_to_v15_adds_project_delegations_and_notifications(backend, tmp_path
             reason="Отпуск", created_by=uid, created_at=now)).inserted_primary_key[0]
     before = counts(eng, mg.tables_of_version(14))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
-    assert (rep.from_version, rep.to_version, rep.created_tables) == (
-        14, db.SCHEMA_VERSION, ["role_delegation_projects", "notifications"])
+    assert (rep.from_version, rep.to_version) == (14, db.SCHEMA_VERSION)
+    assert rep.created_tables == [t.name for v in range(15, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]]
     after = counts(eng, mg.tables_of_version(14))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
 
@@ -500,4 +500,50 @@ def test_v14_to_v15_adds_project_delegations_and_notifications(backend, tmp_path
         nid = c.execute(db.notifications.insert().values(user_id=uid, kind="po_submitted", title="Заказ № 1",
                                                          created_at=now)).inserted_primary_key[0]
         c.execute(db.notifications.update().where(db.notifications.c.id == nid).values(read_at=now))
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+
+
+def test_v15_to_v16_adds_production_tables_with_immutable_snapshot(backend, tmp_path, clock, keys):
+    """v15 → v16 (D-36): технология и производство. Данные v15 не меняются; снимок наряда, утверждение ТП, события
+    исполнителя, замены и выдачи на наряд неизменяемы; отменённый наряд — только с причиной."""
+    eng = make_v3(backend, tmp_path, clock, version=15)
+    now, uid, pid, kid = clock.now(), new_id(), new_id(), new_id()
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x", must_change_password=False,
+                                           password_changed_at=now, failed_attempts=0, active=True, created_at=now))
+        c.execute(db.projects.insert().values(id=pid, code="П-1", title="Проект", status="rkd_in_progress", version=1,
+                                              created_by=uid, created_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.kits.insert().values(id=kid, project_id=pid, code="К", title="Комплект", version=1,
+                                          created_by=uid, created_at=now, updated_by=uid, updated_at=now))
+    before = counts(eng, mg.tables_of_version(15))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (15, db.SCHEMA_VERSION)
+    assert rep.created_tables == [t.name for v in range(16, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]]
+    after = counts(eng, mg.tables_of_version(15))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    tid, wid = new_id(), new_id()
+    with eng.begin() as c:
+        c.execute(db.tech_processes.insert().values(id=tid, project_id=pid, kit_id=kid, revision_no=1, title="ТП",
+                                                    status="approved", content_hash="h" * 64, version=1, created_by=uid,
+                                                    created_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.tech_process_approvals.insert().values(tp_id=tid, content_hash="h" * 64, approved_by=uid,
+                                                            authority="global_role:technologist#grant:1", approved_at=now))
+    wo = dict(id=wid, doc_no=1, project_id=pid, kit_id=kid, tp_id=tid, qty=1, title="Наряд", snapshot_hash="s" * 64,
+              version=1, released_by=uid, released_at=now, updated_by=uid, updated_at=now)
+    bad(db.work_orders.insert().values(**wo, status="cancelled"))                    # отмена — только с причиной
+    bad(db.work_orders.insert().values(**{**wo, "qty": 0}, status="released"))
+    with eng.begin() as c:
+        c.execute(db.work_orders.insert().values(**wo, status="released"))
+        c.execute(db.work_order_snapshots.insert().values(work_order_id=wid, content_hash="s" * 64, snapshot_json="{}",
+                                                          created_at=now))
+    bad(db.work_order_snapshots.update().values(snapshot_json='{"x":1}'))           # снимок неизменяем
+    bad(db.work_order_snapshots.delete())
+    bad(db.tech_process_approvals.update().values(content_hash="x" * 64))
+    with eng.begin() as c:
+        c.execute(db.work_orders.update().where(db.work_orders.c.id == wid).values(status="in_progress", version=2))
     assert db.check_schema(eng) == db.SCHEMA_VERSION
