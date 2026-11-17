@@ -667,8 +667,17 @@ class Backend(QObject):
 
         def job():
             r = self.client.execute(command, payload, ev)
+            if r.status == "accepted" and command.split(".")[0] in self._STOCK_PREFIXES:
+                # Проводка/резерв/потребность меняют производные данные, которые клиент сам не пересчитывает
+                # (покрытие строк потребности, «доступно» по позициям под резервами других проектов). Сразу
+                # перечитываем снимок с сервера; если связь пропала — остаётся локально применённый ответ,
+                # а экран по-прежнему честно показывает «на момент …».
+                self.client.pull()
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, command, res))
+
+    # Команды, после которых обновляется складской снимок (см. execute).
+    _STOCK_PREFIXES = frozenset({"stock", "need"})
 
     def _finish_command(self, tag: str, command: str, res: dict):
         """Общий разбор результата команды: снимок данных, уведомление, сигнал commandDone для формы."""

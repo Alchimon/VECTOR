@@ -8,11 +8,27 @@ Item {
     property string page: "tenders"
     property var navTarget: ({})     // {page, id} — переход к объекту из другого раздела
     function go(p, id) { navTarget = { page: p, id: id || "" }; page = p }
+    // Стартовый раздел по ролям: у склада и закупки нет тендеров — сразу открываем их рабочий раздел.
+    // Роли приходят из кэша чуть позже создания оболочки, поэтому выбор делается один раз — когда они известны.
+    property bool startPicked: false
+    function pickStart() {
+        if (startPicked || !backend.me.user_id) return
+        startPicked = true
+        if (page === "tenders" && !backend.hint("tender.read", backend.permRevision))
+            page = backend.hint("stock.read", backend.permRevision) ? "stock" : "projects"
+    }
+    Component.onCompleted: pickStart()
+    Connections { target: backend; function onChanged() { shellRoot.pickStart() } }
 
     Shortcut { sequence: "Ctrl+1"; onActivated: shellRoot.go("customers") }
     Shortcut { sequence: "Ctrl+2"; onActivated: shellRoot.go("tenders") }
     Shortcut { sequence: "Ctrl+3"; onActivated: shellRoot.go("projects") }
     Shortcut { sequence: "Ctrl+4"; onActivated: shellRoot.go("sync") }
+    Shortcut { sequence: "Ctrl+5"; onActivated: if (shellRoot.seesStock) shellRoot.go("stock") }
+    Shortcut { sequence: "Ctrl+6"; onActivated: if (shellRoot.seesNeeds) shellRoot.go("procurement") }
+    // Подсказки видимости разделов (решает сервер: без права pull просто не вернёт данные).
+    readonly property bool seesStock: backend.hint("stock.read", backend.permRevision)
+    readonly property bool seesNeeds: seesStock || (backend.needsOverview.needs || []).length > 0
     Shortcut { sequence: "F5"; onActivated: backend.syncNow() }
 
     RowLayout {
@@ -42,6 +58,10 @@ Item {
                 NavItem { text: "Проекты"; iconName: "folder-kanban"; active: shellRoot.page === "projects"; onClicked: shellRoot.go("projects") }
                 NavItem { text: "Итоги проектов"; iconName: "wallet"; active: shellRoot.page === "finance"; onClicked: shellRoot.go("finance")
                           visible: (backend.me.roles || []).indexOf("accountant") >= 0 || backend.financeOverview.length > 0 }
+                Text { visible: shellRoot.seesStock || shellRoot.seesNeeds; text: "СНАБЖЕНИЕ"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
+                NavItem { objectName: "navStock"; text: "Склад"; iconName: "warehouse"; active: shellRoot.page === "stock"; onClicked: shellRoot.go("stock"); visible: shellRoot.seesStock }
+                NavItem { objectName: "navProcurement"; text: "Закупка"; iconName: "shopping-cart"; active: shellRoot.page === "procurement"; onClicked: shellRoot.go("procurement"); visible: shellRoot.seesNeeds
+                          badge: (backend.needsOverview.candidates || []).length; badgeTone: "warning" }
                 Text { text: "СИСТЕМА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
                 NavItem { text: "Синхронизация"; iconName: "refresh-cw"; active: shellRoot.page === "sync"; onClicked: shellRoot.go("sync")
                           badge: backend.problemCount > 0 ? backend.problemCount : backend.pendingCount; badgeTone: backend.problemCount > 0 ? "danger" : "warning" }
@@ -65,7 +85,8 @@ Item {
 
         Loader {
             Layout.fillWidth: true; Layout.fillHeight: true
-            sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC, finance: financeC })[shellRoot.page]
+            sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC, finance: financeC,
+                               stock: stockC, procurement: procurementC })[shellRoot.page]
         }
     }
     Component { id: customersC; CustomersPage { shell: shellRoot } }
@@ -74,6 +95,8 @@ Item {
     Component { id: syncC; SyncPage {} }
     Component { id: financeC; FinancePage { shell: shellRoot } }
     Component { id: adminC; AdminPage {} }
+    Component { id: stockC; StockPage { shell: shellRoot } }
+    Component { id: procurementC; ProcurementPage { shell: shellRoot } }
 
     FormDialog {
         id: reconnect
