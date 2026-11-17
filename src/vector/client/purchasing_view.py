@@ -110,7 +110,7 @@ def _order(o: dict, sup: dict, it: dict, needs: dict, roles: list, online: bool,
                       "qty_label": qty_label(money.to_json(qty) if qty is not None else None, unit),
                       "unit_price": r.get("unit_price") if prices else None,
                       "price_label": (fmt_money(r.get("unit_price"), None) if r.get("unit_price") not in (None, "")
-                                      else "цена неизвестна") if prices else "",
+                                      else "неизвестна") if prices else "",   # в QML: «Цена неизвестна»
                       "amount_label": (fmt_money(money.to_json(ln.amount), None) if ln and ln.amount is not None else "—")
                       if prices else "",
                       "received_label": qty_label(money.to_json(got), unit),

@@ -68,7 +68,7 @@ def test_orders_view_recomputes_pending_draft_and_hints():
     d, p = v["orders"]
     assert (d["title"], d["pending"], d["can_edit"], d["can_place"]) == ("Новый заказ (не отправлен)", True, True, False)
     assert d["total_label"] == "3 000,00 RUB · 1 позиция без цены (итог неполный)"
-    assert d["lines"][0]["item_label"] == "ХМТ-200 · Хомут" and d["lines"][1]["price_label"] == "цена неизвестна"
+    assert d["lines"][0]["item_label"] == "ХМТ-200 · Хомут" and d["lines"][1]["price_label"] == "неизвестна"
     assert (p["title"], p["delivery_label"], p["can_close"], p["can_cancel"], p["close_needs_reason"]) == \
         ("Заказ № 7", "Поставлен частично", True, False, True)
     assert p["lines"][0]["remaining_label"] == "6 шт" and p["hash_warning"] != ""
