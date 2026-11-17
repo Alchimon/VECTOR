@@ -187,3 +187,43 @@ def test_change_password_bruteforce_throttled(world):
     codes = [s.cmd("account.change_password", {"current_password": f"guess-{i}-xxxxxx", "new_password": NEW_PWD})["code"]
              for i in range(world.svc.sec.lockout_threshold + 1)]
     assert codes[-1] == "rate_limited" and set(codes[:-1]) == {"bad_current_password"}
+
+
+def test_password_never_enters_request_hash_and_legacy_hashes_can_be_redacted(world):
+    """Пароль в хэш запроса не входит: по operations.request_hash его не подобрать. Повтор того же operation_id с
+    другим паролем — тот же запрос (сохранённый исход, без повторного эффекта). Старые записи (до исправления)
+    зачищаются redact_legacy_secret_hashes: без apply — только подсчёт."""
+    import hashlib
+    import re
+    from pathlib import Path
+    from vector.core.redact import SECRET_FIELDS
+    from vector.server.validation import canon
+    s = world.login("eng1")
+    op = new_id()
+    req = {"type": "command", "token": s.token, "operation_id": op, "command": "account.change_password",
+           "payload": {"current_password": PWD, "new_password": NEW_PWD}}
+    assert world.svc.handle(req)["status"] == "accepted"
+    with world.svc.engine.connect() as c:
+        h = c.execute(sa.select(db.operations.c.request_hash).where(db.operations.c.operation_id == op)).scalar_one()
+    with_pwd = hashlib.sha256(canon({"c": "account.change_password", "p": req["payload"], "v": None}).encode()).hexdigest()
+    assert h != with_pwd
+    assert h == hashlib.sha256(canon({"c": "account.change_password", "p": {}, "v": None}).encode()).hexdigest()
+    again = world.svc.handle({**req, "payload": {"current_password": "другой", "new_password": "другой"}})
+    assert again.get("replayed") is True and again["status"] == "accepted"
+    # Каждое поле с «password» в командах сервера — в списке секретов (новое поле не «утечёт» в хэш незамеченным).
+    src = "".join(p.read_text(encoding="utf-8") for p in Path(db.__file__).parent.glob("*.py"))
+    fields = set(re.findall(r'"([a-z_]*password[a-z_]*)"', src)) - {"must_change_password", "password_changed",
+                                                                    "password_change_required", "bad_current_password",
+                                                                    "same_password", "weak_password", "bad_password",
+                                                                    "password_changed_at", "password_reset"}
+    assert fields <= SECRET_FIELDS, fields - SECRET_FIELDS
+    # Старая запись с хэшем «как раньше» — находится и зачищается.
+    with world.svc.engine.begin() as c:
+        c.execute(db.operations.update().where(db.operations.c.operation_id == op).values(request_hash=with_pwd))
+    assert world.svc.redact_legacy_secret_hashes() >= 1
+    with world.svc.engine.connect() as c:
+        assert c.execute(sa.select(db.operations.c.request_hash).where(db.operations.c.operation_id == op)).scalar_one() == with_pwd
+    n = world.svc.redact_legacy_secret_hashes(apply=True)
+    assert n >= 1 and world.svc.redact_legacy_secret_hashes() == 0
+    with world.svc.engine.connect() as c:
+        assert c.execute(sa.select(db.operations.c.request_hash).where(db.operations.c.operation_id == op)).scalar_one() == "redacted"

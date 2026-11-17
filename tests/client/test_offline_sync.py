@@ -1,5 +1,6 @@
 """Офлайн-ядро клиента против продуктового сервиса (Class A, SQLite): очередь, отказ online_required, потеря ответа,
 дедупликация, конфликт, отзыв прав офлайн, шифрование локального кэша, офлайн-разблокировка."""
+import json
 import sqlite3
 import uuid
 
@@ -548,3 +549,18 @@ def test_stock_snapshot_hidden_without_stock_role(world, mk):
     rp.pull()
     assert rp.get_meta("stock_balances") in (None, []) and rp.get_meta("stock_movements") in (None, [])
     assert rp.list_local("stock_item") == [] and rp.list_local("warehouse") == []
+
+
+def test_lost_response_with_password_keeps_no_password_and_replays(world, mk):
+    """Ответ на создание пользователя потерян: в очереди клиента пароля нет (даже в зашифрованном виде), а повтор
+    тем же operation_id всё равно получает сохранённый исход — сервер не включает пароли в хэш запроса."""
+    adm = mk("admin")
+    adm.t.drop_next_response = True
+    r = adm.execute("admin.create_user", {"login": "new.user", "display_name": "Новый", "initial_password": PWD + "-x"})
+    assert r.status == "unknown_outcome"
+    row = adm.db.execute("SELECT payload_enc FROM outbox WHERE operation_id=?", (r.operation_id,)).fetchone()
+    stored = json.loads(adm._open("outbox", r.operation_id, row[0]))
+    assert "initial_password" not in stored and stored["login"] == "new.user"
+    r2 = adm.retry_online(r.operation_id)
+    assert r2.status == "accepted" and r2.response.get("replayed")
+    assert count(world, "users", db.users.c.login == "new.user") == 1

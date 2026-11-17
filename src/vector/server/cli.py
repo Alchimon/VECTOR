@@ -179,6 +179,24 @@ def cmd_migrate(args):
           "программы, с которой она сделана (см. docs/ops/backup-restore.md).")
 
 
+def cmd_redact_secrets(args):
+    """vector-server redact-secrets — зачистить хэши паролей в старых записях журнала операций (см. vector.core.redact).
+
+    Без --apply только считает такие записи и ничего не меняет. Сервер лучше остановить; перед --apply — резервная
+    копия (она сама по себе зашифрована, но после зачистки старые копии всё ещё содержат прежние хэши — их срок
+    хранения определяет ротация копий).
+    """
+    from .service import Service
+    cfg = load_config(Path(args.config))
+    eng = db.make_engine(cfg.db_url)
+    db.check_schema(eng)
+    n = Service(eng).redact_legacy_secret_hashes(apply=args.apply)
+    if args.apply:
+        print(f"Зачищено записей журнала операций: {n}.")
+    else:
+        print(f"Найдено записей с хэшем, включавшим пароль: {n}. Ничего не изменено; для зачистки — --apply.")
+
+
 def cmd_devcert(args):
     """vector-server dev-cert — тестовый CA и сертификат сервера на 30 дней (только пилот/разработка; для работы —
     сертификат CA компании).
@@ -250,6 +268,8 @@ def main(argv=None):
     s.add_argument("--dir", required=True)
     s.add_argument("--host", action="append", help="имя или IP сервера; можно несколько раз (localhost добавляется всегда)")
     s.set_defaults(fn=cmd_devcert)
+    s = sub.add_parser("redact-secrets", help="зачистить хэши паролей в старых записях журнала операций")
+    s.add_argument("--config", required=True); s.add_argument("--apply", action="store_true"); s.set_defaults(fn=cmd_redact_secrets)
     s = sub.add_parser("demo-seed", help="ТОЛЬКО ДЛЯ ТЕСТА: вымышленные демо-данные в новую пустую БД")
     s.add_argument("--config", required=True); s.add_argument("--admin-login", default="admin"); s.set_defaults(fn=cmd_demo)
     args = p.parse_args(argv)

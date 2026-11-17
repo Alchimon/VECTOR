@@ -24,6 +24,7 @@ from vector import __version__
 from vector.core import money
 from vector.core.contracts import Contracts
 from vector.core.errors import CommandOutcome, Conflict, Denied, Rejected, Unauthenticated
+from vector.core.redact import LEGACY_SECRET_COMMANDS, without_secrets
 
 from . import db, security
 from .authz import Authority, Policy, active_grants, grant_is_active
@@ -344,8 +345,10 @@ class Service(WorkMixin, CalcMixin, StockMixin, ConfigMixin):
             return {"status": "rejected", "code": "bad_payload", "message_ru": "payload должен быть объектом."}
         if ev is not None and (isinstance(ev, bool) or not isinstance(ev, int)):
             return {"status": "rejected", "code": "bad_expected_version", "message_ru": "expected_version должен быть целым числом."}
-        # Секреты (пароли) не входят в хэш в открытом виде — только как часть SHA-256 всего запроса.
-        request_hash = hashlib.sha256(canon({"c": command, "p": payload, "v": ev}).encode()).hexdigest()
+        # Секреты (пароли) в хэш НЕ входят вовсе: иначе по хэшу без соли пароль подбирается в обход argon2
+        # (vector.core.redact). Повтор того же operation_id с другим паролем и теми же остальными данными считается тем
+        # же запросом — он вернёт сохранённый исход и ничего не выполнит повторно.
+        request_hash = hashlib.sha256(canon({"c": command, "p": without_secrets(payload), "v": ev}).encode()).hexdigest()
 
         def tx(conn):
             """Транзакция одной команды (см. описание _command). Может выполниться повторно при конфликте сериализации
@@ -387,6 +390,18 @@ class Service(WorkMixin, CalcMixin, StockMixin, ConfigMixin):
                                                     response_json=canon(response), recorded_at=now))
             return response
         return self._tx(tx)
+
+    def redact_legacy_secret_hashes(self, apply: bool = False) -> int:
+        """Старые записи operations команд с паролями (до исправления хэш считался вместе с паролем) — сколько их и,
+        если apply, заменить их хэш меткой «redacted». Ответ и исход операции не меняются; повтор такого старого
+        operation_id получит «operation_id уже использован» — это безопасно (операции давно завершены).
+        """
+        cond = sa.and_(operations.c.command.in_(LEGACY_SECRET_COMMANDS), operations.c.request_hash != "redacted")
+        with self.engine.begin() as conn:
+            n = conn.execute(sa.select(sa.func.count()).select_from(operations).where(cond)).scalar_one()
+            if apply and n:
+                conn.execute(operations.update().where(cond).values(request_hash="redacted"))
+        return n
 
     # ------------------------------------------------------------ helpers
     def _require(self, conn, table, oid, what_ru) -> dict:

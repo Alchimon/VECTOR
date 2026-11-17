@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from vector.core.contracts import Contracts
+from vector.core.redact import without_secrets
 
 from .transport import FILE_BLOCK, Offline, ResponseLost, TlsError
 from .vault import DeviceSecretStore, OpenVault, Vault, VaultError, profile_dir, server_dir
@@ -724,6 +725,9 @@ class SyncClient:
         проверить повтором с тем же operation_id.
         """
         otype = self.contracts.catalog["commands"][command]["object"]
+        # Пароли (подпись акта, создание пользователя) не сохраняются даже в зашифрованной очереди: для проверки
+        # повтором они не нужны — сервер не включает их в хэш запроса (vector.core.redact).
+        payload = without_secrets(payload)
         self.db.execute("INSERT INTO outbox(operation_id,command,payload_enc,expected_version,object_type,object_id,created_at,state) "
                         "VALUES (?,?,?,?,?,?,?,'pending')",
                         (op_id, command, self._seal("outbox", op_id, json.dumps(payload, ensure_ascii=False)), ev, otype, payload.get("id"),
