@@ -96,6 +96,7 @@ def test_second_gip_requires_explicit_revoke(world):
 
 
 def _approved_tkp(world):
+    """Подготовить выигранный тендер с утверждённым ТКП (для проверок прав на следующих шагах)."""
     rp = world.login("rp1")
     _, tender, _ = world.won_tender(rp)
     tkp = new_id()

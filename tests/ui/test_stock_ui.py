@@ -11,23 +11,29 @@ pytestmark = pytest.mark.ui
 
 
 def _v(item, prop):
+    """Значение свойства QML как обычное значение Python (QJSValue → toVariant)."""
     v = item.property(prop)
     return v.toVariant() if hasattr(v, "toVariant") else v
 
 
 def _popup(ui, name):
+    """Всплывающее окно QML по objectName (Popup не виден через дерево элементов, поэтому ищем среди всех QObject).
+    """
     return next(o for o in ui.win.findChildren(QObject) if o.objectName() == name)
 
 
 def _stock_page(ui):
+    """Видимая страница «Склад»."""
     return next(i for i in ui.items("whOptions") if i.isVisible())
 
 
 def _call(obj, method, *args):
+    """Вызвать функцию QML объекта с аргументами QVariant."""
     QMetaObject.invokeMethod(obj, method, *[Q_ARG("QVariant", a) for a in args])
 
 
 def _item(ui, code):
+    """Строка позиции из обзора склада по коду."""
     return next(i for i in _v(_stock_page(ui), "ov")["items"] if i["code"] == code)
 
 

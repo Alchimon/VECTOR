@@ -20,6 +20,7 @@ from vector.server import db
 
 @dataclass
 class St:
+    """Складской набор теста: проект, склады, позиции, сеансы кладовщика и закупщика."""
     proj: object
     wh: object
     wh2: object
@@ -30,6 +31,7 @@ class St:
 
 @pytest.fixture
 def st(world, proj):  # noqa: F811
+    """Фикстура: пользователи склада и закупки, два склада и позиция номенклатуры."""
     world.make_user("wh1", "warehouse")
     world.make_user("wh2", "warehouse")
     world.make_user("pr1", "procurement")
@@ -41,11 +43,13 @@ def st(world, proj):  # noqa: F811
 
 
 def receive(s, st, qty, item=None, w=None, src="ТН-1"):
+    """Приход qty на склад (по умолчанию основной склад и позиция)."""
     return s.cmd("stock.receive", {"id": new_id(), "warehouse_id": w or st.w, "item_id": item or st.item, "qty": qty,
                                    "source_doc": src})
 
 
 def issue(s, st, qty, **kw):
+    """Выдача qty под проект (или под резерв, если передан reservation_id)."""
     p = {"id": new_id(), "warehouse_id": st.w, "item_id": st.item, "qty": qty, "reason": "Монтаж"}
     if "reservation_id" not in kw:
         p["project_id"] = st.proj.pid
@@ -54,11 +58,13 @@ def issue(s, st, qty, **kw):
 
 
 def reserve(s, st, qty, **kw):
+    """Резерв qty под проект теста."""
     return s.cmd("stock.reserve", {"id": new_id(), "warehouse_id": st.w, "item_id": st.item, "project_id": st.proj.pid,
                                    "qty": qty, "reason": "Под монтаж", **kw})
 
 
 def bal(s, st):
+    """(остаток, резерв, доступно) по складу и позиции из pull или None."""
     r = s.query("pull")["result"]
     b = [x for x in r["stock_balances"] if x["warehouse_id"] == st.w and x["item_id"] == st.item]
     return (b[0]["on_hand"], b[0]["reserved"], b[0]["available"]) if b else None
@@ -218,9 +224,13 @@ def test_reservation_issue_must_match_place(st):
 
 # ====================================================================== конкуренция
 def _race(world, tokens, payloads):
+    """Запустить команды разных пользователей одновременно (барьер) — проверка, что параллельные проводки не уводят
+    остаток в минус.
+    """
     results, barrier = [], threading.Barrier(len(tokens))
 
     def worker(tok, cmd, p):
+        """Дождаться остальных потоков и отправить команду."""
         barrier.wait()
         results.append(world.svc.handle({"type": "command", "token": tok, "operation_id": new_id(), "command": cmd,
                                          "payload": p}))
@@ -256,11 +266,13 @@ def test_concurrent_reserve_and_issue_never_oversell(world, st):
 
 # ====================================================================== потребность
 def _freeze(proj, lines):
+    """Сохранить черновик расчёта и зафиксировать его ГИП; вернуть версию расчёта."""
     proj.gip.ok("calc.save_draft", {"id": proj.kit, "lines": lines, "currency": "RUB"}, expected_version=0)
     return proj.gip.ok("calc.freeze", {"id": proj.kit, "reason": "Выпуск"}, expected_version=1)["calc_version"]
 
 
 def calc_line(name, code, unit, qty, price="10"):
+    """Позиция расчёта с кодом и единицей (для сопоставления с номенклатурой)."""
     return {"line_id": str(uuid.uuid4()), "name": name, "code": code, "unit": unit, "qty": qty, "unit_price": price}
 
 

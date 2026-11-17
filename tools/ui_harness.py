@@ -25,6 +25,9 @@ PWD = "Демо-пароль-2026"
 
 
 def build_server(tmp: Path):
+    """Временный сервер для стенда интерфейса: SQLite во временном каталоге, быстрый хэш паролей (только тесты), первый
+    администратор.
+    """
     from vector.server import db, security
     from vector.server.service import Service
     security.configure_hasher_for_tests()
@@ -42,7 +45,13 @@ def seed(svc):
 
 
 class Harness:
+    """Стенд интерфейса: настоящий Backend и QML-окно 1440×900 против in-process сервера с демо-данными через
+    LoopbackTransport. Используется тестами tests/ui и для скриншотов справки.
+    """
     def __init__(self, theme="light"):
+        """Поднять сервер с демо-данными, клиент с хранилищем в памяти и облегчённым scrypt, загрузить QML в заданной
+        теме.
+        """
         from PySide6.QtCore import QSettings
         from PySide6.QtGui import QGuiApplication
 
@@ -63,6 +72,7 @@ class Harness:
         settings.setValue("ui/theme", theme)
 
         def factory(url, ca):
+            """Фабрика SyncClient для Backend: loopback-транспорт вместо HTTPS."""
             return SyncClient(self.transport, url, self.tmp / "profiles", store, "ui-device", kdf={"n": 2 ** 10, "r": 8, "p": 1})
         self.backend = Backend(client_factory=factory, settings=settings, auto_timers=False)
         self.engine = create_engine(self.backend, family)
@@ -71,12 +81,14 @@ class Harness:
         self.win.setProperty("height", 900)
 
     def pump(self, seconds=0.3):
+        """Обрабатывать события Qt seconds секунд (анимации, привязки, сигналы рабочего потока)."""
         end = time.time() + seconds
         while time.time() < end:
             self.app.processEvents()
             time.sleep(0.01)
 
     def wait_idle(self, timeout=15):
+        """Дождаться, пока backend закончит фоновые задания (не дольше timeout), и дать интерфейсу дорисоваться."""
         end = time.time() + timeout
         self.pump(0.05)
         while self.backend._busy and time.time() < end:
@@ -84,6 +96,7 @@ class Harness:
         self.pump(0.25)
 
     def login(self, login="a.smirnova", password=PWD):
+        """Войти демо-пользователем (по умолчанию РП a.smirnova) и дождаться загрузки данных."""
         self.backend.login("https://vector.demo.local:8443", login, password, "")
         self.wait_idle()
 
@@ -95,6 +108,7 @@ class Harness:
         found, seen = [], set()
 
         def add(i):
+            """Добавить элемент в результат, если у него есть свойство prop и он ещё не добавлен."""
             if id(i) not in seen and i.property(prop) is not None:
                 seen.add(id(i))
                 found.append(i)
@@ -113,9 +127,11 @@ class Harness:
                 if i.property("active") is not None and i.property("text")}
 
     def page(self):
+        """Текущая страница оболочки (свойство page у Shell)."""
         return self.shell().property("page")
 
     def click(self, item):
+        """Щелчок мышью по центру элемента — как пользователь, через события окна."""
         from PySide6.QtCore import QPointF, Qt
         from PySide6.QtTest import QTest
         c = item.mapToScene(QPointF(item.width() / 2, item.height() / 2))
@@ -123,14 +139,17 @@ class Harness:
         self.wait_idle()
 
     def find(self, name):
+        """Объект QML по objectName."""
         from PySide6.QtCore import QObject
         return self.win.findChild(QObject, name)
 
     def shell(self):
+        """Оболочка главного экрана (Shell.qml, objectName «shell»)."""
         from PySide6.QtQuick import QQuickItem
         return self.win.findChild(QQuickItem, "shell")
 
     def go(self, page, oid=""):
+        """Перейти на страницу page (и объект oid) через функцию go() оболочки — как пункт меню."""
         sh = self.shell()
         from PySide6.QtCore import QMetaObject, Q_ARG
         QMetaObject.invokeMethod(sh, "go", Q_ARG("QVariant", page), Q_ARG("QVariant", oid))
@@ -159,6 +178,7 @@ class Harness:
             self.pump(0.2)
 
     def shot(self, path: Path):
+        """Сохранить снимок окна в PNG (для справки и визуальной проверки)."""
         self.pump(0.4)
         img = self.win.grabWindow()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -166,6 +186,9 @@ class Harness:
         return img
 
     def close(self):
+        """Закрыть окно и движок QML, затем рабочий поток backend (в этом порядке — иначе привязки читают удалённый
+        backend).
+        """
         # Сначала окно и движок QML (иначе привязки читают уже удалённый backend), затем рабочий поток backend.
         from PySide6.QtCore import QCoreApplication, QEvent
         self.win.hide()
@@ -185,6 +208,7 @@ def _plain(v):
 
 
 def main():
+    """Снять скриншоты 01–17 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
     args = ap.parse_args()

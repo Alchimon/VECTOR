@@ -18,6 +18,7 @@ pytest.importorskip("PySide6.QtQuick")
 
 @pytest.fixture
 def ui():
+    """Фикстура: стенд интерфейса (светлая тема) на один тест; закрывается после теста."""
     from ui_harness import Harness
     h = Harness("light")
     yield h

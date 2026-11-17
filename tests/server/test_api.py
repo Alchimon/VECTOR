@@ -8,10 +8,12 @@ from vector.server.api import MAX_BODY, create_app
 
 @pytest.fixture
 def http(world):
+    """HTTP-клиент FastAPI поверх тестового сервиса (без сети)."""
     return TestClient(create_app(world.svc))
 
 
 def _login(http, login="rp1"):
+    """Войти через HTTP API и вернуть заголовок Authorization."""
     r = http.post("/api/v1/auth/login", json={"login": login, "password": PWD, "device_id": "d1"})
     assert r.status_code == 200, r.text
     return {"Authorization": "Bearer " + r.json()["token"]}

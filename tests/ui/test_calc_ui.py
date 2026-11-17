@@ -10,6 +10,7 @@ pytestmark = pytest.mark.ui
 
 
 def _calc(ui, login="a.smirnova"):
+    """Войти и открыть вкладку «Расчёт» комплекта АТХ демо-проекта."""
     ui.login(login)
     ui.go("projects", ui.ids["project"])
     ui.kit_work(ui.ids["kits"]["АТХ"], "calc")
@@ -18,11 +19,14 @@ def _calc(ui, login="a.smirnova"):
 
 
 def _v(item, prop):
+    """Значение свойства QML как обычное значение Python (QJSValue → toVariant)."""
     v = item.property(prop)
     return v.toVariant() if hasattr(v, "toVariant") else v
 
 
 def _popup(ui, name):
+    """Всплывающее окно QML по objectName (Popup не виден через дерево элементов, поэтому ищем среди всех QObject).
+    """
     return next(o for o in ui.win.findChildren(QObject) if o.objectName() == name)
 
 
@@ -122,5 +126,6 @@ def test_engineer_without_project_role_has_no_finance_section(ui):
 
 
 def _arg(value):
+    """Аргумент QVariant для вызова функции QML через invokeMethod."""
     from PySide6.QtCore import Q_ARG
     return Q_ARG("QVariant", value)

@@ -8,6 +8,7 @@ from vector.core import calc
 
 
 def L(name="Кабель", qty="10", price="12.5", unit="м", **kw):
+    """Позиция расчёта для теста (короткое имя — тесты читаются как таблица)."""
     return {"line_id": kw.pop("line_id", str(uuid.uuid4())), "name": name, "unit": unit, "qty": qty, "unit_price": price, **kw}
 
 

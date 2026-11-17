@@ -16,10 +16,14 @@ DST = ROOT / "src" / "vector" / "core" / "contracts_data"
 
 
 def files():
+    """Имена JSON-файлов контрактов в /contracts (источник истины)."""
     return sorted(p.name for p in SRC.glob("*.json"))
 
 
 def check() -> list[str]:
+    """Список расхождений между /contracts и копией в пакете: отличающиеся или отсутствующие файлы и лишние файлы в
+    копии.
+    """
     bad = []
     for n in files():
         if not (DST / n).exists() or not filecmp.cmp(SRC / n, DST / n, shallow=False):
@@ -29,6 +33,7 @@ def check() -> list[str]:
 
 
 def main():
+    """Точка входа: --check — только проверить (код 1 при расхождении), без ключей — пересоздать копию в пакете."""
     if "--check" in sys.argv:
         bad = check()
         print("contracts_data: OK" if not bad else "contracts_data расходится: " + ", ".join(bad))

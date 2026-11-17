@@ -35,6 +35,7 @@ PULL = "2026-11-17T05:21:33.123456+00:00"
 
 
 def _ov(online=True, roles=("warehouse",)):
+    """Обзор склада по тестовым данным модуля для заданного режима связи и ролей."""
     return sv.overview(WH, ITEMS, BAL, RES, MV, PROJ, PEOPLE, PULL, online, list(roles))
 
 
@@ -88,11 +89,13 @@ def test_action_hints_by_role_and_connection():
 
 
 def _need(lines):
+    """Потребность-заготовка с заданными строками."""
     return {"id": "n1", "project_id": "p1", "project_code": "П-1", "kit_code": "АТХ", "calc_version_no": 1,
             "latest_calc_version_no": 1, "superseded": False, "lines": lines}
 
 
 def _line(lid, item_id, qty, reserved, open_, available, can_cover):
+    """Строка потребности с заданным покрытием (требуется / в резерве / открыто / доступно)."""
     return {"line_id": lid, "pos": 1, "code": "X", "name": "x", "unit": "шт", "qty": qty, "item_id": item_id,
             "coverage": {"required": qty, "reserved": reserved, "open": open_, "available": available, "can_cover": can_cover}}
 

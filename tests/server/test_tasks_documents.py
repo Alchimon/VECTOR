@@ -26,6 +26,7 @@ class Proj:
 
 @pytest.fixture
 def proj(world):
+    """Фикстура: проект в работе с комплектом, ГИП, РП и инженером в команде."""
     rp = world.login("rp1")
     _, tender, _ = world.won_tender(rp)
     pid, kit = new_id(), new_id()
@@ -38,6 +39,7 @@ def proj(world):
 
 
 def audit(world, command=None, otype=None, oid=None):
+    """Записи журнала аудита с фильтрами по команде и объекту."""
     t = db.audit_log
     q = sa.select(t).order_by(t.c.id)
     if command:
@@ -49,6 +51,7 @@ def audit(world, command=None, otype=None, oid=None):
 
 
 def upload(s, pid, data: bytes, sha=None):
+    """Загрузить байты файла в проект (SHA-256 считается, если не передан)."""
     return s.svc.put_file(s.token, pid, data, sha or hashlib.sha256(data).hexdigest(), s.addr)
 
 
@@ -126,6 +129,7 @@ def test_task_replay_is_idempotent(world, proj):
 
 # ====================================================================== документы и файлы
 def make_doc(proj, code="АТХ-001"):
+    """Создать документ в комплекте проекта."""
     did = new_id()
     proj.eng.ok("document.create", {"id": did, "kit_id": proj.kit, "code": code, "title": "Схема функциональная"})
     return did

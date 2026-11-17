@@ -15,6 +15,9 @@ PY = [sys.executable, "-m", "vector.server.cli"]
 
 
 def run(args, env=None, ok=True):
+    """Запустить vector-server в отдельном процессе (как администратор из консоли); ok=True — код возврата обязан быть
+    0.
+    """
     r = subprocess.run(PY + args, capture_output=True, text=True, env={**os.environ, **(env or {})}, timeout=180, stdin=subprocess.DEVNULL)
     if ok:
         assert r.returncode == 0, r.stdout + r.stderr
@@ -23,6 +26,7 @@ def run(args, env=None, ok=True):
 
 @pytest.fixture
 def setup(tmp_path):
+    """Подготовить установку через CLI: dev-сертификат, URL БД, init, конфиг — как в инструкции по установке."""
     certs = tmp_path / "certs"
     run(["dev-cert", "--dir", str(certs), "--host", "127.0.0.1"])
     url_file = tmp_path / "db.url"
@@ -49,6 +53,7 @@ keep = 2
 
 
 def _free_port():
+    """Свободный TCP-порт на 127.0.0.1."""
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     p = s.getsockname()[1]

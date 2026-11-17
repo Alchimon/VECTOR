@@ -50,6 +50,7 @@ def test_rule_roles_exist():
 
 
 def _vectors():
+    """Эталонные примеры разбора денег из contracts/money-vectors.json (общие для всех реализаций)."""
     return json.loads((contracts_dir() / "money-vectors.json").read_text(encoding="utf-8"))["vectors"]
 
 

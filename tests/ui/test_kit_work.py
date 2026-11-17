@@ -15,12 +15,14 @@ pytestmark = pytest.mark.ui
 
 
 def _open_kit(ui, tab):
+    """Войти РП и открыть комплект АТХ на вкладке tab."""
     ui.login("a.smirnova")
     ui.go("projects", ui.ids["project"])
     return ui.kit_work(ui.ids["kits"]["АТХ"], tab)
 
 
 def _buttons(ui, text):
+    """Видимые кнопки с заданным текстом."""
     return [i for i in ui.items("kind") if i.property("text") == text and i.isVisible()]
 
 

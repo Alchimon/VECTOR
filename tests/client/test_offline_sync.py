@@ -20,9 +20,13 @@ BACKENDS = ["sqlite"]  # клиентское ядро не зависит от 
 
 @pytest.fixture
 def mk(world, tmp_path):
+    """Фикстура-фабрика клиентов: make(login) создаёт SyncClient поверх LoopbackTransport с общим хранилищем секретов и
+    входит.
+    """
     store = MemoryStore()
 
     def make(login, base=None, password=PWD):
+        """Создать клиент для логина (свой каталог профилей, если base не задан) и войти; вход обязан пройти."""
         c = SyncClient(LoopbackTransport(world.svc), SERVER, base or (tmp_path / f"profiles-{uuid.uuid4().hex[:6]}"), store,
                        device_id=f"dev-{login}", clock=world.clock, kdf=FAST_KDF)
         r = c.login(login, password)
@@ -33,6 +37,7 @@ def mk(world, tmp_path):
 
 
 def count(world, table, where=None):
+    """Число строк в серверной таблице (с условием where) — проверка «записано ровно один раз»."""
     t = db.metadata.tables[table]
     q = sa.select(sa.func.count()).select_from(t)
     if where is not None:

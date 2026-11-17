@@ -31,12 +31,14 @@ MiB = 1024 * 1024
 
 @pytest.fixture
 def fast_policy():
+    """Политика безопасности с увеличенным пределом размера файла для тестов памяти."""
     # Предел побольше стандартного для тестов памяти; тесты предела превышают именно его.
     return SecurityPolicy(max_file_mb=LIMIT_MB)
 
 
 @pytest.fixture
 def http(world):
+    """HTTP-клиент FastAPI поверх тестового сервиса."""
     return TestClient(create_app(world.svc))
 
 
@@ -50,10 +52,12 @@ def _pattern(n: int) -> bytes:
 
 
 def _hdr(s, sha: str) -> dict:
+    """Заголовки загрузки файла: токен, SHA-256, тип содержимого."""
     return {"Authorization": f"Bearer {s.token}", "X-Content-SHA256": sha, "Content-Type": "application/octet-stream"}
 
 
 def _count(world, table) -> int:
+    """Число строк в таблице."""
     with world.svc.engine.connect() as c:
         return c.execute(sa.select(sa.func.count()).select_from(table)).scalar()
 
@@ -142,10 +146,12 @@ class _ChangingSource(io.BytesIO):
     """Источник, который «меняется на диске» после первого прохода (хэширования)."""
 
     def __init__(self, first: bytes, second: bytes):
+        """Источник, который при втором чтении с начала отдаёт другие байты."""
         super().__init__(first)
         self._second, self._passes = second, 0
 
     def seek(self, pos, whence=0):
+        """На втором переходе к началу подменить содержимое — имитация файла, изменённого во время загрузки."""
         if pos == 0 and whence == 0:
             self._passes += 1
             if self._passes == 2:
@@ -224,6 +230,7 @@ def test_service_memory_does_not_grow_with_file_size(world, proj, tmp_path):
 
 # ====================================================================== настоящий HTTP-сервер + клиентский транспорт
 def _free_port() -> int:
+    """Свободный TCP-порт на 127.0.0.1."""
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -231,6 +238,7 @@ def _free_port() -> int:
 
 @pytest.fixture
 def live(world):
+    """Фикстура: настоящий сервер uvicorn в отдельном потоке (проверка потоковой передачи по сети)."""
     import uvicorn
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(create_app(world.svc), host="127.0.0.1", port=port, log_level="warning",

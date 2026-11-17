@@ -16,10 +16,14 @@ FILE_CONTENT = bytes(range(256)) * 4500      # ~1.1 МБ: два блока file
 
 
 def _document_id(svc, token):
+    """id первого документа из pull пользователя."""
     return svc.handle({"type": "query", "token": token, "query": "pull"})["result"]["documents"][0]["id"]
 
 
 def _populate(world):
+    """Наполнить БД объектами всех основных типов (тендер, ТКП с суммой, проект, комплект, документ с файлом) — чтобы
+    копия проверялась на реальном составе.
+    """
     rp = world.login("rp1")
     _, tender, _ = world.won_tender(rp)
     rp.ok("tkp.create", {"id": new_id(), "tender_id": tender, "label": "ТКП", "amount": "1234567.8901", "currency": "RUB"})
@@ -39,6 +43,7 @@ def _populate(world):
 
 @pytest.fixture
 def keyfile(tmp_path):
+    """Фикстура: новый файл ключа резервных копий во временном каталоге."""
     p = tmp_path / "backup.key"
     bk.generate_key_file(p)
     return p
@@ -142,6 +147,7 @@ def test_wrong_key_rejected(world, tmp_path, keyfile):
 
 
 def _header_end(raw: bytes) -> int:
+    """Смещение конца заголовка в файле .vbak (для тестов подмены блоков)."""
     (hlen,) = struct.unpack(">I", raw[10:14])
     return 14 + hlen
 

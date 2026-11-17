@@ -13,6 +13,7 @@ _ = (BACKENDS, FAST_KDF, SERVER)
 
 
 def line(name="Кабель", qty="10", price="12.5", **kw):
+    """Позиция расчёта для теста (по умолчанию «Кабель», 10 м по 12,5); лишние поля — через kw."""
     return {"line_id": kw.pop("line_id", str(uuid.uuid4())), "name": name, "unit": "м", "qty": qty, "unit_price": price, **kw}
 
 

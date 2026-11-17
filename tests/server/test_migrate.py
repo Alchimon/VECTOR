@@ -16,6 +16,7 @@ from vector.server.service import Service
 
 
 def make_v3(backend, tmp_path, clock, version=3):
+    """Создать БД старой версии схемы (по умолчанию v3) с данными — исходное состояние для проверки миграции."""
     eng = db.make_engine(make_url(backend, tmp_path))
     vt = [db.metadata.tables[n] for n in mg.tables_of_version(version)]
     with eng.begin() as c:
@@ -28,12 +29,14 @@ def make_v3(backend, tmp_path, clock, version=3):
 
 @pytest.fixture
 def keys(tmp_path):
+    """Ключ резервных копий для миграции (миграция всегда сначала делает копию)."""
     kf = tmp_path / "backup.key"
     bk.generate_key_file(kf)
     return bk.KeySource(key_file=kf)
 
 
 def counts(eng, names):
+    """Число строк по таблицам — сверка «до/после миграции»."""
     with eng.connect() as c:
         return {n: c.execute(sa.select(sa.func.count()).select_from(db.metadata.tables[n])).scalar() for n in names}
 

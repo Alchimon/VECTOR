@@ -16,10 +16,12 @@ from vector.server import db
 
 
 def line(name="Кабель КВВГ 4×1,5", qty="10", price="125.5", unit="м", **kw):
+    """Позиция расчёта для теста."""
     return {"line_id": kw.pop("line_id", str(uuid.uuid4())), "name": name, "unit": unit, "qty": qty, "unit_price": price, **kw}
 
 
 def save(s, kit, lines, ev, currency="RUB", note=None):
+    """Сохранить черновик расчёта комплекта с ожидаемой версией ev."""
     p = {"id": kit, "lines": lines, "currency": currency}
     if note is not None:
         p["note"] = note
@@ -27,6 +29,7 @@ def save(s, kit, lines, ev, currency="RUB", note=None):
 
 
 def pull(s):
+    """Снимок pull пользователя (запрос обязан пройти)."""
     r = s.query("pull")
     assert r["status"] == "accepted", r
     return r["result"]
