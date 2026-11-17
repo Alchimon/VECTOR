@@ -208,7 +208,7 @@ def _plain(v):
 
 
 def main():
-    """Снять скриншоты 01–22 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
+    """Снять скриншоты 01–23 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
     args = ap.parse_args()
@@ -287,6 +287,19 @@ def main():
         sp.setProperty("tab", "transit")
         h.wait_idle()
         h.shot(out / f"{theme}-22-stock-transit.png")
+        # Приёмка с недостачей (D-30): форма по демо-перемещению ХМТ-200 «в пути» — пришло 95 из 100, акт с подписью.
+        ov = _plain(sp.property("ov"))
+        hmt = next(t for t in ov["transfers"] if t["status"] == "in_transit")
+        af = next(o for o in h.win.findChildren(QObject) if o.objectName() == "acceptForm")
+        QMetaObject.invokeMethod(af, "openFor", Q_ARG("QVariant", hmt))
+        h.wait_idle()
+        for name, text in (("acQty", "95"), ("acShortReason", "Пять хомутов с трещинами — не пригодны")):
+            next(o for o in h.win.findChildren(QObject) if o.objectName() == name).setProperty("text", text)
+        next(o for o in h.win.findChildren(QObject) if o.objectName() == "acSign").setProperty("checked", True)
+        h.wait_idle()
+        h.shot(out / f"{theme}-23-transfer-shortage-act.png")
+        QMetaObject.invokeMethod(af, "close")
+        h.wait_idle()
         sp.setProperty("tab", "balances")
         h.wait_idle()
         h.backend.logout()
