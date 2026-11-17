@@ -409,6 +409,10 @@ def test_pull_visibility_production_sees_only_assigned_orders(world, pd):
     t = pull(pd.tech)
     assert [x["id"] for x in t["tech_processes"]] == [tp["id"]]
     assert t["tech_specs"][0]["id"] == pd.spec_id and "unit_price" not in t["tech_specs"][0]["lines"][0]
+    # Проект технологу не виден целиком (задачи, документы), но комплекты для «Нового ТП» — с кодом и статусом проекта.
+    assert t["projects"] == [] and [(k["code"], k["project_code"], k["project_status"]) for k in t["production_kits"]] == [
+        ("АТХ", "П-100", "rkd_in_progress")]
+    assert a["production_kits"] == []
     staff = {x["display_name"] for x in pull(pd.st.proj.rp)["production_staff"]}
     assert staff == {"PROD1", "PROD2", "PROD3"}
     assert pull(pd.prod)["production_staff"] == []

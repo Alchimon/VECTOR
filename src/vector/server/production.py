@@ -642,8 +642,8 @@ class ProductionMixin:
         """ТП и состав изделий (без цен) — по праву tp.read в проекте; наряды и их операции — по праву wo.read в
         проекте, а исполнителю с ролью «Производство» — наряды, где он назначен хотя бы на одну операцию.
         """
-        out: dict[str, Any] = {"tech_processes": [], "tech_specs": [], "work_orders": [], "wo_operations": [],
-                               "production_staff": []}
+        out: dict[str, Any] = {"tech_processes": [], "tech_specs": [], "production_kits": [], "work_orders": [],
+                               "wo_operations": [], "production_staff": []}
         pids = [r.id for r in conn.execute(sa.select(projects.c.id).order_by(projects.c.code))]
         tp_ids = [pid for pid in pids if self.policy.can(conn, uid, "tp.read", now, pid)]
         if tp_ids:
@@ -652,6 +652,13 @@ class ProductionMixin:
                 out["tech_processes"].append(self.v_tech_process(conn, dict(r._mapping)))
             kit_codes = {r.id: (r.code, r.title) for r in conn.execute(
                 sa.select(kits.c.id, kits.c.code, kits.c.title).where(kits.c.project_id.in_(tp_ids)))}
+            # Комплекты для «Нового ТП»: технологу не нужно право чтения проекта целиком (задачи, документы, команда) —
+            # достаточно кода проекта, его статуса и списка комплектов там, где он может читать ТП.
+            for r in conn.execute(sa.select(kits.c.id, kits.c.project_id, kits.c.code, kits.c.title, projects.c.code.label("pcode"),
+                                            projects.c.status).join(projects, projects.c.id == kits.c.project_id)
+                                  .where(kits.c.project_id.in_(tp_ids)).order_by(projects.c.code, kits.c.code)):
+                out["production_kits"].append({"id": r.id, "project_id": r.project_id, "code": r.code, "title": r.title,
+                                               "project_code": r.pcode, "project_status": r.status})
             for v in conn.execute(sa.select(calc_versions.c.id).where(calc_versions.c.project_id.in_(tp_ids))
                                   .order_by(calc_versions.c.kit_id, calc_versions.c.version_no)):
                 s = self._spec_of_version(conn, v.id)
