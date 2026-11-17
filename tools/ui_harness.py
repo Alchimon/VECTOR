@@ -208,7 +208,7 @@ def _plain(v):
 
 
 def main():
-    """Снять скриншоты 01–24 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
+    """Снять скриншоты 01–32 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
     args = ap.parse_args()
@@ -402,7 +402,16 @@ def main():
         op.setProperty("selectedId", o5["id"])
         h.wait_idle()
         h.shot(out / f"{theme}-29-purchase-approval.png")
+        # Контроль расчёта и сверка со счётом (D-34): та же карточка, прокрученная к блоку проверок.
+        h.scroll_detail_to(h.find("poInvoiceGrossKv"))
+        h.shot(out / f"{theme}-31-purchase-calc-control.png")
         h.backend.setOrdersFilter("active")
+        h.backend.logout()
+        h.wait_idle()
+        # Замещения (D-34): руководитель отдела — своё запланированное замещение и покрытие ролей.
+        h.login("e.orlova")
+        h.go("delegations")
+        h.shot(out / f"{theme}-32-delegations.png")
         h.backend.logout()
         h.wait_idle()
         # Настройки компании (D-26, A-26): администратор, вкладка «Настройки компании».
