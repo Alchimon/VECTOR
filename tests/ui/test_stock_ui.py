@@ -7,6 +7,8 @@
 import pytest
 from PySide6.QtCore import QMetaObject, QObject, Q_ARG
 
+PWD = "Демо-пароль-2026"          # пароль демо-пользователей стенда (tools/ui_harness.PWD) — для подписи актов
+
 pytestmark = pytest.mark.ui
 
 
@@ -301,10 +303,11 @@ def test_transfer_ships_in_transit_then_accept_and_return_through_forms(ui):
     ui.login("i.belova")
     page = _stock_page(ui)
     nshvi = _item(ui, "НШВИ-1.5")
-    # Демо: 200 шт НШВИ уже отгружены на СК-2 и приняты там; 100 шт ХМТ-200 «в пути» СК-2 → СК-1.
-    assert [(b["warehouse_code"], b["available_label"]) for b in nshvi["by_warehouse"]] == [("СК-1", "800 шт"), ("СК-2", "200 шт")]
+    # Демо: 200 шт НШВИ уже отгружены на СК-2 и приняты там, ещё 20 шт утрачены в пути (акт об утрате № 1);
+    # 100 шт ХМТ-200 «в пути» СК-2 → СК-1.
+    assert [(b["warehouse_code"], b["available_label"]) for b in nshvi["by_warehouse"]] == [("СК-1", "780 шт"), ("СК-2", "200 шт")]
     demo_legs = [m for m in _v(page, "ov")["movements"] if m["is_transfer"] and m["item_code"] == "НШВИ-1.5"]
-    assert {m["transfer_label"] for m in demo_legs} == {"СК-1 → СК-2"} and len(demo_legs) == 2
+    assert {m["transfer_label"] for m in demo_legs} == {"СК-1 → СК-2"} and len(demo_legs) == 3
     hmt = _item(ui, "ХМТ-200")
     assert hmt["in_transit_label"] == "100 шт" and hmt["transfers"][0]["route_label"] == "СК-2 → СК-1"
 
@@ -312,7 +315,7 @@ def test_transfer_ships_in_transit_then_accept_and_return_through_forms(ui):
     _call(dlg, "openFor", nshvi)
     ui.wait_idle()
     # Откуда — только склады с доступным; куда — любой другой действующий склад.
-    assert [o["label"] for o in _v(dlg, "fromOptions")] == ["СК-1 — 800 шт", "СК-2 — 200 шт"]
+    assert [o["label"] for o in _v(dlg, "fromOptions")] == ["СК-1 — 780 шт", "СК-2 — 200 шт"]
     assert [o["label"].split(" · ")[0] for o in _v(dlg, "toOptions")] == ["СК-2"]
     _popup(ui, "tQty").setProperty("text", "50")
     ui.wait_idle()
@@ -325,7 +328,7 @@ def test_transfer_ships_in_transit_then_accept_and_return_through_forms(ui):
     assert not dlg.property("visible") and dlg.property("error") == ""
     nshvi = _item(ui, "НШВИ-1.5")
     # Отгружено: у отправителя −50, у получателя пока ничего — 50 шт «в пути».
-    assert [b["available_label"] for b in nshvi["by_warehouse"]] == ["750 шт", "200 шт"]
+    assert [b["available_label"] for b in nshvi["by_warehouse"]] == ["730 шт", "200 шт"]
     assert nshvi["in_transit_label"] == "50 шт" and len(nshvi["transfers"]) == 1
     assert _v(page, "ov")["movements"][0]["kind_label"] == "Расход по перемещению"
 
@@ -337,8 +340,8 @@ def test_transfer_ships_in_transit_then_accept_and_return_through_forms(ui):
     ui.wait_idle()
     assert not acc.property("visible") and acc.property("error") == ""
     nshvi = _item(ui, "НШВИ-1.5")
-    assert [b["available_label"] for b in nshvi["by_warehouse"]] == ["750 шт", "250 шт"] and nshvi["transfers"] == []
-    assert nshvi["available_label"] == "1 000 шт"                 # общий запас не изменился
+    assert [b["available_label"] for b in nshvi["by_warehouse"]] == ["730 шт", "250 шт"] and nshvi["transfers"] == []
+    assert nshvi["available_label"] == "980 шт"                 # общий запас не изменился
     assert _v(page, "ov")["movements"][0]["kind_label"] == "Приход по перемещению"
 
     ret = _popup(ui, "returnForm")
@@ -352,7 +355,7 @@ def test_transfer_ships_in_transit_then_accept_and_return_through_forms(ui):
     assert not ret.property("visible") and ret.property("error") == ""
     hmt = _item(ui, "ХМТ-200")
     assert hmt["transfers"] == [] and _v(page, "ov")["movements"][0]["kind_label"] == "Возврат по перемещению"
-    assert {t["status"] for t in _v(page, "ov")["transfers"]} == {"received", "returned"}
+    assert {t["status"] for t in _v(page, "ov")["transfers"]} == {"received", "returned", "lost"}
 
     # Без связи перемещать, принимать и возвращать нельзя (online_required).
     ui.transport.online = False
@@ -402,12 +405,54 @@ def test_accept_with_shortage_requires_reason_and_signature(ui):
     assert acc.property("canConfirm") is False                     # без подписи — нельзя
     _popup(ui, "acSign").setProperty("checked", True)
     ui.wait_idle()
+    # Настройка подписи не задана → повторный ввод пароля (D-31): без пароля — нельзя.
+    assert _popup(ui, "acPwd").property("visible") is True and acc.property("canConfirm") is False
+    _popup(ui, "acPwd").setProperty("text", PWD)
+    ui.wait_idle()
     assert acc.property("canConfirm") is True and acc.property("confirmText") == "Принять и подписать акт"
     QMetaObject.invokeMethod(acc, "confirmed")
     ui.wait_idle()
     assert acc.property("error") == "" and not acc.property("visible")
     nshvi = _item(ui, "НШВИ-1.5")
-    assert [b["available_label"] for b in nshvi["by_warehouse"]] == ["790 шт", "207 шт"]
+    assert [b["available_label"] for b in nshvi["by_warehouse"]] == ["770 шт", "207 шт"]
     done = next(t for t in _v(page, "ov")["transfers"] if t["id"] == tr["id"])
     assert done["status_label"] == "Принято с недостачей"
     assert done["act_label"] == "Акт недостачи № 2: отгружено 10 шт, принято 7 шт, недостача 3 шт"
+    assert done["act_signed_label"].endswith("·  с вводом пароля")
+    assert _popup(ui, "acPwd").property("text") == ""                 # пароль не остаётся в форме
+
+
+def test_lost_transfer_through_form_needs_reason_signature_and_password(ui):
+    """D-31 через форму: «Утрата» по перемещению «в пути» — причина, флажок и пароль (настройка не задана);
+    после подписи — «Утрачено в пути», акт об утрате № 2 (№ 1 — в демо), количество ни на один склад не пришло."""
+    ui.login("i.belova")
+    page = _stock_page(ui)
+    demo = [t for t in _v(page, "ov")["transfers"] if t["status"] == "lost"]
+    assert len(demo) == 1 and demo[0]["loss_label"] == "Акт об утрате № 1: утрачено 20 шт"
+    assert demo[0]["status_tone"] == "danger" and demo[0]["can_act"] is False
+    hmt = _item(ui, "ХМТ-200")
+    tr = hmt["transfers"][0]
+    before = [b["available_label"] for b in hmt["by_warehouse"]]
+    dlg = _popup(ui, "lostForm")
+    _call(dlg, "openFor", tr)
+    ui.wait_idle()
+    assert dlg.property("canConfirm") is False
+    _popup(ui, "lsReason").setProperty("text", "Не прибыло; претензия перевозчику № 7")
+    _popup(ui, "lsSign").setProperty("checked", True)
+    ui.wait_idle()
+    assert dlg.property("canConfirm") is False                     # пароль обязателен
+    _popup(ui, "lsPwd").setProperty("text", "неверный пароль")
+    ui.wait_idle()
+    QMetaObject.invokeMethod(dlg, "confirmed")
+    ui.wait_idle()
+    assert dlg.property("visible") and "Пароль неверный" in dlg.property("error")
+    _popup(ui, "lsPwd").setProperty("text", PWD)
+    ui.wait_idle()
+    QMetaObject.invokeMethod(dlg, "confirmed")
+    ui.wait_idle()
+    assert dlg.property("error") == "" and not dlg.property("visible")
+    done = next(t for t in _v(page, "ov")["transfers"] if t["id"] == tr["id"])
+    assert (done["status"], done["status_label"]) == ("lost", "Утрачено в пути")
+    assert done["loss_label"] == "Акт об утрате № 2: утрачено 100 шт" and "с вводом пароля" in done["loss_signed_label"]
+    hmt = _item(ui, "ХМТ-200")
+    assert hmt["transfers"] == [] and [b["available_label"] for b in hmt["by_warehouse"]] == before

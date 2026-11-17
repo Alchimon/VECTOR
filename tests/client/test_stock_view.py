@@ -292,3 +292,31 @@ def test_transfer_rows_show_act_and_expected_date_for_reference():
     assert rows["t1"]["overdue"] is False and rows["t1"]["act_label"] and rows["t2"]["act_label"] == ""
     no_pull = sv.overview(WH, ITEMS, BAL, RES, MV, PROJ, PEOPLE, "", True, ["warehouse"], trs)
     assert not any(t["overdue"] for t in no_pull["transfers"])                    # нет снимка — срок не оцениваем
+
+
+def test_signature_mode_and_lost_rows():
+    """D-31: форма подписи по настройке (нет в снимке → пароль; КЭП → подписать нельзя), строка утраты — «danger»,
+    без действий; подпись показывает способ, а несовпадение содержания — предупреждение."""
+    cfg = lambda v: [{"key": "stock.act_signature", "value": v}]  # noqa: E731
+    assert sv.signature_mode([])["needs_password"] is True
+    assert (sv.signature_mode(cfg("confirm"))["needs_password"], sv.signature_mode(cfg("confirm"))["blocked"]) == (False, False)
+    q = sv.signature_mode(cfg("qes"))
+    assert q["blocked"] is True and "КЭП" in q["hint"]
+    i1 = ITEMS[0]["id"]
+    sig = {"method": "password", "method_label": "с вводом пароля", "signer_name": "Белова И.",
+           "signed_at": "2026-11-17T09:00:00+00:00", "content_ok": False}
+    trs = [{"id": "t9", "item_id": i1, "from_warehouse_id": "w1", "to_warehouse_id": "w2", "qty": "4.0000",
+            "status": "lost", "status_label": "Утрачено в пути", "version": 2, "legacy": False,
+            "loss": {"act_no": 5, "qty": "4.0000", "reason": "Не прибыло", "signed_by": "u1", "signer_name": "Белова И.",
+                     "signed_at": "2026-11-17T09:00:00+00:00", "signature": sig}}]
+    ov = sv.overview(WH, ITEMS, BAL, RES, MV, PROJ, PEOPLE, PULL, True, ["warehouse"], trs, cfg("confirm"))
+    row = ov["transfers"][0]
+    assert (row["status_tone"], row["can_act"], row["loss_label"]) == ("danger", False, "Акт об утрате № 5: утрачено 4 м")
+    assert "с вводом пароля" in row["loss_signed_label"] and "не совпадает с подписанным" in row["loss_signed_label"]
+    assert ov["act_signature"]["method"] == "confirm" and ov["summary"]["in_transit"] == 0
+    s = sv.settings_view([{"key": "stock.act_signature", "value": "password", "is_set": False,
+                           "values": [{"value": "confirm", "label_ru": "Флажок"}, {"value": "password", "label_ru": "Пароль"},
+                                      {"value": "qes", "label_ru": "КЭП", "available": False, "unavailable_ru": "не подключена"}]}],
+                         ["admin"], True)
+    it = s["items"][0]
+    assert [o["id"] for o in it["options"]] == ["confirm", "password"] and it["unavailable"] == ["КЭП — не подключена"]

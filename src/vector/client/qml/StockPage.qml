@@ -176,7 +176,8 @@ Item {
                             Repeater {
                                 model: page.sel ? page.sel.transfers : []
                                 delegate: TransferRow { Layout.fillWidth: true; t: modelData; showItem: false
-                                    onAcceptRequested: acceptForm.openFor(modelData); onReturnRequested: returnForm.openFor(modelData) }
+                                    onAcceptRequested: acceptForm.openFor(modelData); onReturnRequested: returnForm.openFor(modelData)
+                                    onLostRequested: lostForm.openFor(modelData) }
                             }
 
                             SectionTitle { text: "Последние движения"; iconName: "history" }
@@ -222,7 +223,8 @@ Item {
                 model: page.tab === "transit" ? (ov.transfers || []) : []
                 ScrollBar.vertical: ScrollBar {}
                 delegate: TransferRow { width: ListView.view.width; t: modelData
-                    onAcceptRequested: acceptForm.openFor(modelData); onReturnRequested: returnForm.openFor(modelData) }
+                    onAcceptRequested: acceptForm.openFor(modelData); onReturnRequested: returnForm.openFor(modelData)
+                                    onLostRequested: lostForm.openFor(modelData) }
             }
             EmptyState { anchors.centerIn: parent; visible: trList.count === 0; iconName: "truck"; title: "Перемещений нет"
                          text: "Отгрузка на другой склад создаёт перемещение «в пути»: количество списывается у отправителя и появляется у получателя только после приёмки." }
@@ -468,16 +470,24 @@ Item {
         property var tr: null
         readonly property var sh: tr ? backend.transferShortage(tr.qty, acQty.text, tr.unit || "") : ({})
         readonly property bool short: sh.has_shortage === true
+        // Способ подписи акта — настройка компании stock.act_signature (D-31): флажок / флажок и пароль / КЭП.
+        readonly property var sig: ov.act_signature || ({ needs_password: true, blocked: false, hint: "" })
         title: "Принять перемещение"
         subtitle: tr ? tr.item_code + " · отгружено " + tr.qty_label + " · " + tr.route_label + ": принятое придёт на склад " + tr.to_code + " и станет доступным." : ""
         confirmText: short ? "Принять и подписать акт" : "Принять"
         confirmKind: short ? "danger" : "primary"
-        canConfirm: tr !== null && acQty.error === "" && (!short || (acShortReason.text.trim() !== "" && acSign.checked))
-        function openFor(t) { tr = t; acQty.text = ""; acComment.text = ""; acShortReason.text = ""; acSign.checked = false; open() }
+        canConfirm: tr !== null && acQty.error === "" && (!short || (acShortReason.text.trim() !== "" && acSign.checked
+                                                                         && sig.blocked !== true && (sig.needs_password !== true || acPwd.text !== "")))
+        function openFor(t) { tr = t; acQty.text = ""; acComment.text = ""; acShortReason.text = ""; acSign.checked = false; acPwd.text = ""; open() }
         onConfirmed: {
             var p = { id: tr.id, comment: acComment.text.trim() }
             if (acQty.text.trim() !== "") p.accepted_qty = backend.normalizeQty(acQty.text)
-            if (short) { p.shortage_reason = acShortReason.text.trim(); p.sign_act = true }
+            if (short) {
+                p.shortage_reason = acShortReason.text.trim(); p.sign_act = true
+                // Пароль уходит только в эту онлайн-команду: в очередь, кэш и хэш запроса он не попадает (redact).
+                if (sig.needs_password === true) p.sign_password = acPwd.text
+            }
+            acPwd.text = ""
             cAccept.run("stock.transfer_accept", p, tr.version)
         }
         VField { id: acQty; objectName: "acQty"; label: "Фактически пришло" + (acceptForm.tr ? ", " + (acceptForm.tr.unit || "") : "")
@@ -485,11 +495,16 @@ Item {
         Banner { visible: acceptForm.short; tone: "danger"
                  text: "Недостача " + (acceptForm.sh.shortage_label || "") + " — будет оформлен акт недостачи. Недостача спишется из учёта: она не вернётся ни на один склад." }
         VField { id: acShortReason; objectName: "acShortReason"; visible: acceptForm.short; label: "Причина недостачи (в акт)"; required: true; placeholder: "Повреждена упаковка, бой …" }
-        // Подпись акта (A-30): флажок вошедшего кладовщика. Текст переносится — длинная строка не должна растягивать диалог.
+        // Подпись акта (D-31): флажок вошедшего кладовщика + пароль или КЭП — по настройке. Текст переносится —
+        // длинная строка не должна растягивать диалог.
         CheckBox { id: acSign; objectName: "acSign"; visible: acceptForm.short; Layout.fillWidth: true; Layout.preferredWidth: 1
+                   enabled: acceptForm.sig.blocked !== true
                    text: "Подписываю акт как приёмщик склада: количество пересчитано"
                    contentItem: Text { text: acSign.text; wrapMode: Text.Wrap; leftPadding: acSign.indicator.width + acSign.spacing
                                        verticalAlignment: Text.AlignVCenter; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs } }
+        VField { id: acPwd; objectName: "acPwd"; visible: acceptForm.short && acceptForm.sig.needs_password === true
+                 label: "Ваш пароль (подпись акта)"; password: true; required: true; hint: acceptForm.sig.hint || "" }
+        Banner { visible: acceptForm.short && acceptForm.sig.blocked === true; tone: "danger"; text: acceptForm.sig.hint || "" }
         VField { id: acComment; objectName: "acComment"; label: "Комментарий (если нужен)"; placeholder: "Принято без замечаний" }
     }
     Cmd { id: cAccept; dialog: acceptForm }
@@ -508,6 +523,40 @@ Item {
         VField { id: rtReason; objectName: "rtReason"; label: "Почему возвращаем"; required: true; placeholder: "Пересорт, отгружено не туда …" }
     }
     Cmd { id: cReturn; dialog: returnForm }
+
+    // Акт об утрате (D-31): не пришло ничего. Прихода нет, отправителю не возвращается — количество списывается
+    // актом. Причина обязательна; подпись приёмщика — как в акте недостачи (настройка stock.act_signature).
+    FormDialog {
+        id: lostForm
+        objectName: "lostForm"
+        property var tr: null
+        readonly property var sig: ov.act_signature || ({ needs_password: true, blocked: false, hint: "" })
+        title: "Оформить утрату перемещения"
+        subtitle: tr ? tr.item_code + " · " + tr.qty_label + " · " + tr.route_label + ": на склад " + tr.to_code + " не пришло ничего." : ""
+        confirmText: "Подписать акт об утрате"; confirmKind: "danger"
+        canConfirm: tr !== null && lsReason.text.trim() !== "" && lsSign.checked && sig.blocked !== true
+                    && (sig.needs_password !== true || lsPwd.text !== "")
+        function openFor(t) { tr = t; lsReason.text = ""; lsSign.checked = false; lsPwd.text = ""; open() }
+        onConfirmed: {
+            var p = { id: tr.id, reason: lsReason.text.trim(), sign_act: true }
+            if (sig.needs_password === true) p.sign_password = lsPwd.text
+            lsPwd.text = ""
+            cLost.run("stock.transfer_lost", p, tr.version)
+        }
+        Banner { tone: "danger"
+                 text: "Количество будет списано из учёта актом об утрате: оно не придёт на получатель и не вернётся отправителю. Если груз найдётся — оформите обычный приход с основанием «найдено по акту об утрате № …»." }
+        VField { id: lsReason; objectName: "lsReason"; label: "Что известно (в акт)"; required: true
+                 placeholder: "Груз не прибыл; претензия перевозчику № …, ответственный …" }
+        CheckBox { id: lsSign; objectName: "lsSign"; Layout.fillWidth: true; Layout.preferredWidth: 1
+                   enabled: lostForm.sig.blocked !== true
+                   text: "Подписываю акт как приёмщик склада: груз не поступил"
+                   contentItem: Text { text: lsSign.text; wrapMode: Text.Wrap; leftPadding: lsSign.indicator.width + lsSign.spacing
+                                       verticalAlignment: Text.AlignVCenter; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs } }
+        VField { id: lsPwd; objectName: "lsPwd"; visible: lostForm.sig.needs_password === true
+                 label: "Ваш пароль (подпись акта)"; password: true; required: true; hint: lostForm.sig.hint || "" }
+        Banner { visible: lostForm.sig.blocked === true; tone: "danger"; text: lostForm.sig.hint || "" }
+    }
+    Cmd { id: cLost; dialog: lostForm }
 
     FormDialog {
         id: issueResForm

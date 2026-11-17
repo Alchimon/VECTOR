@@ -472,7 +472,7 @@ class Backend(QObject):
             self._decorate("warehouse"), self._decorate("stock_item"), st.get("stock_balances") or [],
             st.get("stock_reservations") or [], st.get("stock_movements") or [], st.get("stock_projects") or [],
             self._people, self._last_pull, self._online and self._session_mode == "online", self._me.get("roles", []),
-            st.get("stock_transfers") or []))
+            st.get("stock_transfers") or [], st.get("config") or []))
 
     @Property("QVariantMap", notify=dataChanged)
     def needsOverview(self):

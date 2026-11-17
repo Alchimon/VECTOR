@@ -212,6 +212,10 @@ Item {
         function openFor(it) { item = it; pReason.text = ""; pValue.currentIndex = page.indexOfOpt(it.options, it.value); open() }
         onConfirmed: { working = true; error = ""; backend.publishSetting("adm-config", item.key, pValue.currentValue, pReason.text.trim(), item.version) }
         VSelect { id: pValue; objectName: "pValue"; label: "Значение"; model: pub.item ? pub.item.options : [] }
+        // Варианты, которые описаны, но ещё не подключены (например, КЭП, D-31): видно, почему их нет в списке.
+        Text { visible: pub.item !== null && (pub.item.unavailable || []).length > 0
+               text: pub.item ? "Пока недоступно: " + (pub.item.unavailable || []).join("; ") : ""
+               color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs; wrapMode: Text.Wrap; Layout.fillWidth: true }
         VField { id: pReason; objectName: "pReason"; label: "Причина изменения"; required: true; placeholder: "Решение совещания склада и закупки от …" }
     }
     function indexOfOpt(options, id) { for (var i = 0; i < options.length; i++) if (options[i].id === id) return i; return 0 }

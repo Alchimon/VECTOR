@@ -83,13 +83,17 @@ def _state(on_hand: Decimal, reserved: Decimal) -> tuple[str, str, str]:
 
 
 def overview(warehouses: list, items: list, balances: list, reservations: list, movements: list, projects: list,
-             people: dict, last_pull: str, online: bool, roles: list, transfers: Optional[list] = None) -> dict:
+             people: dict, last_pull: str, online: bool, roles: list, transfers: Optional[list] = None,
+             config: Optional[list] = None) -> dict:
     """Экран «Склад»: позиции с остатками по складам, резервы, перемещения «в пути», журнал, подсказки действий.
 
     transfers — перемещения из pull (D-29): все «в пути» и недавние закрытые. Количество «в пути» не входит ни в
     остаток, ни в доступное — оно показывается отдельно, чтобы отгруженное не выглядело «потерянным».
     У перемещений бывает ожидаемая дата прибытия «для справки» и акт недостачи (D-30): срок считается прошедшим по
     дате снимка last_pull (тем же «на момент …», что и остатки), а не по часам компьютера.
+    config — настройки компании из pull: по stock.act_signature форма приёмки/утраты знает, как подписывать акт
+    (D-31): confirm — флажок, password — флажок и пароль, qes — КЭП не подключена, подписать нельзя (сервер всё равно
+    проверит действующее значение сам). Перемещение с актом об утрате — статус «lost», без действий.
     """
     wh = {w["id"]: w for w in warehouses}
     it = {i["id"]: i for i in items}
@@ -145,7 +149,7 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
                         "from_code": a_code, "to_code": b_code, "route_label": f"{a_code} → {b_code}", "unit": unit,
                         "qty_label": qty_label(t["qty"], unit),
                         # Принято с недостачей (есть акт) — «danger»: это расхождение, на которое стоит обратить внимание.
-                        "status_tone": "danger" if t.get("act") else
+                        "status_tone": "danger" if t.get("act") or t["status"] == "lost" else
                                        {"in_transit": "warning", "received": "success", "returned": "neutral"}.get(t["status"], "neutral"),
                         "expected_label": _date_ru(t.get("expected_on")),
                         "overdue": bool(t["status"] == "in_transit" and t.get("expected_on") and as_of_day
@@ -155,7 +159,14 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
                                       f"принято {qty_label(t['act']['accepted_qty'], unit)}, недостача "
                                       f"{qty_label(t['act']['shortage_qty'], unit)}") if t.get("act") else "",
                         "act_signed_label": (f"{t['act']['reason']}  ·  подписал приёмщик {t['act']['signer_name']}, "
-                                             f"{t['act']['signed_at'].replace('T', ' ')[:16]} UTC") if t.get("act") else "",
+                                             f"{t['act']['signed_at'].replace('T', ' ')[:16]} UTC"
+                                             f"{_sig_suffix(t['act'].get('signature'))}") if t.get("act") else "",
+                        # Акт об утрате (D-31): не пришло ничего — количество списано актом.
+                        "loss_label": (f"Акт об утрате № {t['loss']['act_no']}: утрачено {qty_label(t['loss']['qty'], unit)}"
+                                       if t.get("loss") else ""),
+                        "loss_signed_label": (f"{t['loss']['reason']}  ·  подписал приёмщик {t['loss']['signer_name']}, "
+                                              f"{t['loss']['signed_at'].replace('T', ' ')[:16]} UTC"
+                                              f"{_sig_suffix(t['loss'].get('signature'))}") if t.get("loss") else "",
                         "author": people.get(t.get("created_by") or "", ""),
                         "closer": people.get(t.get("closed_by") or "", ""),
                         "created_label": (t.get("created_at") or "").replace("T", " ")[:16],
@@ -209,7 +220,34 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
             "can_post": is_wh and online, "can_edit_refs": is_wh or "procurement" in roles,
             # Перемещать есть куда, только если действующих (уже отправленных на сервер) складов не меньше двух.
             "can_transfer": is_wh and online and active_wh >= 2,
-            "can_edit_warehouses": is_wh, "is_warehouse": is_wh}
+            "can_edit_warehouses": is_wh, "is_warehouse": is_wh,
+            "act_signature": signature_mode(config or [])}
+
+
+def _sig_suffix(sig: Optional[dict]) -> str:
+    """Хвост подписи акта: способ и — если содержание вдруг не совпало с подписанным — предупреждение."""
+    if not sig:
+        return ""
+    warn = "" if sig.get("content_ok", True) else "  ·  ВНИМАНИЕ: содержание не совпадает с подписанным"
+    return f"  ·  {sig.get('method_label', '')}{warn}"
+
+
+def signature_mode(config: list) -> dict:
+    """Как подписывать акты склада (настройка stock.act_signature, D-31) — для формы:
+    method; needs_password — показать поле пароля; blocked — подписать нельзя (КЭП не подключена) и почему; hint.
+    Если настройки нет в снимке (старый кэш) — считаем самым строгим доступным (password): лишний вопрос пароля
+    безопаснее, чем пропущенный; сервер всё равно решает по своему действующему значению.
+    """
+    m = setting_value(config, "stock.act_signature", "password")
+    if m == "qes":
+        return {"method": m, "needs_password": False, "blocked": True,
+                "hint": "В настройках выбрана подпись КЭП, но она ещё не подключена — акт подписать нельзя. "
+                        "Обратитесь к администратору."}
+    if m == "confirm":
+        return {"method": m, "needs_password": False, "blocked": False,
+                "hint": "Подпись — подтверждение в программе от вашего имени."}
+    return {"method": "password", "needs_password": True, "blocked": False,
+            "hint": "Для подписи акта введите свой пароль. Пароль проверит сервер; он нигде не сохраняется."}
 
 
 def _match_label(ln: dict) -> str:
@@ -374,5 +412,10 @@ def settings_view(config: list, roles: list, online: bool) -> dict:
         out.append({**c, "value_label": labels.get(c["value"], c["value"]),
                     "state_label": "Задано" if c.get("is_set") else "Не задано — действует самое строгое",
                     "state_tone": "info" if c.get("is_set") else "neutral",
-                    "options": [{"id": v["value"], "label": v["label_ru"]} for v in c.get("values", [])]})
+                    # Недоступные пока варианты (например, КЭП, D-31) в список публикации не попадают — их видно
+                    # в описании (unavailable), а сервер всё равно отклонит такую публикацию (value_unavailable).
+                    "options": [{"id": v["value"], "label": v["label_ru"]} for v in c.get("values", [])
+                                if v.get("available") is not False],
+                    "unavailable": [f"{v['label_ru']} — {v.get('unavailable_ru') or 'пока недоступно'}"
+                                    for v in c.get("values", []) if v.get("available") is False]})
     return {"items": out, "can_publish": online and "admin" in roles}
