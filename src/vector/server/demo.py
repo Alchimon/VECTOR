@@ -34,6 +34,7 @@ ACCOUNTS = [
     ("o.nikitina", "Никитина Ольга", "accountant", "Бухгалтерия"),
     ("i.belova", "Белова Ирина", "warehouse", "Склад"),
     ("s.morozov", "Морозов Сергей", "procurement", "Закупка"),
+    ("v.zaitseva", "Зайцева Вера", "po_approver", "Согласование закупок (коммерческий директор)"),
     ("n.sokolov", "Соколов Никита", None, "Без роли; при первом входе должен сменить пароль"),
 ]
 
@@ -295,20 +296,38 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     cmd(wh, "stock.issue", {"id": str(uuid.uuid4()), "warehouse_id": whs["СК-2"], "item_id": items["ХМТ-200"], "qty": "120",
                             "project_id": pid, "reason": "Монтаж кабельных трасс"})
 
-    # Заказы поставщикам и факт поставки (D-32). Поставщики, цены, номера счетов и накладных ВЫМЫШЛЕНЫ; ИНН не указан
-    # нарочно — любой «правдоподобный» ИНН может принадлежать настоящей организации.
+    # Заказы поставщикам и факт поставки (D-32, D-33). Поставщики, цены, номера счетов, договоров и накладных
+    # ВЫМЫШЛЕНЫ. Реквизиты — с кодом региона «00», которого нет ни в ИНН, ни в ОГРН, ни в КПП, ни в БИК настоящих
+    # организаций и банков: контрольные цифры верные (программа их проверяет), но совпасть с реальными они не могут.
+    approver = login("v.zaitseva")
     sups = {}
-    for code, name, contact in [("ШКАФЫ-ПРО", "ООО «Шкафы-Про» (вымышленный)", "Отдел продаж, доб. 101"),
-                                ("ЭЛЕКТРОСНАБ", "ООО «Электроснаб» (вымышленный)", "Менеджер Ковалёв"),
-                                ("КИП-КОМПЛЕКТ", "ООО «КИП-Комплект» (вымышленный)", None)]:
+    fake_bank = {"bank_name": "АО «Демо-Банк» (вымышленный)", "bik": "040000001", "corr_account": "30101810100000000001"}
+    for code, name, contact, req in [
+            ("ШКАФЫ-ПРО", "ООО «Шкафы-Про» (вымышленный)", "Отдел продаж, доб. 101",
+             {"inn": "0000002022", "kpp": "000001002", "ogrn": "1020000002021", "bank_account": "40702810900000000202",
+              "address": "г. Демоград, ул. Вымышленная, д. 2", "vat_rate": "22", **fake_bank}),
+            ("ЭЛЕКТРОСНАБ", "ООО «Электроснаб» (вымышленный)", "Менеджер Ковалёв",
+             {"inn": "0000001011", "kpp": "000001001", "ogrn": "1020000001010", "bank_account": "40702810700000000101",
+              "address": "г. Демоград, ул. Вымышленная, д. 1", "vat_rate": "22", **fake_bank}),
+            ("КИП-КОМПЛЕКТ", "ООО «КИП-Комплект» (вымышленный)", None, {})]:
         sups[code] = str(uuid.uuid4())
         cmd(buyer, "supplier.create", {"id": sups[code], "code": code, "name": name,
-                                       **({"contact": contact} if contact else {})})
+                                       **({"contact": contact} if contact else {}), **req})
+    today = svc.now().date()
+    contracts = {}
+    for sup, number, signed, until, subject in [
+            # Даты — относительно сегодня, чтобы договоры действовали при любой дате наполнения демо-базы.
+            ("ЭЛЕКТРОСНАБ", "П-14", today - timedelta(days=300), today + timedelta(days=200), "Поставка кабельной продукции"),
+            ("ШКАФЫ-ПРО", "ШП-3", today - timedelta(days=600), None, "Изготовление и поставка шкафов управления")]:
+        contracts[sup] = str(uuid.uuid4())
+        cmd(buyer, "contract.create", {"id": contracts[sup], "supplier_id": sups[sup], "number": number,
+                                       "signed_on": signed.isoformat(),
+                                       **({"valid_until": until.isoformat()} if until else {}), "subject": subject})
 
-    def po_line(item, qty, price=None, need_line=None, note=None):
+    def po_line(item, qty, price=None, need_line=None, note=None, vat="22"):
         """Строка заказа поставщику (цена None — неизвестна; need_line — код строки потребности АТХ v1)."""
         return {"line_id": str(uuid.uuid4()), "item_id": items[item], "qty": qty, "unit_price": price,
-                **({"need_id": need["id"], "need_line_id": line_of[need_line]} if need_line else {}),
+                "vat_rate": vat, **({"need_id": need["id"], "need_line_id": line_of[need_line]} if need_line else {}),
                 **({"note": note} if note else {})}
 
     def po(sup, lines, currency="RUB", **kw):
@@ -316,23 +335,35 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
         return cmd(buyer, "po.create", {"id": str(uuid.uuid4()), "supplier_id": sups[sup], "currency": currency,
                                         "lines": lines, **kw})["purchase_order"]
 
+    def submit(o, comment=None):
+        """Отправить черновик на согласование (закупка)."""
+        return cmd(buyer, "po.submit", {"id": o["id"], **({"comment": comment} if comment else {})},
+                   ev=o["version"])["purchase_order"]
+
     def place(o):
-        """Разместить черновик (строки замораживаются)."""
+        """Согласовать (коммерческий директор) и разместить черновик (условия замораживаются)."""
+        o = submit(o)
+        o = cmd(approver, "po.approve", {"id": o["id"]}, ev=o["version"])["purchase_order"]
         return cmd(buyer, "po.place", {"id": o["id"]}, ev=o["version"])["purchase_order"]
     # № 1 — размещён, ждём: третий шкаф ШУ-1 под непокрытую строку потребности (2 из 3 уже в резерве).
     o1 = place(po("ШКАФЫ-ПРО", [po_line("ШУ-1", "1", "485000", need_line="ШУ-1")], supplier_ref="Счёт № 218",
-                  expected_on=(svc.now().date() + timedelta(days=21)).isoformat()))
+                  vat_mode="included", contract_id=contracts["ШКАФЫ-ПРО"],
+                  expected_on=(today + timedelta(days=21)).isoformat()))
     # № 2 — размещён, поставлен частично: кабель пришёл 1200 м из 2000 (накладная), цена хомутов неизвестна.
     o2 = place(po("ЭЛЕКТРОСНАБ", [po_line("КВВГнг-7x1.5", "2000", "142.6"),
                                   po_line("ХМТ-200", "1000", None, note="Цену уточняют, счёт будет с поставкой")],
-                  supplier_ref="Счёт № 5531"))
+                  supplier_ref="Счёт № 5531", vat_mode="included", contract_id=contracts["ЭЛЕКТРОСНАБ"]))
     cmd(wh, "po.receive", {"id": str(uuid.uuid4()), "order_id": o2["id"], "line_id": o2["lines"][0]["line_id"],
                            "warehouse_id": whs["СК-2"], "qty": "1200", "source_doc": "ТН № 8812 от ООО «Электроснаб»"})
-    # № 3 — черновик: датчики давления по изменению схемы (цены и валюты пока нет — не подставляются).
-    o3 = po("КИП-КОМПЛЕКТ", [po_line("ДД", "8", None)], currency=None, note="Ждём ТКП поставщика")
+    # № 3 — черновик: датчики давления по изменению схемы (цены, валюты и НДС пока нет — не подставляются).
+    o3 = po("КИП-КОМПЛЕКТ", [po_line("ДД", "8", None, vat=None)], currency=None, note="Ждём ТКП поставщика")
     # № 4 — отменён: случайный дубль № 3.
-    o4 = po("КИП-КОМПЛЕКТ", [po_line("ДД", "8", None)], currency=None)
+    o4 = po("КИП-КОМПЛЕКТ", [po_line("ДД", "8", None, vat=None)], currency=None)
     cmd(buyer, "po.cancel", {"id": o4["id"], "reason": "Дубль заказа № 3"}, ev=o4["version"])
+    # № 5 — на согласовании у коммерческого директора: цены без НДС (так в счёте), НДС 22 % начислит программа.
+    o5 = submit(po("ЭЛЕКТРОСНАБ", [po_line("НШВИ-1.5", "500", "3.85")], supplier_ref="Счёт № 5602",
+                   vat_mode="excluded", contract_id=contracts["ЭЛЕКТРОСНАБ"]), comment="Под монтаж ШУ-1, нужно до конца месяца")
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
             "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
-            "suppliers": sups, "purchase_orders": [o1["id"], o2["id"], o3["id"], o4["id"]]}
+            "suppliers": sups, "contracts": contracts,
+            "purchase_orders": [o1["id"], o2["id"], o3["id"], o4["id"], o5["id"]]}

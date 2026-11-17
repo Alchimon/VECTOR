@@ -211,14 +211,23 @@ def test_demo_seed_only_into_fresh_db(setup):
     buyer = svc.handle({"type": "login", "login": "s.morozov", "password": DEMO_PWD, "device_id": "t"}, "t")
     needs = svc.handle({"type": "query", "token": buyer["token"], "query": "pull"}, "t")["result"]["needs"]
     assert [(x["kit_code"], x["calc_version_no"], x["matched_count"]) for x in needs] == [("АТХ", 1, 2)]
-    # Заказы поставщикам (D-32): № 1 ждём (под строку ШУ-1 — видно в потребности), № 2 поставлен частично,
-    # № 3 черновик без валюты, № 4 отменён. Склад видит заказы без цен.
+    # Заказы поставщикам (D-32, D-33): № 1 ждём (под строку ШУ-1 — видно в потребности), № 2 поставлен частично,
+    # № 3 черновик без валюты, № 4 отменён, № 5 на согласовании у v.zaitseva. Размещённые прошли согласование.
+    # Склад видит заказы без цен.
     bp = svc.handle({"type": "query", "token": buyer["token"], "query": "pull"}, "t")["result"]
-    assert [(o["order_no"], o["status"], o["delivery"]) for o in sorted(bp["purchase_orders"], key=lambda o: o["order_no"])] == \
-        [(1, "placed", "none"), (2, "placed", "partial"), (3, "draft", None), (4, "cancelled", None)]
-    assert len(bp["suppliers"]) == 3
+    pos = sorted(bp["purchase_orders"], key=lambda o: o["order_no"])
+    assert [(o["order_no"], o["status"], o["delivery"], o["approval"]["state"]) for o in pos] == \
+        [(1, "placed", "none", "approve"), (2, "placed", "partial", "approve"), (3, "draft", None, None),
+         (4, "cancelled", None, None), (5, "draft", None, "submit")]
+    assert [(o["vat_mode"], o["contract_number"]) for o in pos] == \
+        [("included", "ШП-3"), ("included", "П-14"), (None, None), (None, None), ("excluded", "П-14")]
+    assert pos[4]["vat_totals"]["gross"] == "2348.5000"      # 500 × 3,85 = 1925 без НДС + 22 % = 423,50
+    assert len(bp["suppliers"]) == 3 and [s["requisites_complete"] for s in bp["suppliers"]].count(True) == 2
+    assert sorted(c["number"] for c in bp["supplier_contracts"]) == ["П-14", "ШП-3"]
+    ap = svc.handle({"type": "login", "login": "v.zaitseva", "password": DEMO_PWD, "device_id": "t"}, "t")
+    assert ap["status"] == "accepted"
     assert next(ln_["on_order"] for ln_ in needs[0]["lines"] if ln_["code"] == "ШУ-1") == "1.0000"
-    assert all(o["total"] is None for o in sp["purchase_orders"]) and len(sp["purchase_orders"]) == 4
+    assert all(o["total"] is None for o in sp["purchase_orders"]) and len(sp["purchase_orders"]) == 5
     with eng.connect() as c:
         assert c.execute(sa.select(sa.func.count()).select_from(db.audit_log).where(db.audit_log.c.device_id == "demo-seed")).scalar() > 20
         before = c.execute(sa.select(sa.func.count()).select_from(db.customers)).scalar()
