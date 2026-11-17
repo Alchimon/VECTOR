@@ -169,7 +169,7 @@ def test_v6_to_v7_adds_settings_and_unit_tables_with_immutability(backend, tmp_p
     before = counts(eng, mg.tables_of_version(6))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (6, db.SCHEMA_VERSION)
-    assert rep.created_tables == [t.name for v in (7, 8, 9) for t in mg.ADDED_IN[v]]
+    assert rep.created_tables == [t.name for v in (7, 8, 9, 10) for t in mg.ADDED_IN[v]]
     after = counts(eng, mg.tables_of_version(6))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
     with eng.begin() as c:
@@ -186,7 +186,7 @@ def test_v7_to_v8_adds_transfers_immutable_and_checked(backend, tmp_path, clock,
     before = counts(eng, mg.tables_of_version(7))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (7, db.SCHEMA_VERSION)
-    assert rep.created_tables == ["stock_transfers", "stock_shipments"]
+    assert rep.created_tables == ["stock_transfers", "stock_shipments", "stock_transfer_acts", "stock_shipment_terms"]
     assert rep.backup_path.exists()                     # сначала — проверенная копия БД v7
     after = counts(eng, mg.tables_of_version(7))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
@@ -222,7 +222,8 @@ def test_v8_to_v9_adds_shipments_with_consistent_states(backend, tmp_path, clock
     одно закрывающее движение двум перемещениям."""
     eng = make_v3(backend, tmp_path, clock, version=8)
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
-    assert (rep.from_version, rep.to_version, rep.created_tables) == (8, db.SCHEMA_VERSION, ["stock_shipments"])
+    assert (rep.from_version, rep.to_version) == (8, db.SCHEMA_VERSION)
+    assert rep.created_tables == ["stock_shipments", "stock_transfer_acts", "stock_shipment_terms"]
     now, uid, w1, w2, it = clock.now(), new_id(), new_id(), new_id(), new_id()
     mv = [new_id() for _ in range(6)]
     with eng.begin() as c:
@@ -250,3 +251,54 @@ def test_v8_to_v9_adds_shipments_with_consistent_states(backend, tmp_path, clock
         ins(status="returned", out_movement_id=mv[4], close_movement_id=mv[3], closed_by=uid, closed_at=now)
     with pytest.raises(sa.exc.DBAPIError):                                # неизвестный статус
         ins(status="lost", out_movement_id=mv[5])
+
+
+def test_v9_to_v10_adds_shortage_acts_and_terms_immutable_and_balanced(backend, tmp_path, clock, keys):
+    """v9 → v10: только таблицы актов недостачи и сроков прибытия; БД сама требует «отгружено = принято + недостача»,
+    один акт на перемещение, уникальный номер; обе таблицы неизменяемы."""
+    eng = make_v3(backend, tmp_path, clock, version=9)
+    before = counts(eng, mg.tables_of_version(9))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (9, db.SCHEMA_VERSION)
+    assert rep.created_tables == ["stock_transfer_acts", "stock_shipment_terms"] and rep.backup_path.exists()
+    after = counts(eng, mg.tables_of_version(9))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    now, uid, w1, w2, it = clock.now(), new_id(), new_id(), new_id(), new_id()
+    mv, sh = [new_id() for _ in range(4)], [new_id(), new_id()]
+    with eng.begin() as c:
+        for w, code in ((w1, "СК-1"), (w2, "СК-2")):
+            c.execute(db.warehouses.insert().values(id=w, code=code, name=code, active=True, version=1, created_by=uid,
+                                                    created_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.stock_items.insert().values(id=it, code="Х", name="Х", unit="шт", active=True, version=1,
+                                                 created_by=uid, created_at=now, updated_by=uid, updated_at=now))
+        for no, m in enumerate(mv, start=1):
+            c.execute(db.stock_movements.insert().values(id=m, doc_no=no, kind="issue" if no % 2 else "receipt",
+                                                         warehouse_id=w1, item_id=it, qty=Decimal("1"),
+                                                         posted_by=uid, posted_at=now))
+        for s_id, out, close in ((sh[0], mv[0], mv[1]), (sh[1], mv[2], mv[3])):
+            c.execute(db.stock_shipments.insert().values(
+                id=s_id, item_id=it, from_warehouse_id=w1, to_warehouse_id=w2, qty=Decimal("10"), status="received",
+                out_movement_id=out, close_movement_id=close, reason="r", version=2, created_by=uid, created_at=now,
+                closed_by=uid, closed_at=now))
+    act = dict(shipped_qty=Decimal("10"), accepted_qty=Decimal("7"), shortage_qty=Decimal("3"), reason="Бой",
+               signed_by=uid, signer_name="Приёмщик", signed_at=now)
+
+    def ins(**kw):
+        with eng.begin() as c:
+            c.execute(db.stock_transfer_acts.insert().values(id=new_id(), **{**act, **kw}))
+    with pytest.raises(sa.exc.DBAPIError):                      # 7 + 2 ≠ 10 — БД не примет
+        ins(shipment_id=sh[0], act_no=1, shortage_qty=Decimal("2"))
+    with pytest.raises(sa.exc.DBAPIError):                      # «недостача» 0 — это не акт
+        ins(shipment_id=sh[0], act_no=1, accepted_qty=Decimal("10"), shortage_qty=Decimal("0"))
+    ins(shipment_id=sh[0], act_no=1)
+    with pytest.raises(sa.exc.DBAPIError):                      # второй акт на то же перемещение
+        ins(shipment_id=sh[0], act_no=2)
+    with pytest.raises(sa.exc.DBAPIError):                      # номер акта не повторяется
+        ins(shipment_id=sh[1], act_no=1)
+    with eng.begin() as c:
+        c.execute(db.stock_shipment_terms.insert().values(shipment_id=sh[0], expected_on=now.date()))
+    for upd in (db.stock_transfer_acts.update().values(reason="Подмена"),
+                db.stock_shipment_terms.update().values(expected_on=now.date())):
+        with pytest.raises(sa.exc.DBAPIError):                  # неизменяемость
+            with eng.begin() as c:
+                c.execute(upd)

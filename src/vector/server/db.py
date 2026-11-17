@@ -31,7 +31,7 @@ from vector.core import money
 #        сопоставлении (D-25, A-27);
 #   v8 — перемещения между складами: связка двух движений журнала (A-28);
 #   v9 — перемещение со статусом «в пути»: отгрузка → приёмка получателем или возврат отправителю (D-29, A-29).
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -669,6 +669,36 @@ sa.Index("ux_stock_shipments_close", stock_shipments.c.close_movement_id, unique
          mssql_where=stock_shipments.c.close_movement_id.isnot(None),
          sqlite_where=stock_shipments.c.close_movement_id.isnot(None))
 
+# Акт недостачи при приёмке перемещения (D-30, схема v10). Решение владельца: «такой акт нужен, подписывает
+# приёмщик склада». Если на склад-получатель пришло меньше отгруженного, приёмщик принимает фактическое количество
+# (приход = accepted_qty), а разницу оформляет актом: номер, отгружено / принято / недостача, причина, кто и когда
+# подписал (имя — снимок на момент подписи: акт не должен «переименовываться» вместе с учётной записью).
+# Недостача не возвращается ни на один склад — она списана из учёта этим актом; кто за неё отвечает и как она
+# отражается в деньгах, программа не решает (A-30). Акт неизменяем: исправление — только новым документом.
+# Одно перемещение — не больше одного акта; shipped = accepted + shortage проверяет сама БД.
+stock_transfer_acts = sa.Table("stock_transfer_acts", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("shipment_id", ID, sa.ForeignKey("stock_shipments.id"), nullable=False, unique=True),
+    sa.Column("act_no", sa.Integer, nullable=False, unique=True),     # сквозной номер акта (1, 2, 3 …)
+    sa.Column("shipped_qty", Qty, nullable=False),
+    sa.Column("accepted_qty", Qty, nullable=False),
+    sa.Column("shortage_qty", Qty, nullable=False),
+    sa.Column("reason", U(2000), nullable=False),                     # что случилось — обязательно
+    sa.Column("signed_by", ID, nullable=False),                       # приёмщик склада, подписавший акт
+    sa.Column("signer_name", U(200), nullable=False),
+    sa.Column("signed_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("accepted_qty > 0", name="accepted_pos"),
+    sa.CheckConstraint("shortage_qty > 0", name="shortage_pos"),
+    sa.CheckConstraint("shipped_qty = accepted_qty + shortage_qty", name="qty_balance"))
+
+# Ожидаемая дата прибытия перемещения (D-30, схема v10) — «для справки» по решению владельца: указывается при
+# отгрузке (по желанию), показывается в списке «В пути» с пометкой, если дата прошла, и НИ НА ЧТО не влияет
+# (никаких автоматических действий, напоминаний и запретов). Отдельная таблица, потому что миграции только
+# добавляют таблицы и не меняют существующие (принцип 3 migrate.py). Неизменяема — дата отгрузки не переписывается.
+stock_shipment_terms = sa.Table("stock_shipment_terms", metadata,
+    sa.Column("shipment_id", ID, sa.ForeignKey("stock_shipments.id"), primary_key=True),
+    sa.Column("expected_on", sa.Date, nullable=False))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -753,7 +783,8 @@ BEGIN THROW {ms_error}, '{n} are immutable', 1; END""").execute_if(dialect="mssq
 for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_calc_revisions, 50005),
                  (project_calc_revision_items, 50006), (stock_movements, 50007), (procurement_need_lines, 50008),
                  (procurement_need_line_matches, 50009), (config_versions, 50010),
-                 (procurement_need_line_match_units, 50011), (stock_transfers, 50012)):
+                 (procurement_need_line_match_units, 50011), (stock_transfers, 50012),
+                 (stock_transfer_acts, 50013), (stock_shipment_terms, 50014)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):
