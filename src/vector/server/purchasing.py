@@ -739,6 +739,14 @@ class PurchasingMixin:
                  "supplier_code": sup["code"], "lines": len(lines), "vat_mode": terms["vat_mode"],
                  "invoice_state": inv["state"], "invoice_reason": reason if control["needs_reason"] else None,
                  **{k: v for k, v in pu.vat_totals(lines, terms["vat_mode"]).items() if k in ("net", "vat", "gross")}})
+        # Уведомить согласующих и руководителей отдела (A-37/A-40 → D-35). Денег в тексте нет.
+        body = f"Поставщик: {sup['name']}. Позиций: {len(lines)}. Отправил(а): {self._actor_label(ctx, auth)}."
+        if control["needs_reason"]:
+            body += f" Расхождение со счётом поставщика, причина: {reason}."
+        if comment:
+            body += f" Комментарий: {comment}"
+        self._notify(ctx, self._approvers_and_heads(ctx), "po_submitted",
+                     f"Заказ № {o['order_no']} ждёт согласования", body, "purchase_order", o["id"])
         return {"purchase_order": self._order_view(ctx, o["id"])}
 
     def _po_withdraw(self, ctx, p, ev):
@@ -755,6 +763,10 @@ class PurchasingMixin:
         n = self._update_versioned(ctx, purchase_orders, o, {"updated_by": ctx.user_id, "updated_at": ctx.now})
         ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
                 {"order_no": o["order_no"], "approval": "withdraw", "from": state, "reason": reason})
+        self._notify(ctx, self._approvers_and_heads(ctx), "po_withdrawn",
+                     f"Заказ № {o['order_no']} отозван с согласования",
+                     f"Отозвал(а): {self._actor_label(ctx, auth)}." + (f" Причина: {reason}" if reason else ""),
+                     "purchase_order", o["id"])
         return {"purchase_order": self._order_view(ctx, o["id"])}
 
     def _decision_checks(self, ctx, o: dict, events: list[dict]) -> dict:
@@ -769,6 +781,18 @@ class PurchasingMixin:
                            "согласование: решение принимает другой сотрудник — согласующий закупки, его замещающий "
                            "или руководитель отдела.")
         return sub
+
+    def _approvers_and_heads(self, ctx) -> list[str]:
+        """Кому сообщать о заказе на согласовании (D-35): все, у кого сейчас есть роль «Согласование закупок» или
+        «Руководитель отдела» (своя или по замещению). Автор действия отсеивается в _notify.
+        """
+        return (self._users_with_role(ctx.conn, "po_approver", ctx.now)
+                + self._users_with_role(ctx.conn, "dept_head", ctx.now))
+
+    def _notify_decision(self, ctx, o: dict, sub: dict, kind: str, title: str, body: str) -> None:
+        """Уведомить о решении по заказу (согласован / возвращён): создателя, отправившего и руководителей отдела."""
+        self._notify(ctx, [o["created_by"], sub["actor_id"]] + self._users_with_role(ctx.conn, "dept_head", ctx.now),
+                     kind, title, body, "purchase_order", o["id"])
 
     def _po_approve(self, ctx, p, ev):
         """po.approve {id, comment?} + версия — согласовать заказ (роль «Согласование закупок», онлайн).
@@ -789,6 +813,10 @@ class PurchasingMixin:
         ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
                 {"order_no": o["order_no"], "approval": "approve", "content_hash": h, "comment": comment,
                  "submitted_by": sub["actor_id"], "on_behalf_of": auth.on_behalf_of})
+        self._notify_decision(ctx, o, sub, "po_approved", f"Заказ № {o['order_no']} согласован",
+                              f"Согласовал(а): {self._actor_label(ctx, auth)}."
+                              + (f" Комментарий: {comment.rstrip('.')}." if comment else "")
+                              + " Можно размещать у поставщика.")
         return {"purchase_order": self._order_view(ctx, o["id"])}
 
     def _po_return(self, ctx, p, ev):
@@ -799,10 +827,13 @@ class PurchasingMixin:
         o, auth, events = self._draft_for_approval(ctx, p, ev, "po.return")
         self._decision_checks(ctx, o, events)
         reason = req_str(p, "reason", 2000)
+        sub = events[-1]      # событие «отправлено»: его автор получит уведомление о возврате
         self._add_approval(ctx, o, "return", None, reason, auth)
         n = self._update_versioned(ctx, purchase_orders, o, {"updated_by": ctx.user_id, "updated_at": ctx.now})
         ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
                 {"order_no": o["order_no"], "approval": "return", "reason": reason})
+        self._notify_decision(ctx, o, sub, "po_returned", f"Заказ № {o['order_no']} возвращён на доработку",
+                              f"Вернул(а): {self._actor_label(ctx, auth)}. Причина: {reason}")
         return {"purchase_order": self._order_view(ctx, o["id"])}
 
     # ------------------------------------------------------------ размещение, отмена, закрытие

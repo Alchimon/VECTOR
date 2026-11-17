@@ -31,6 +31,7 @@ from .authz import Authority, Policy, grant_is_active
 from .calc import CalcMixin
 from .config_store import ConfigMixin
 from .delegation import DelegationMixin
+from .notify import NotificationMixin
 from .purchasing import PurchasingMixin
 from .stock import StockMixin
 from .work import WorkMixin
@@ -83,10 +84,11 @@ class Ctx:
                                version_before=before, version_after=after, details=details or {}))
 
 
-class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin):
+class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin, NotificationMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
     склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py);
-    замещение и основания решений — DelegationMixin (delegation.py, D-34).
+    замещение и основания решений — DelegationMixin (delegation.py, D-34/D-35); уведомления — NotificationMixin
+    (notify.py, D-35).
 
     Как устроен обработчик команды (все _xxx_yyy(ctx, p, ev) следуют одной схеме — так их легко проверять):
 
@@ -164,6 +166,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "po.return": self._po_return,
             # Замещение — передача роли на время (delegation.py, D-34).
             "delegation.create": self._delegation_create, "delegation.revoke": self._delegation_revoke,
+            # Уведомления в программе (notify.py, D-35).
+            "notification.read": self._notification_read,
         }
         diff = set(self.contracts.catalog["commands"]) ^ set(self.handlers)
         if diff:
@@ -1114,8 +1118,11 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         out.update(self._pull_purchasing(conn, uid, now))
         # Настройки компании — всем (правила работы, по ним клиент показывает подсказки).
         out["config"] = self._pull_config(conn)
-        # Замещения (свои; все — руководителю отдела и администратору) и покрытие ролей (D-34).
-        out.update(self._pull_delegations(conn, uid, now))
+        # Замещения (свои; все — руководителю отдела и администратору), покрытие ролей (D-34) и замещающие в
+        # читаемых проектах (D-35).
+        out.update(self._pull_delegations(conn, uid, now, readable))
+        # Свои уведомления и число непрочитанных (D-35).
+        out.update(self._pull_notifications(conn, uid, now))
         me_roles = self._me_roles(conn, uid, now)
         # Справочник людей нужен и для выбора замещающего — поэтому он приходит всем, у кого есть хоть одна роль.
         if (out["tenders"] or out["projects"] or out["calc_revisions"] or out["warehouses"] or out["needs"]

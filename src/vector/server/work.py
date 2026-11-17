@@ -26,7 +26,7 @@ import sqlalchemy as sa
 
 from vector.core.errors import Denied, Rejected
 
-from .authz import active_project_roles
+from .authz import Authority, active_delegated_project, project_member
 from .db import FILE_CHUNK, document_versions, documents, file_blobs, file_chunks, file_uploads, kits, projects, tasks
 from .validation import iso, only_keys, opt_date, opt_str, req_str, req_uuid
 
@@ -49,7 +49,7 @@ def _check_sha256(v: object) -> str:
 
 
 def _check_file_name(p: dict) -> str:
-    """Имя файла версии документа: до 255 символов, без символов, запрещённых в Windows (\ / : * ? " < > |),
+    """Имя файла версии документа: до 255 символов, без символов, запрещённых в Windows (\\ / : * ? " < > |),
     управляющих символов, «.»/«..» и точки/пробела в конце. Так файл безопасно сохраняется на любом ПК при
     скачивании.
     """
@@ -101,7 +101,8 @@ class WorkMixin:
             raise Rejected("project_state", "Изменения возможны только в проекте в статусе «Разработка РКД».")
 
     def _assignee(self, ctx, project_id: str, value: Any) -> Optional[str]:
-        """Исполнитель: None — «не назначен»; иначе пользователь с ДЕЙСТВУЮЩИМ назначением в проекте.
+        """Исполнитель: None — «не назначен»; иначе пользователь с ДЕЙСТВУЮЩИМ назначением в проекте или
+        замещающий участника этого проекта (D-35: задачи отсутствующего можно передать его замещающему).
 
         Проверяется на сервере в момент эффекта: если назначение отозвали, пока правка лежала в офлайн-очереди,
         команда будет отклонена, а не «проскочит» со старыми данными.
@@ -109,8 +110,9 @@ class WorkMixin:
         if value is None:
             return None
         uid = req_uuid({"assignee_user_id": value}, "assignee_user_id")
-        if not active_project_roles(ctx.conn, uid, project_id, ctx.now):
-            raise Rejected("assignee_not_in_project", "Исполнителем может быть только участник команды этого проекта.",
+        if not project_member(ctx.conn, uid, project_id, ctx.now):
+            raise Rejected("assignee_not_in_project", "Исполнителем может быть только участник команды этого проекта "
+                           "или его замещающий.",
                            {"field": "assignee_user_id"})
         return uid
 
@@ -184,7 +186,9 @@ class WorkMixin:
         Два пути полномочий:
         1) ГИП/РП проекта (task.transition) — любые переходы из workflows.task.transitions;
         2) исполнитель задачи (task.transition_own) — только «свои» переходы own_transitions
-           (взять в работу, выполнить, вернуть в открытые). Отмена и повторное открытие — не его решение.
+           (взять в работу, выполнить, вернуть в открытые). Отмена и повторное открытие — не его решение;
+        3) замещающий исполнителя в этом проекте (D-35) — те же «свои» переходы за исполнителя; в журнале основание
+           «роль в проекте по замещению» (видно, за кого).
         """
         only_keys(p, {"id", "to", "reason"})
         o = self._require(ctx.conn, tasks, req_uuid(p, "id"), "Задача")
@@ -194,9 +198,18 @@ class WorkMixin:
             allowed = wf["transitions"].get(o["status"], [])
         except Denied:
             if o["assignee_user_id"] != ctx.user_id:
-                raise
-            # Исполнитель должен по-прежнему состоять в проекте (назначение могли отозвать).
-            auth = self.policy.check(ctx.conn, ctx.user_id, "task.transition_own", ctx.now, project_id=o["project_id"])
+                # Замещающий исполнителя (D-35): замещение именно в этом проекте и именно за исполнителя задачи.
+                sub = [d for d in active_delegated_project(ctx.conn, ctx.user_id, o["project_id"], ctx.now)
+                       if d[3] == o["assignee_user_id"]
+                       and d[1] in self.policy.roles_for("task.transition_own", "project_role")]
+                if not sub or o["assignee_user_id"] is None:
+                    raise
+                aid, role, did, holder = sub[0]
+                auth = Authority("delegated_project_role", role, aid, did, holder)
+            else:
+                # Исполнитель должен по-прежнему состоять в проекте (назначение могли отозвать).
+                auth = self.policy.check(ctx.conn, ctx.user_id, "task.transition_own", ctx.now,
+                                         project_id=o["project_id"])
             allowed = wf["own_transitions"].get(o["status"], [])
             to = p.get("to")
             if to not in allowed and to in wf["transitions"].get(o["status"], []):

@@ -129,6 +129,18 @@ def test_delegation_period_and_role_rules():
     assert dl.default_until(today) == date(2026, 11, 29)   # 14 дней включительно
 
 
+def test_project_role_rules_and_labels():
+    """D-35: роль в проекте — только из списка ролей проекта; подпись с областью."""
+    assert dl.check_project_role("gip", ["gip", "rp", "participant"]) == "gip"
+    for bad in ("dept_head", "admin", None):
+        with pytest.raises(Rejected) as e:
+            dl.check_project_role(bad, ["gip", "rp", "participant"])
+        assert e.value.code == "bad_project_role"
+    assert dl.scope_label("ГИП", "П-2026-014") == "ГИП в проекте П-2026-014"
+    assert dl.scope_label("Закупка", None) == "Закупка"
+    assert set(dl.PROJECT_ROLE_LABELS_RU) == {"gip", "rp", "participant"}
+
+
 @pytest.mark.parametrize("vf,vu,revoked,holder,expected", [
     ("2026-11-20", "2026-11-30", False, True, "planned"),
     ("2026-11-16", "2026-11-16", False, True, "active"),

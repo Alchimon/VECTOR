@@ -1,0 +1,163 @@
+"""Уведомления в программе (ответ владельца на A-40: «руководителю уведомление отправлять — да» → D-35).
+
+Уведомление — запись «кому, о чём, по какому объекту». Создаётся сервером в ТОЙ ЖЕ транзакции, что и событие
+(отказ команды откатывает и уведомление), поэтому уведомление никогда не сообщает о том, чего не было. Доставка — в
+программе: при обновлении (pull) клиент получает свои уведомления, в меню — число непрочитанных; кто был не в сети,
+увидит их при следующем входе. Почта и мессенджеры не используются (в компании нет утверждённого почтового сервера —
+открытый вопрос A-41).
+
+Кому что приходит (decision log D-35):
+
+* заказ отправлен на согласование — согласующим закупок и руководителям отдела (в т. ч. их замещающим);
+* заказ согласован / возвращён — создателю и отправившему заказ и руководителям отдела;
+* заказ отозван с согласования — согласующим закупок и руководителям отдела;
+* оформлено / отменено замещение — замещающему, носителю роли (если оформлял не он) и руководителям отдела.
+
+Тот, кто сам совершил действие, уведомление о нём не получает. В тексте уведомлений нет денег (суммы видит только
+тот, у кого есть право на цены, — в самом заказе).
+
+Команда notification.read {ids?, all?} — отметить свои уведомления прочитанными (только при связи; чужие —
+не трогаются). Удаления нет: старше NOTIFY_KEEP_DAYS дней уведомления просто не приходят в pull.
+"""
+from __future__ import annotations
+
+from datetime import timedelta
+from typing import Any, Iterable, Optional
+
+import sqlalchemy as sa
+
+from vector.core.errors import Rejected
+
+from .authz import active_delegated
+from .db import notifications, role_delegation_projects, role_delegations, role_grants, users
+from .validation import iso, only_keys
+
+# Сколько дней уведомление приходит в pull и сколько последних уведомлений отдаётся (больше — не нужно на экране).
+NOTIFY_KEEP_DAYS = 90
+PULL_LIMIT = 200
+
+# Виды уведомлений и их подписи для интерфейса (клиент группирует и выбирает значок по виду).
+KIND_LABELS_RU = {
+    "po_submitted": "Заказ на согласовании",
+    "po_approved": "Заказ согласован",
+    "po_returned": "Заказ возвращён",
+    "po_withdrawn": "Заказ отозван",
+    "delegation_created": "Замещение оформлено",
+    "delegation_revoked": "Замещение отменено",
+}
+
+
+class NotificationMixin:
+    """Создание уведомлений, их часть в pull и команда «отметить прочитанными»."""
+
+    # ------------------------------------------------------------ кому
+    def _users_with_role(self, conn, role: str, now) -> list[str]:
+        """Активные пользователи, у которых глобальная роль role действует сейчас: своя выдача или замещение (D-34).
+
+        Замещающий получает уведомления наравне с носителем — иначе на время отпуска руководитель «выпадал» бы из
+        курса дел, а замещающий о них не знал.
+        """
+        rg, us, rd = role_grants, users, role_delegations
+        out: list[str] = []
+        for r in conn.execute(sa.select(rg.c.user_id).join(us, us.c.id == rg.c.user_id)
+                              .where(rg.c.role == role, us.c.active == sa.true(), rg.c.revoked_at.is_(None),
+                                     rg.c.valid_from <= now, sa.or_(rg.c.valid_until.is_(None), rg.c.valid_until > now))
+                              .order_by(rg.c.user_id)):
+            if r.user_id not in out:
+                out.append(r.user_id)
+        # Кандидаты по замещению: проверяем тем же правилом, что и права (active_delegated) — без цепочек и только
+        # пока у носителя есть роль.
+        today = now.date()
+        scoped = sa.exists().where(role_delegation_projects.c.delegation_id == rd.c.id)
+        for r in conn.execute(sa.select(rd.c.to_user_id).join(us, us.c.id == rd.c.to_user_id)
+                              .where(rd.c.role == role, rd.c.revoked_at.is_(None), rd.c.valid_from <= today,
+                                     rd.c.valid_until >= today, us.c.active == sa.true(), ~scoped)
+                              .order_by(rd.c.to_user_id)):
+            if r.to_user_id not in out and any(x[1] == role for x in active_delegated(conn, r.to_user_id, now)):
+                out.append(r.to_user_id)
+        return out
+
+    def _user_name(self, conn, user_id: Optional[str]) -> str:
+        """Имя сотрудника для текста уведомления («—», если не найден)."""
+        if not user_id:
+            return "—"
+        r = conn.execute(sa.select(users.c.display_name).where(users.c.id == user_id)).first()
+        return r.display_name if r else "—"
+
+    # ------------------------------------------------------------ создание
+    def _notify(self, ctx, user_ids: Iterable[Optional[str]], kind: str, title: str, body: Optional[str] = None,
+                object_type: Optional[str] = None, object_id: Optional[str] = None) -> int:
+        """Создать уведомление каждому из user_ids (без повторов, кроме автора действия и отключённых учёток).
+
+        Вызывается из обработчика команды — запись идёт в транзакции команды. Возвращает число созданных записей.
+        """
+        if kind not in KIND_LABELS_RU:
+            raise ValueError(f"неизвестный вид уведомления {kind}")
+        seen: set[str] = set()
+        n = 0
+        for uid in user_ids:
+            if not uid or uid == ctx.user_id or uid in seen:
+                continue
+            seen.add(uid)
+            u = self._get(ctx.conn, users, uid)
+            if not u or not u["active"]:
+                continue
+            ctx.conn.execute(notifications.insert().values(
+                user_id=uid, kind=kind, title=title[:200], body=(body or None) and body[:1000],
+                object_type=object_type, object_id=str(object_id) if object_id is not None else None,
+                actor_id=ctx.user_id, created_at=ctx.now, read_at=None))
+            n += 1
+        return n
+
+    def _actor_label(self, ctx, auth) -> str:
+        """«Зайцева Вера» или «Никитина Ольга (замещает Зайцеву Веру)» — кто совершил действие и за кого."""
+        name = self._user_name(ctx.conn, ctx.user_id)
+        holder = getattr(auth, "on_behalf_of", None)
+        return f"{name} (замещает: {self._user_name(ctx.conn, holder)})" if holder else name
+
+    # ------------------------------------------------------------ команда
+    def _notification_read(self, ctx, p, ev):
+        """notification.read {ids?, all?} — отметить свои уведомления прочитанными (только при связи).
+
+        ids — список id уведомлений (чужие и несуществующие молча пропускаются: они не ваши); all=true — все свои
+        непрочитанные. Нужно одно из двух. Возвращает, сколько отмечено и сколько непрочитанных осталось.
+        """
+        only_keys(p, {"ids", "all"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "notification.read", ctx.now)
+        ids, all_ = p.get("ids"), p.get("all")
+        if all_ not in (None, True, False):
+            raise Rejected("invalid_type", "all — true или false.", {"field": "all"})
+        if not all_:
+            if (not isinstance(ids, list) or not ids or len(ids) > 500
+                    or any(isinstance(i, bool) or not isinstance(i, int) for i in ids)):
+                raise Rejected("field_required", "Укажите id уведомлений (список чисел, не больше 500) или all=true.",
+                               {"field": "ids"})
+        nt = notifications
+        cond = sa.and_(nt.c.user_id == ctx.user_id, nt.c.read_at.is_(None))
+        if not all_:
+            cond = sa.and_(cond, nt.c.id.in_(ids))
+        n = ctx.conn.execute(nt.update().where(cond).values(read_at=ctx.now)).rowcount or 0
+        unread = self._unread_count(ctx.conn, ctx.user_id, ctx.now)
+        ctx.log("notification", ctx.user_id, auth, None, None, {"read": n, "all": bool(all_)})
+        return {"read": n, "unread": unread}
+
+    # ------------------------------------------------------------ pull
+    def _unread_count(self, conn, uid: str, now) -> int:
+        """Сколько непрочитанных уведомлений за срок хранения в pull."""
+        nt = notifications
+        return conn.execute(sa.select(sa.func.count()).select_from(nt).where(
+            nt.c.user_id == uid, nt.c.read_at.is_(None),
+            nt.c.created_at >= now - timedelta(days=NOTIFY_KEEP_DAYS))).scalar_one()
+
+    def _pull_notifications(self, conn, uid: str, now) -> dict[str, Any]:
+        """Часть pull: свои уведомления за NOTIFY_KEEP_DAYS дней (новые сверху, не больше PULL_LIMIT) и число
+        непрочитанных. Только свои — чужие уведомления не видит никто, включая администратора.
+        """
+        nt = notifications
+        rows = conn.execute(sa.select(nt).where(nt.c.user_id == uid,
+                                                nt.c.created_at >= now - timedelta(days=NOTIFY_KEEP_DAYS))
+                            .order_by(nt.c.created_at.desc(), nt.c.id.desc()).limit(PULL_LIMIT))
+        items = [{"id": r.id, "kind": r.kind, "kind_label": KIND_LABELS_RU.get(r.kind, r.kind), "title": r.title,
+                  "body": r.body, "object_type": r.object_type, "object_id": r.object_id, "actor_id": r.actor_id,
+                  "created_at": iso(r.created_at), "read_at": iso(r.read_at)} for r in rows]
+        return {"notifications": items, "notifications_unread": self._unread_count(conn, uid, now)}

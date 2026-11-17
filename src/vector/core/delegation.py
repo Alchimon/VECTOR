@@ -17,6 +17,11 @@
   «приостановлено»); снова выдали роль носителю в пределах срока — замещение снова действует;
 * отменить может носитель, замещающий (отказаться), тот, кто оформил, руководитель отдела и администратор.
 
+Замещение роли В ПРОЕКТЕ (A-40 «да» → D-35): ГИП, РП или участник конкретного проекта передаёт свою роль в этом
+проекте на время — по тем же правилам (срок, причина, без цепочек, сам носитель или руководитель отдела /
+администратор за него). Действует только в этом проекте и только пока у носителя есть действующее назначение с
+этой ролью в нём. ГИП в проекте по-прежнему один по назначению: замещающий ГИП — не второй ГИП, а «за него».
+
 Модуль чистый (без БД и Qt). Даты — календарные (date), «сегодня» — дата сервера (как у договоров поставщиков).
 """
 from __future__ import annotations
@@ -29,6 +34,8 @@ from .errors import Rejected
 MAX_DAYS = 366
 # Роли, которые нельзя передать замещением (A-09: роль администратора выдаёт только администратор).
 NON_DELEGABLE = frozenset({"admin"})
+# Роли в проекте (contracts/permissions: project_roles) и их подписи для сообщений и интерфейса (D-35).
+PROJECT_ROLE_LABELS_RU = {"gip": "ГИП", "rp": "РП", "participant": "Участник"}
 
 STATE_LABELS_RU = {"planned": "Запланировано", "active": "Действует", "ended": "Завершено", "revoked": "Отменено",
                    "suspended": "Приостановлено: у носителя нет этой роли"}
@@ -71,6 +78,18 @@ def check_role(role: Any, known_roles: list[str]) -> str:
         raise Rejected("role_not_delegable", "Роль «Администратор» замещением не передаётся — её выдаёт только "
                        "администратор.", {"field": "role"})
     return role
+
+
+def check_project_role(role: Any, known_project_roles: list[str]) -> str:
+    """Роль в проекте для передачи (D-35): одна из ролей проекта (gip / rp / participant)."""
+    if role not in known_project_roles:
+        raise Rejected("bad_project_role", "Роль в проекте: ГИП, РП или участник.", {"field": "role"})
+    return role
+
+
+def scope_label(role_label: str, project_code: Optional[str]) -> str:
+    """Подпись передаваемой роли с областью: «ГИП в проекте П-2026-014» или просто «Закупка» (глобальная роль)."""
+    return f"{role_label} в проекте {project_code}" if project_code else role_label
 
 
 def state(valid_from: date, valid_until: date, revoked: bool, holder_has_role: bool, today: date) -> str:
