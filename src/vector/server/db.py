@@ -29,8 +29,9 @@ from vector.core import money
 #   v6 — ручное сопоставление строк потребности с номенклатурой (неизменяемая история, A-25);
 #   v7 — настройки компании (версии, D-26), справочник аналогов и пересчёта единиц, коэффициент в решении о
 #        сопоставлении (D-25, A-27);
-#   v8 — перемещения между складами: связка двух движений журнала (A-28).
-SCHEMA_VERSION = 8
+#   v8 — перемещения между складами: связка двух движений журнала (A-28);
+#   v9 — перемещение со статусом «в пути»: отгрузка → приёмка получателем или возврат отправителю (D-29, A-29).
+SCHEMA_VERSION = 9
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -626,6 +627,47 @@ stock_transfers = sa.Table("stock_transfers", metadata,
     sa.CheckConstraint("from_warehouse_id <> to_warehouse_id", name="warehouses_differ"),
     sa.CheckConstraint("out_movement_id <> in_movement_id", name="legs_differ"),
     sa.CheckConstraint("qty > 0", name="qty_pos"))
+
+# Перемещение со статусом «в пути» (D-29, A-29, схема v9). Решение владельца: между отгрузкой и приёмкой товар
+# числится «в пути» — его уже нет на складе-отправителе и ещё нет на складе-получателе.
+#
+#   stock.transfer          ─▶ in_transit  (расход на отправителе: out_movement_id)
+#   stock.transfer_accept   ─▶ received    (приход на получателе: close_movement_id)
+#   stock.transfer_cancel   ─▶ returned    (приход обратно на отправителе: close_movement_id)
+#
+# В отличие от stock_transfers (v8, одношаговые перемещения — остаются только как история), запись меняет статус,
+# поэтому она НЕ неизменяема: смена статуса идёт по version (две приёмки/приёмка и возврат одновременно — пройдёт
+# одна), а сами движения журнала по-прежнему неизменяемы, и каждая смена статуса записана в журнал аудита.
+# Количество «в пути» = сумма qty перемещений в статусе in_transit; на остатки складов оно не влияет.
+stock_shipments = sa.Table("stock_shipments", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id"), nullable=False),
+    sa.Column("from_warehouse_id", ID, sa.ForeignKey("warehouses.id"), nullable=False),
+    sa.Column("to_warehouse_id", ID, sa.ForeignKey("warehouses.id"), nullable=False),
+    sa.Column("qty", Qty, nullable=False),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("out_movement_id", ID, sa.ForeignKey("stock_movements.id"), nullable=False, unique=True),
+    sa.Column("close_movement_id", ID, sa.ForeignKey("stock_movements.id")),   # приход при приёмке или возврате
+    sa.Column("source_doc", U(200)),                 # накладная на перемещение — если оформляется
+    sa.Column("reason", U(2000), nullable=False),    # зачем перемещаем
+    sa.Column("close_reason", U(2000)),              # комментарий приёмки / причина возврата
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("closed_by", ID), sa.Column("closed_at", UtcDateTime),
+    sa.CheckConstraint("status IN ('in_transit','received','returned')", name="status"),
+    sa.CheckConstraint("from_warehouse_id <> to_warehouse_id", name="warehouses_differ"),
+    sa.CheckConstraint("qty > 0", name="qty_pos"),
+    # «В пути» — без закрывающего движения; принято/возвращено — с ним, временем и автором закрытия.
+    sa.CheckConstraint("(status = 'in_transit' AND close_movement_id IS NULL AND closed_at IS NULL) OR "
+                       "(status <> 'in_transit' AND close_movement_id IS NOT NULL AND closed_at IS NOT NULL "
+                       "AND closed_by IS NOT NULL)", name="close_consistent"))
+sa.Index("ix_stock_shipments_status", stock_shipments.c.status)
+# Закрывающее движение — у одного перемещения. Частичный уникальный индекс: MS SQL в обычном UNIQUE допускает только
+# один NULL, а «в пути» таких строк много.
+sa.Index("ux_stock_shipments_close", stock_shipments.c.close_movement_id, unique=True,
+         postgresql_where=stock_shipments.c.close_movement_id.isnot(None),
+         mssql_where=stock_shipments.c.close_movement_id.isnot(None),
+         sqlite_where=stock_shipments.c.close_movement_id.isnot(None))
 
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),

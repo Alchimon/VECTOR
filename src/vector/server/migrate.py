@@ -9,7 +9,7 @@
    (DDL транзакционен на PostgreSQL, MS SQL и SQLite). Сбой посередине — БД остаётся в прежней версии.
 3. **Только добавление.** Шаги не удаляют и не переписывают существующие данные; переходы v3 → v4
    (таблицы расчётов), v4 → v5 (склад и закупка) v5 → v6 (ручное сопоставление потребности), v6 → v7 (настройки, справочник пересчёта) и v7 → v8 (перемещения
-   между складами) только создают новые таблицы. Шаги, меняющие данные, потребуют отдельного решения (Decision Log).
+   между складами) и v8 → v9 (перемещение «в пути») только создают новые таблицы. Шаги, меняющие данные, потребуют отдельного решения (Decision Log).
 4. **Fail-closed.** Неизвестная/более новая версия, незавершённое восстановление, уже существующая таблица,
    которую шаг должен создать, — отказ без изменений.
 
@@ -49,6 +49,8 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     7: [db.config_versions, db.item_aliases, db.unit_conversions, db.procurement_need_line_match_units],
     # Перемещение между складами (A-28): связка двух движений журнала.
     8: [db.stock_transfers],
+    # Перемещение со статусом «в пути» (D-29).
+    9: [db.stock_shipments],
 }
 
 
@@ -80,7 +82,7 @@ def _create_tables(tables: list[sa.Table]) -> Callable:
 # Шаг «из версии N в N+1».
 STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(ADDED_IN[5]),
                               5: _create_tables(ADDED_IN[6]), 6: _create_tables(ADDED_IN[7]),
-                              7: _create_tables(ADDED_IN[8])}
+                              7: _create_tables(ADDED_IN[8]), 8: _create_tables(ADDED_IN[9])}
 
 
 @dataclass
