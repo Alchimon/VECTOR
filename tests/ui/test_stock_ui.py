@@ -295,13 +295,19 @@ def test_admin_publishes_company_setting(ui):
     assert item["reason"] == "Решение совещания склада и закупки"
 
 
-def test_transfer_through_form_moves_between_warehouses_without_storno(ui):
+def test_transfer_ships_in_transit_then_accept_and_return_through_forms(ui):
+    """D-29 через формы: отгрузка списывает у отправителя и создаёт «в пути»; «Принять» приходует у получателя,
+    «Вернуть» (только с причиной) — обратно у отправителя; без связи кнопки неактивны."""
     ui.login("i.belova")
     page = _stock_page(ui)
     nshvi = _item(ui, "НШВИ-1.5")
+    # Демо: 200 шт НШВИ уже отгружены на СК-2 и приняты там; 100 шт ХМТ-200 «в пути» СК-2 → СК-1.
     assert [(b["warehouse_code"], b["available_label"]) for b in nshvi["by_warehouse"]] == [("СК-1", "800 шт"), ("СК-2", "200 шт")]
-    demo_legs = [m for m in _v(page, "ov")["movements"] if m["is_transfer"]]
+    demo_legs = [m for m in _v(page, "ov")["movements"] if m["is_transfer"] and m["item_code"] == "НШВИ-1.5"]
     assert {m["transfer_label"] for m in demo_legs} == {"СК-1 → СК-2"} and len(demo_legs) == 2
+    hmt = _item(ui, "ХМТ-200")
+    assert hmt["in_transit_label"] == "100 шт" and hmt["transfers"][0]["route_label"] == "СК-2 → СК-1"
+
     dlg = _popup(ui, "transferForm")
     _call(dlg, "openFor", nshvi)
     ui.wait_idle()
@@ -318,12 +324,39 @@ def test_transfer_through_form_moves_between_warehouses_without_storno(ui):
     ui.wait_idle()
     assert not dlg.property("visible") and dlg.property("error") == ""
     nshvi = _item(ui, "НШВИ-1.5")
-    assert [b["available_label"] for b in nshvi["by_warehouse"]] == ["750 шт", "250 шт"]
+    # Отгружено: у отправителя −50, у получателя пока ничего — 50 шт «в пути».
+    assert [b["available_label"] for b in nshvi["by_warehouse"]] == ["750 шт", "200 шт"]
+    assert nshvi["in_transit_label"] == "50 шт" and len(nshvi["transfers"]) == 1
+    assert _v(page, "ov")["movements"][0]["kind_label"] == "Расход по перемещению"
+
+    acc = _popup(ui, "acceptForm")
+    _call(acc, "openFor", nshvi["transfers"][0])
+    ui.wait_idle()
+    assert acc.property("canConfirm") is True                    # комментарий необязателен
+    QMetaObject.invokeMethod(acc, "confirmed")
+    ui.wait_idle()
+    assert not acc.property("visible") and acc.property("error") == ""
+    nshvi = _item(ui, "НШВИ-1.5")
+    assert [b["available_label"] for b in nshvi["by_warehouse"]] == ["750 шт", "250 шт"] and nshvi["transfers"] == []
     assert nshvi["available_label"] == "1 000 шт"                 # общий запас не изменился
-    mv = _v(page, "ov")["movements"]
-    assert (mv[0]["kind_label"], mv[1]["kind_label"]) == ("Приход по перемещению", "Расход по перемещению")
-    # Без связи перемещать нельзя (online_required).
+    assert _v(page, "ov")["movements"][0]["kind_label"] == "Приход по перемещению"
+
+    ret = _popup(ui, "returnForm")
+    _call(ret, "openFor", _item(ui, "ХМТ-200")["transfers"][0])
+    ui.wait_idle()
+    assert ret.property("canConfirm") is False                   # без причины — нельзя
+    _popup(ui, "rtReason").setProperty("text", "Отгружено не туда")
+    ui.wait_idle()
+    QMetaObject.invokeMethod(ret, "confirmed")
+    ui.wait_idle()
+    assert not ret.property("visible") and ret.property("error") == ""
+    hmt = _item(ui, "ХМТ-200")
+    assert hmt["transfers"] == [] and _v(page, "ov")["movements"][0]["kind_label"] == "Возврат по перемещению"
+    assert {t["status"] for t in _v(page, "ov")["transfers"]} == {"received", "returned"}
+
+    # Без связи перемещать, принимать и возвращать нельзя (online_required).
     ui.transport.online = False
     ui.backend.syncNow()
     ui.wait_idle()
     assert _v(page, "ov")["can_transfer"] is False and ui.find("btnTransfer").property("enabled") is False
+    assert not any(t["can_act"] for t in _v(page, "ov")["transfers"])

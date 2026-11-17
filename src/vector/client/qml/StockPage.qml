@@ -50,6 +50,7 @@ Item {
             onPicked: id => page.tab = id
             model: [{ id: "balances", label: "Остатки", icon: "boxes" },
                     { id: "reservations", label: "Резервы (" + (ov.summary ? ov.summary.active_reservations : 0) + ")", icon: "bookmark" },
+                    { id: "transit", label: "В пути (" + (ov.summary ? ov.summary.in_transit : 0) + ")", icon: "truck" },
                     { id: "journal", label: "Журнал движений", icon: "history" },
                     { id: "refs", label: "Справочники", icon: "settings" },
                     { id: "directory", label: "Аналоги и пересчёт", icon: "arrow-left-right" }]
@@ -121,7 +122,9 @@ Item {
                                 Repeater {
                                     model: page.sel ? [{ k: "Остаток", v: page.sel.on_hand_label, tone: "neutral" },
                                                        { k: "В резерве", v: page.sel.reserved_label, tone: "info" },
-                                                       { k: "Доступно", v: page.sel.available_label, tone: page.sel.state === "free" || page.sel.state === "partly_reserved" ? "success" : "warning" }] : []
+                                                       { k: "Доступно", v: page.sel.available_label, tone: page.sel.state === "free" || page.sel.state === "partly_reserved" ? "success" : "warning" }]
+                                                       // «В пути» (D-29) — четвёртая плашка, только когда что-то отгружено и ещё не принято.
+                                                       .concat(Number(page.sel.in_transit) > 0 ? [{ k: "В пути", v: page.sel.in_transit_label, tone: "warning" }] : []) : []
                                     delegate: Rectangle {
                                         required property var modelData
                                         Layout.fillWidth: true; implicitHeight: 74; radius: Theme.radius
@@ -139,7 +142,7 @@ Item {
                                 spacing: 8
                                 VButton { objectName: "btnReceive"; text: "Приход"; kind: "primary"; iconName: "package-plus"; enabled: page.canPost && page.sel !== null && page.sel.active === true; onClicked: receiveForm.openFor(page.sel) }
                                 VButton { objectName: "btnIssue"; text: "Выдать на проект"; iconName: "package-minus"; enabled: page.canPost && page.sel !== null; onClicked: issueForm.openFor(page.sel) }
-                                VButton { objectName: "btnTransfer"; text: "Переместить"; iconName: "arrow-left-right"; enabled: page.canPost && page.sel !== null && ov.can_transfer === true; onClicked: transferForm.openFor(page.sel) }
+                                VButton { objectName: "btnTransfer"; text: "Отгрузить на склад"; iconName: "arrow-left-right"; enabled: page.canPost && page.sel !== null && ov.can_transfer === true; onClicked: transferForm.openFor(page.sel) }
                                 VButton { objectName: "btnReserve"; text: "Зарезервировать"; kind: "soft"; iconName: "bookmark"; enabled: page.canPost && page.sel !== null && page.sel.active === true; onClicked: reserveForm.openFor(page.sel, "", "", "") }
                                 Text { visible: !page.canPost; text: "Только при связи с сервером"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs }
                             }
@@ -168,6 +171,14 @@ Item {
                             }
                             Text { visible: page.sel !== null && page.sel.reservations.length === 0; text: "Резервов нет."; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
 
+                            // Перемещения этой позиции «в пути» (D-29) — принять или вернуть можно прямо с карточки.
+                            SectionTitle { visible: page.sel !== null && page.sel.transfers.length > 0; text: "В пути"; iconName: "truck" }
+                            Repeater {
+                                model: page.sel ? page.sel.transfers : []
+                                delegate: TransferRow { Layout.fillWidth: true; t: modelData; showItem: false
+                                    onAcceptRequested: acceptForm.openFor(modelData); onReturnRequested: returnForm.openFor(modelData) }
+                            }
+
                             SectionTitle { text: "Последние движения"; iconName: "history" }
                             Repeater {
                                 model: page.sel ? page.sel.movements : []
@@ -195,6 +206,26 @@ Item {
                     onIssueRequested: issueResForm.openFor(modelData); onReleaseRequested: releaseForm.openFor(modelData) }
             }
             EmptyState { anchors.centerIn: parent; visible: resList.count === 0; iconName: "bookmark"; title: "Резервов нет"; text: "Резерв закрепляет количество за проектом: оно перестаёт быть доступным для других выдач." }
+        }
+
+        // ================================================================ В пути (D-29)
+        // Все перемещения «в пути» (сначала) и недавно закрытые — из pull. Склад-получатель принимает, при отказе
+        // принять — склад возвращает отправителю. Без связи список только для чтения.
+        VCard {
+            visible: page.tab === "transit"
+            Layout.fillWidth: true; Layout.fillHeight: true
+            ListView {
+                id: trList
+                objectName: "transitList"
+                anchors.fill: parent; anchors.margins: 14
+                clip: true; spacing: 6
+                model: page.tab === "transit" ? (ov.transfers || []) : []
+                ScrollBar.vertical: ScrollBar {}
+                delegate: TransferRow { width: ListView.view.width; t: modelData
+                    onAcceptRequested: acceptForm.openFor(modelData); onReturnRequested: returnForm.openFor(modelData) }
+            }
+            EmptyState { anchors.centerIn: parent; visible: trList.count === 0; iconName: "truck"; title: "Перемещений нет"
+                         text: "Отгрузка на другой склад создаёт перемещение «в пути»: количество списывается у отправителя и появляется у получателя только после приёмки." }
         }
 
         // ================================================================ Журнал
@@ -397,16 +428,16 @@ Item {
     }
     Cmd { id: cIssue; dialog: issueForm }
 
-    // Перемещение между складами (A-28): откуда — только склады, где позиция доступна; куда — любой другой действующий.
+    // Перемещение между складами (A-28, D-29 — отгрузка; приёмка и возврат — формы ниже): откуда — только склады, где позиция доступна; куда — любой другой действующий.
     FormDialog {
         id: transferForm
         objectName: "transferForm"
         property var item: null
         readonly property var fromOptions: item ? item.by_warehouse.filter(b => Number(b.available) > 0).map(b => ({ id: b.warehouse_id, label: b.warehouse_code + " — " + b.available_label })) : []
         readonly property var toOptions: page.whOptions.filter(w => w.id !== tFrom.currentValue)
-        title: "Перемещение: " + (item ? item.code : "")
-        subtitle: "Количество уйдёт со склада-отправителя и придёт на склад-получатель одной операцией. Перемещается только доступное: резервы остаются на своём складе."
-        confirmText: "Переместить"
+        title: "Отгрузка на другой склад: " + (item ? item.code : "")
+        subtitle: "Количество спишется со склада-отправителя сразу и будет «в пути», пока склад-получатель его не примет (или не вернёт). Отгружается только доступное: резервы остаются на своём складе."
+        confirmText: "Отгрузить"
         canConfirm: tQty.text.trim() !== "" && tQty.error === "" && tReason.text.trim() !== "" && tFrom.currentValue !== "" && tTo.currentValue !== ""
         function openFor(it) { item = it; tQty.text = ""; tReason.text = ""; tDoc.text = ""; tFrom.currentIndex = 0; tTo.currentIndex = 0; open() }
         onConfirmed: cTransfer.run("stock.transfer", { id: backend.newId(), item_id: item.id, from_warehouse_id: tFrom.currentValue, to_warehouse_id: tTo.currentValue,
@@ -421,6 +452,37 @@ Item {
         VField { id: tDoc; objectName: "tDoc"; label: "Накладная на перемещение (если есть)"; placeholder: "№ 3 от 17.11.2026" }
     }
     Cmd { id: cTransfer; dialog: transferForm }
+
+    // Приёмка перемещения на складе-получателе (D-29): по версии перемещения — если его уже приняли или вернули с
+    // другого места, сервер вернёт конфликт/«уже закрыто», ничего не проведя. Комментарий необязателен.
+    // Частичной приёмки и недостачи нет (допущение A-29): расхождение — вернуть и отгрузить заново верное количество.
+    FormDialog {
+        id: acceptForm
+        objectName: "acceptForm"
+        property var tr: null
+        title: "Принять перемещение"
+        subtitle: tr ? tr.item_code + " · " + tr.qty_label + " · " + tr.route_label + ": количество придёт на склад " + tr.to_code + " и станет доступным." : ""
+        confirmText: "Принять"
+        function openFor(t) { tr = t; acComment.text = ""; open() }
+        onConfirmed: cAccept.run("stock.transfer_accept", { id: tr.id, comment: acComment.text.trim() }, tr.version)
+        VField { id: acComment; objectName: "acComment"; label: "Комментарий (если нужен)"; placeholder: "Принято без замечаний" }
+    }
+    Cmd { id: cAccept; dialog: acceptForm }
+
+    // Возврат перемещения отправителю (D-29): количество приходит обратно на склад-отправитель; причина обязательна.
+    FormDialog {
+        id: returnForm
+        objectName: "returnForm"
+        property var tr: null
+        title: "Вернуть перемещение отправителю"
+        subtitle: tr ? tr.item_code + " · " + tr.qty_label + " вернётся на склад " + tr.from_code + " и снова станет доступным там." : ""
+        confirmText: "Вернуть"; confirmKind: "danger"
+        canConfirm: rtReason.text.trim() !== ""
+        function openFor(t) { tr = t; rtReason.text = ""; open() }
+        onConfirmed: cReturn.run("stock.transfer_cancel", { id: tr.id, reason: rtReason.text.trim() }, tr.version)
+        VField { id: rtReason; objectName: "rtReason"; label: "Почему возвращаем"; required: true; placeholder: "Пересорт, отгружено не туда …" }
+    }
+    Cmd { id: cReturn; dialog: returnForm }
 
     FormDialog {
         id: issueResForm

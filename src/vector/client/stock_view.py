@@ -58,8 +58,12 @@ def _state(on_hand: Decimal, reserved: Decimal) -> tuple[str, str, str]:
 
 
 def overview(warehouses: list, items: list, balances: list, reservations: list, movements: list, projects: list,
-             people: dict, last_pull: str, online: bool, roles: list) -> dict:
-    """Экран «Склад»: позиции с остатками по складам, резервы, журнал, подсказки действий."""
+             people: dict, last_pull: str, online: bool, roles: list, transfers: Optional[list] = None) -> dict:
+    """Экран «Склад»: позиции с остатками по складам, резервы, перемещения «в пути», журнал, подсказки действий.
+
+    transfers — перемещения из pull (D-29): все «в пути» и недавние закрытые. Количество «в пути» не входит ни в
+    остаток, ни в доступное — оно показывается отдельно, чтобы отгруженное не выглядело «потерянным».
+    """
     wh = {w["id"]: w for w in warehouses}
     it = {i["id"]: i for i in items}
     pr = {p["id"]: p for p in projects}
@@ -83,7 +87,7 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
         sign = stock.MOVEMENT_SIGN.get(m["kind"], 0)
         own = wh.get(m["warehouse_id"], {}).get("code", "?")
         # Половина перемещения (A-28): подпись маршрута «СК-1 → СК-2» и запрет сторно (исправляют обратным перемещением).
-        tr_dir = m.get("transfer_direction")
+        tr_dir = m.get("transfer_direction")          # out — отгрузка, in — приёмка, return — возврат отправителю
         peer = wh.get(m.get("transfer_peer_warehouse_id") or "", {}).get("code", "?") if tr_dir else ""
         mv_rows.append({**m, "item_code": i.get("code", "?"), "item_name": i.get("name", ""),
                         "warehouse_code": own,
@@ -91,12 +95,37 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
                         "qty_label": ("+" if sign > 0 else "−") + qty_label(m["qty"], i.get("unit", "")),
                         "tone": "info" if tr_dir else ("success" if sign > 0 else "warning"),
                         "is_transfer": bool(tr_dir),
-                        "transfer_label": (f"{own} → {peer}" if tr_dir == "out" else f"{peer} → {own}") if tr_dir else "",
+                        # Маршрут всегда «откуда → куда» исходного перемещения: у приёмки «откуда» — второй склад,
+                        # у отгрузки и возврата — свой (возврат проведён на складе-отправителе).
+                        "transfer_label": (f"{peer} → {own}" if tr_dir == "in" else f"{own} → {peer}") if tr_dir else "",
                         "is_storno": bool(m.get("reverses_id")), "reversed": bool(m.get("reversed_by")),
                         # Номер отменённого движения (если оно есть в снимке) — «Сторно прихода № 3».
                         "reverses_doc_no": doc_of.get(m.get("reverses_id")) if m.get("reverses_id") else None,
                         "author": people.get(m.get("posted_by") or "", ""),
                         "posted_label": (m.get("posted_at") or "").replace("T", " ")[:16]})
+
+    # Перемещения (D-29): маршрут, статус, действия. Действовать можно только по своим «в пути» — склад, при связи;
+    # одношаговые перемещения прежней версии (legacy) — только история.
+    is_wh = "warehouse" in roles
+    tr_rows = []
+    for t in transfers or []:
+        i = it.get(t["item_id"], {})
+        unit = i.get("unit", "")
+        a_code = wh.get(t["from_warehouse_id"], {}).get("code", "?")
+        b_code = wh.get(t["to_warehouse_id"], {}).get("code", "?")
+        tr_rows.append({**t, "item_code": i.get("code", "?"), "item_name": i.get("name", ""),
+                        "from_code": a_code, "to_code": b_code, "route_label": f"{a_code} → {b_code}",
+                        "qty_label": qty_label(t["qty"], unit),
+                        "status_tone": {"in_transit": "warning", "received": "success", "returned": "neutral"}.get(t["status"], "neutral"),
+                        "author": people.get(t.get("created_by") or "", ""),
+                        "closer": people.get(t.get("closed_by") or "", ""),
+                        "created_label": (t.get("created_at") or "").replace("T", " ")[:16],
+                        "closed_label": (t.get("closed_at") or "").replace("T", " ")[:16],
+                        "can_act": is_wh and online and t["status"] == "in_transit" and not t.get("legacy")})
+    transit_by_item: dict[str, Decimal] = {}
+    for t in tr_rows:
+        if t["status"] == "in_transit":
+            transit_by_item[t["item_id"]] = transit_by_item.get(t["item_id"], ZERO) + _d(t["qty"])
 
     by_item: dict[str, list] = {}
     for b in balances:
@@ -119,8 +148,11 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
                                        "available_label": qty_label(b["available"], unit), "available": b["available"]}
                                       for b in sorted(bs, key=lambda b: wh.get(b["warehouse_id"], {}).get("code", ""))],
                      "reservations": [r for r in res_rows if r["item_id"] == i["id"] and r["status"] == "active"],
+                     # «В пути» — отдельно от остатка: отгружено, но ещё не принято получателем (D-29).
+                     "in_transit": str(transit_by_item.get(i["id"], ZERO)),
+                     "in_transit_label": qty_label(str(transit_by_item.get(i["id"], ZERO)), unit),
+                     "transfers": [t for t in tr_rows if t["item_id"] == i["id"] and t["status"] == "in_transit"],
                      "movements": [m for m in mv_rows if m["item_id"] == i["id"]][:30]})
-    is_wh = "warehouse" in roles
     active_wh = sum(1 for w in warehouses if w.get("active", True) and not w.get("_pending"))
     return {"as_of": as_of_label(last_pull), "online": online, "items": rows,
             "warehouses": [{**w, "pending": bool(w.get("_pending")),
@@ -128,9 +160,11 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
                            for w in sorted(warehouses, key=lambda x: x["code"].lower())],
             "reservations": sorted(res_rows, key=lambda r: (r["status"] != "active", r.get("created_at") or "")),
             "movements": mv_rows,
+            "transfers": tr_rows,
             "projects": [{"id": p["id"], "label": f"{p['code']} · {p['title']}"} for p in projects],
             "summary": {"items": len(rows), "with_stock": sum(1 for r in rows if r["state"] != "none"),
                         "active_reservations": sum(1 for r in res_rows if r["status"] == "active"),
+                        "in_transit": sum(1 for t in tr_rows if t["status"] == "in_transit"),
                         "movements": len(mv_rows)},
             # Подсказки: проводки и резервы — склад и только при связи (online_required); справочники — офлайн тоже.
             "can_post": is_wh and online, "can_edit_refs": is_wh or "procurement" in roles,

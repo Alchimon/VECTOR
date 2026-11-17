@@ -76,12 +76,13 @@ OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp")
 # Движения склада, резервы и потребности меняются ТОЛЬКО онлайн-командами (online_required): в кэше это
 # снимок «на момент последнего обновления», офлайн он только читается.
 META_LISTS = (("calc_version", "calc_versions"), ("calc_revision", "calc_revisions"),
-              ("movement", "stock_movements"), ("reservation", "stock_reservations"), ("need", "needs"))
+              ("movement", "stock_movements"), ("reservation", "stock_reservations"), ("need", "needs"),
+              ("transfer", "stock_transfers"))
 # Данные из pull, которые хранятся в meta как есть (снимок; время снимка — last_pull): склад, потребности,
 # справочник аналогов/пересчёта (D-25, A-27) и настройки компании (config, D-26). Всё это меняется только
 # онлайн-командами, офлайн — только читается.
 STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_movements_truncated", "needs",
-              "stock_projects", "need_candidates", "item_aliases", "unit_conversions", "config")
+              "stock_transfers", "stock_projects", "need_candidates", "item_aliases", "unit_conversions", "config")
 
 
 def _calc_same(local: dict, payload: dict) -> bool:
@@ -775,11 +776,19 @@ class SyncClient:
                 self._set_meta(mkey, items + [obj])
         res = r.get("result") or {}
         # Остаток после проводки/резерва — сразу в снимок (без ожидания pull); сторно помечает исходное движение.
-        bal = res.get("balance")
-        if isinstance(bal, dict) and bal.get("warehouse_id"):
+        # Перемещение (D-29) возвращает списки: движения ноги и остатки затронутых складов — заменяем по ключу.
+        bals = [res["balance"]] if isinstance(res.get("balance"), dict) else []
+        bals += [b for b in (res.get("balances") or []) if isinstance(b, dict)]
+        for bal in bals:
+            if not bal.get("warehouse_id"):
+                continue
             key = (bal["warehouse_id"], bal["item_id"])
             rows = [x for x in (self.get_meta("stock_balances") or []) if (x.get("warehouse_id"), x.get("item_id")) != key]
             self._set_meta("stock_balances", rows + [bal])
+        new_mv = [m for m in (res.get("movements") or []) if isinstance(m, dict) and m.get("id")]
+        if new_mv:
+            ids = {m["id"] for m in new_mv}
+            self._set_meta("stock_movements", [x for x in (self.get_meta("stock_movements") or []) if x.get("id") not in ids] + new_mv)
         mv = res.get("movement")
         if isinstance(mv, dict) and mv.get("reverses_id"):
             self._set_meta("stock_movements", [dict(x, reversed_by=mv["id"]) if x.get("id") == mv["reverses_id"] else x

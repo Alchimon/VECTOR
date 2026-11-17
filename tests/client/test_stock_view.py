@@ -58,7 +58,7 @@ def test_item_states_totals_and_per_warehouse_rows():
     assert by["ДД"]["state_label"] == "Нет на складе"                          # приход сторнирован → 0
     assert by["ШУ"]["state_label"] == "Всё в резерве"
     assert by["ОЛД"]["state_label"] == "Отключена" and by["ОЛД"]["pending"] is True
-    assert ov["summary"] == {"items": 4, "with_stock": 2, "active_reservations": 1, "movements": 3}
+    assert ov["summary"] == {"items": 4, "with_stock": 2, "active_reservations": 1, "in_transit": 0, "movements": 3}
     assert {w["code"]: w["item_count"] for w in ov["warehouses"]} == {"СК-1": 2, "СК-2": 1}
 
 
@@ -102,6 +102,36 @@ def test_transfer_legs_show_route_and_transfer_needs_two_active_warehouses():
     assert _ov(True, ("procurement",))["can_transfer"] is False
     one = sv.overview(WH[:1] + [{**WH[1], "active": False}], ITEMS, BAL, RES, MV, PROJ, PEOPLE, PULL, True, ["warehouse"])
     assert one["can_transfer"] is False                                       # некуда перемещать
+
+
+def test_in_transit_is_shown_apart_from_stock_and_only_warehouse_online_can_act():
+    """D-29: «в пути» не входит ни в остаток, ни в доступное — отдельная сумма на карточке и список с действиями;
+    принять/вернуть — склад при связи; закрытые и исторические (v8) — только история; возврат — маршрут исходный."""
+    i1 = ITEMS[0]["id"]
+    trs = [{"id": "t1", "item_id": i1, "from_warehouse_id": "w1", "to_warehouse_id": "w2", "qty": "4.0000",
+            "status": "in_transit", "status_label": "В пути", "version": 1, "reason": "бригаде", "created_by": "u1",
+            "created_at": "2026-11-17T10:00:00+00:00", "legacy": False},
+           {"id": "t2", "item_id": i1, "from_warehouse_id": "w1", "to_warehouse_id": "w2", "qty": "1.5000",
+            "status": "in_transit", "status_label": "В пути", "version": 1, "reason": "ещё", "legacy": False},
+           {"id": "t3", "item_id": i1, "from_warehouse_id": "w2", "to_warehouse_id": "w1", "qty": "2.0000",
+            "status": "received", "status_label": "Принято", "version": None, "legacy": True}]
+    ov = sv.overview(WH, ITEMS, BAL, RES, MV, PROJ, PEOPLE, PULL, True, ["warehouse"], trs)
+    item = next(x for x in ov["items"] if x["id"] == i1)
+    plain = next(x for x in _ov()["items"] if x["id"] == i1)
+    assert (item["on_hand_label"], item["available"]) == (plain["on_hand_label"], plain["available"])   # остаток не меняется
+    assert item["in_transit_label"] == "5,5 м" and [t["id"] for t in item["transfers"]] == ["t1", "t2"]
+    assert ov["summary"]["in_transit"] == 2 and plain["in_transit"] == "0"
+    rows = {t["id"]: t for t in ov["transfers"]}
+    assert rows["t1"]["route_label"] == "СК-1 → СК-2" and rows["t1"]["status_tone"] == "warning"
+    assert (rows["t1"]["can_act"], rows["t3"]["can_act"]) == (True, False)    # история — без действий
+    off = sv.overview(WH, ITEMS, BAL, RES, MV, PROJ, PEOPLE, PULL, False, ["warehouse"], trs)
+    buyer = sv.overview(WH, ITEMS, BAL, RES, MV, PROJ, PEOPLE, PULL, True, ["procurement"], trs)
+    assert not any(t["can_act"] for t in off["transfers"] + buyer["transfers"])
+    ret = {**MV[0], "id": "t-ret", "doc_no": 12, "kind": "receipt", "qty": "4.0000", "transfer_id": "t1",
+           "transfer_direction": "return", "transfer_peer_warehouse_id": "w2"}
+    row = next(m for m in sv.overview(WH, ITEMS, BAL, RES, MV + [ret], PROJ, PEOPLE, PULL, True, ["warehouse"])["movements"]
+               if m["id"] == "t-ret")
+    assert row["transfer_label"] == "СК-1 → СК-2" and row["is_transfer"] is True
 
 
 def _need(lines):
