@@ -169,7 +169,7 @@ def test_v6_to_v7_adds_settings_and_unit_tables_with_immutability(backend, tmp_p
     before = counts(eng, mg.tables_of_version(6))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (6, db.SCHEMA_VERSION)
-    assert rep.created_tables == [t.name for v in (7, 8, 9, 10) for t in mg.ADDED_IN[v]]
+    assert rep.created_tables == [t.name for v in (7, 8, 9, 10, 11) for t in mg.ADDED_IN[v]]
     after = counts(eng, mg.tables_of_version(6))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
     with eng.begin() as c:
@@ -186,7 +186,8 @@ def test_v7_to_v8_adds_transfers_immutable_and_checked(backend, tmp_path, clock,
     before = counts(eng, mg.tables_of_version(7))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (7, db.SCHEMA_VERSION)
-    assert rep.created_tables == ["stock_transfers", "stock_shipments", "stock_transfer_acts", "stock_shipment_terms"]
+    assert rep.created_tables == ["stock_transfers", "stock_shipments", "stock_transfer_acts", "stock_shipment_terms",
+                                   "stock_shipment_losses", "signatures"]
     assert rep.backup_path.exists()                     # сначала — проверенная копия БД v7
     after = counts(eng, mg.tables_of_version(7))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
@@ -223,7 +224,8 @@ def test_v8_to_v9_adds_shipments_with_consistent_states(backend, tmp_path, clock
     eng = make_v3(backend, tmp_path, clock, version=8)
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (8, db.SCHEMA_VERSION)
-    assert rep.created_tables == ["stock_shipments", "stock_transfer_acts", "stock_shipment_terms"]
+    assert rep.created_tables == ["stock_shipments", "stock_transfer_acts", "stock_shipment_terms", "stock_shipment_losses",
+                                   "signatures"]
     now, uid, w1, w2, it = clock.now(), new_id(), new_id(), new_id(), new_id()
     mv = [new_id() for _ in range(6)]
     with eng.begin() as c:
@@ -260,7 +262,7 @@ def test_v9_to_v10_adds_shortage_acts_and_terms_immutable_and_balanced(backend, 
     before = counts(eng, mg.tables_of_version(9))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (9, db.SCHEMA_VERSION)
-    assert rep.created_tables == ["stock_transfer_acts", "stock_shipment_terms"] and rep.backup_path.exists()
+    assert rep.created_tables[:2] == ["stock_transfer_acts", "stock_shipment_terms"] and rep.backup_path.exists()
     after = counts(eng, mg.tables_of_version(9))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
     now, uid, w1, w2, it = clock.now(), new_id(), new_id(), new_id(), new_id()
@@ -302,3 +304,29 @@ def test_v9_to_v10_adds_shortage_acts_and_terms_immutable_and_balanced(backend, 
         with pytest.raises(sa.exc.DBAPIError):                  # неизменяемость
             with eng.begin() as c:
                 c.execute(upd)
+
+
+def test_v10_to_v11_adds_losses_and_signatures_immutable_and_checked(backend, tmp_path, clock, keys):
+    """v10 → v11: только таблицы актов об утрате и подписей; способ подписи — из списка, одна подпись на документ и
+    назначение; обе таблицы неизменяемы."""
+    eng = make_v3(backend, tmp_path, clock, version=10)
+    before = counts(eng, mg.tables_of_version(10))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version, rep.created_tables) == (10, db.SCHEMA_VERSION, ["stock_shipment_losses", "signatures"])
+    after = counts(eng, mg.tables_of_version(10))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    now, uid, oid = clock.now(), new_id(), new_id()
+    sig = dict(object_type="stock_loss_act", object_id=oid, purpose="act", signer_id=uid, signer_name="П",
+               signed_at=now, content_sha256="0" * 64)
+
+    def ins(**kw):
+        with eng.begin() as c:
+            c.execute(db.signatures.insert().values(id=new_id(), **{**sig, **kw}))
+    with pytest.raises(sa.exc.DBAPIError):                      # неизвестный способ подписи
+        ins(method="pen")
+    ins(method="password")
+    with pytest.raises(sa.exc.DBAPIError):                      # вторая подпись того же назначения
+        ins(method="confirm")
+    with pytest.raises(sa.exc.DBAPIError):                      # неизменяемость
+        with eng.begin() as c:
+            c.execute(db.signatures.update().values(method="confirm"))

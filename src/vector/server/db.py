@@ -31,7 +31,7 @@ from vector.core import money
 #        сопоставлении (D-25, A-27);
 #   v8 — перемещения между складами: связка двух движений журнала (A-28);
 #   v9 — перемещение со статусом «в пути»: отгрузка → приёмка получателем или возврат отправителю (D-29, A-29).
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -699,6 +699,42 @@ stock_shipment_terms = sa.Table("stock_shipment_terms", metadata,
     sa.Column("shipment_id", ID, sa.ForeignKey("stock_shipments.id"), primary_key=True),
     sa.Column("expected_on", sa.Date, nullable=False))
 
+# Акт об утрате перемещения в пути (D-31, схема v11): не пришло НИЧЕГО. Перемещение закрывается без прихода —
+# количество, уже списанное у отправителя, списывается из учёта этим актом. Отдельная таблица, потому что
+# stock_shipments (v9) не допускает закрытия без движения (CHECK close_consistent), а миграции только добавляют
+# таблицы: у утраченного перемещения в stock_shipments остаётся status = 'in_transit' (без закрывающего движения),
+# а действующий статус «Утрачено в пути» определяется наличием строки здесь (сервер учитывает это везде: приёмка,
+# возврат, сторно, список «в пути»). Нашёлся груз — обычный приход с основанием «найдено по акту об утрате № N».
+# Номера актов об утрате — своя сквозная нумерация. Неизменяема.
+stock_shipment_losses = sa.Table("stock_shipment_losses", metadata,
+    sa.Column("shipment_id", ID, sa.ForeignKey("stock_shipments.id"), primary_key=True),
+    sa.Column("act_no", sa.Integer, nullable=False, unique=True),
+    sa.Column("qty", Qty, nullable=False),
+    sa.Column("reason", U(2000), nullable=False),
+    sa.Column("signed_by", ID, nullable=False),
+    sa.Column("signer_name", U(200), nullable=False),
+    sa.Column("signed_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("qty > 0", name="qty_pos"))
+
+# Подписи документов (D-31, схема v11) — общая таблица для актов сейчас и согласований позже. Как подписано, решает
+# настройка компании stock.act_signature: confirm — подтверждение вошедшим пользователем; password — с повторным
+# вводом пароля; qes — квалифицированная электронная подпись (ЭЦП/КЭП; пока не подключена — A-32, публикация этого
+# значения отклоняется). content_sha256 — SHA-256 канонического содержимого документа в момент подписи: по нему видно,
+# что подписанное не изменилось. Для КЭП позже добавится отдельная таблица с сертификатом и самой подписью (CAdES),
+# ссылающаяся на эту строку. Один документ — одна подпись данного назначения. Неизменяема.
+signatures = sa.Table("signatures", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("object_type", U(40), nullable=False),      # stock_transfer_act, stock_loss_act …
+    sa.Column("object_id", ID, nullable=False),
+    sa.Column("purpose", U(40), nullable=False),          # act — подпись акта (приёмщик)
+    sa.Column("method", U(16), nullable=False),
+    sa.Column("signer_id", ID, nullable=False),
+    sa.Column("signer_name", U(200), nullable=False),
+    sa.Column("signed_at", UtcDateTime, nullable=False),
+    sa.Column("content_sha256", sa.String(64), nullable=False),
+    sa.CheckConstraint("method IN ('confirm','password','qes')", name="method"),
+    sa.UniqueConstraint("object_type", "object_id", "purpose", name="one_signature"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -784,7 +820,8 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (project_calc_revision_items, 50006), (stock_movements, 50007), (procurement_need_lines, 50008),
                  (procurement_need_line_matches, 50009), (config_versions, 50010),
                  (procurement_need_line_match_units, 50011), (stock_transfers, 50012),
-                 (stock_transfer_acts, 50013), (stock_shipment_terms, 50014)):
+                 (stock_transfer_acts, 50013), (stock_shipment_terms, 50014), (stock_shipment_losses, 50015),
+                 (signatures, 50016)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):
