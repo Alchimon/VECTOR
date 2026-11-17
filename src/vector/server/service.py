@@ -34,11 +34,16 @@ from .db import audit_log, customers, kits, operations, project_assignments, pro
 
 log = logging.getLogger("vector.server")
 
+# Сколько раз повторять транзакцию при конфликте сериализации/взаимоблокировке СУБД (паузы 10, 20, 40… мс).
 MAX_ATTEMPTS = 6
 
 
 class SystemClock:
+    """Источник текущего времени (UTC). В тестах подменяется управляемыми часами — так проверяются сроки сеансов и
+    блокировок без ожидания.
+    """
     def now(self) -> datetime:
+        """Текущее время в UTC (с часовым поясом — «наивное» время в системе не используется)."""
         return datetime.now(timezone.utc)
 
 
@@ -49,14 +54,26 @@ from .validation import (_CUR_RE, _INN_RE, _LOGIN_RE, _UUID_RE, _json_default, c
 
 
 class Ctx:
+    """Контекст выполнения одной команды: соединение (внутри транзакции), пользователь, устройство, id операции, время,
+    адрес клиента.
+
+    Обработчики пишут записи аудита не напрямую, а через ctx.log: записи копятся в ctx.audit и попадают в журнал
+    только при успехе команды (при отказе — одна запись об отказе).
+    """
     def __init__(self, conn: Connection, user: dict, device_id: str, op_id: str, now: datetime, command: str,
                  session_hash: str, client_addr: Optional[str]):
+        """Сохраняет всё, что нужно обработчику и журналу; время now одно на всю команду (все записи получают
+        одинаковую метку).
+        """
         self.conn, self.user, self.user_id = conn, user, user["id"]
         self.device_id, self.operation_id, self.now, self.command = device_id, op_id, now, command
         self.session_hash, self.client_addr = session_hash, client_addr
         self.audit: list[dict] = []
 
     def log(self, otype, oid, authority: Optional[Authority], before, after, details=None):
+        """Запланировать запись в журнал аудита: тип и id объекта, основание доступа (Authority), версия до/после,
+        подробности (что изменилось, причина).
+        """
         self.audit.append(dict(object_type=otype, object_id=str(oid) if oid is not None else None,
                                authority=authority.describe() if authority else None,
                                version_before=before, version_after=after, details=details or {}))
@@ -64,10 +81,29 @@ class Ctx:
 
 class Service(WorkMixin, CalcMixin, StockMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
-    склад и закупочная потребность — StockMixin (stock.py)."""
+    склад и закупочная потребность — StockMixin (stock.py).
+
+    Как устроен обработчик команды (все _xxx_yyy(ctx, p, ev) следуют одной схеме — так их легко проверять):
+
+    1. only_keys(p, {...}) — неизвестные поля запроса → отказ (опечатка не должна молча игнорироваться);
+    2. self.policy.check(..., project_id=...) — право в момент эффекта; для проектных объектов project_id
+       обязателен, иначе роли в проекте не учитываются;
+    3. загрузка объекта (_require), проверка версии (_check_version) и состояния (статус, правила домена);
+    4. запись (insert / _update_versioned) — только после всех проверок;
+    5. ctx.log(...) — что изменилось и на каком основании (попадёт в журнал, только если команда успешна);
+    6. возврат представления объекта (v_xxx) — клиент кладёт его в свой кэш по ключу результата.
+
+    Ожидаемые отказы — исключения Rejected / Denied / Conflict (vector.core.errors) с русским сообщением.
+    """
 
     def __init__(self, engine: Engine, contracts: Optional[Contracts] = None, clock=None,
                  sec: Optional[security.SecurityPolicy] = None):
+        """Собрать сервис: контракты, матрица прав, часы, политика безопасности, ограничители частоты и таблица
+        обработчиков команд.
+
+        При старте сверяется каталог команд (contracts) и таблица handlers: команда без обработчика или обработчик
+        без команды в каталоге — ошибка запуска, а не «тихо не работает».
+        """
         self.engine = engine
         self.contracts = contracts or Contracts.load()
         self.policy = Policy(self.contracts.permissions)
@@ -110,9 +146,16 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     # ------------------------------------------------------------ инфраструктура
     def now(self) -> datetime:
+        """Текущее время по часам сервиса (подменяемым в тестах)."""
         return self.clock.now()
 
     def _tx(self, fn: Callable[[Connection], Any]) -> Any:
+        """Выполнить fn(conn) в транзакции с ограниченным повтором (до MAX_ATTEMPTS, с нарастающей паузой).
+
+        Повторяются только безопасные случаи: конфликт сериализации/взаимоблокировка СУБД и нарушение уникальности
+        (параллельная вставка того же operation_id — повтор увидит сохранённый ответ). Поэтому fn обязана не иметь
+        побочных эффектов вне БД — она может выполниться несколько раз.
+        """
         for attempt in range(MAX_ATTEMPTS):
             try:
                 with self.engine.begin() as conn:
@@ -128,6 +171,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         raise RuntimeError("unreachable")
 
     def _audit(self, conn, at, actor, device, addr, op_id, command, otype, oid, authority, vb, va, result, details):
+        """Записать одну строку журнала аудита (append-only: правка и удаление строк запрещены триггерами БД).
+        Подробности хранятся каноническим JSON.
+        """
         conn.execute(audit_log.insert().values(
             at=at, actor_user_id=actor, device_id=device, client_addr=addr, operation_id=op_id, command=command,
             object_type=otype, object_id=oid, authority=authority, version_before=vb, version_after=va,
@@ -135,6 +181,7 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     @staticmethod
     def _get(conn, table, key, col="id") -> Optional[dict]:
+        """Одна строка таблицы по ключу (по умолчанию id) как словарь, или None."""
         r = conn.execute(sa.select(table).where(table.c[col] == key)).first()
         return dict(r._mapping) if r else None
 
@@ -145,6 +192,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
             raise Rejected("weak_password", " ".join(problems) or "Недопустимый логин.")
 
         def tx(conn):
+            """Транзакция создания первого администратора: только если пользователей ещё нет (повторный bootstrap
+            запрещён).
+            """
             if conn.execute(sa.select(sa.func.count()).select_from(users)).scalar():
                 raise Rejected("already_bootstrapped", "Система уже инициализирована; повторный bootstrap запрещён.")
             now, uid = self.now(), str(uuid.uuid4())
@@ -160,6 +210,11 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     # ------------------------------------------------------------ точка входа
     def handle(self, req: dict, client_addr: Optional[str] = None) -> dict:
+        """Единая точка входа сервера: конверт {type: login|logout|command|query, …} → ответ-словарь.
+
+        Любая неожиданная ошибка превращается в ответ status=error без подробностей (стек — только в журнал
+        сервера): транзакция откачена, изменение не применено, повтор той же операции безопасен.
+        """
         try:
             t = req.get("type") if isinstance(req, dict) else None
             if t == "login":
@@ -178,6 +233,13 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     # ------------------------------------------------------------ вход/выход
     def _login(self, req: dict, addr: Optional[str]) -> dict:
+        """Вход по логину и паролю.
+
+        Защиты: ограничение частоты попыток с одного адреса; одинаковый ответ для «нет такого логина», «неверный
+        пароль» и «учётка отключена» (нельзя перебором узнать логины); время проверки выровнено фиктивным хэшем;
+        после lockout_threshold неудач подряд — блокировка на lockout_minutes. При успехе — новый токен сеанса (в БД
+        — только его хэш) и параметры для клиента (простой сеанса, предел размера файла).
+        """
         login, password, device = req.get("login"), req.get("password"), req.get("device_id")
         if not all(isinstance(x, str) and x for x in (login, password, device)) or len(device) > 100 or len(login) > 64:
             return {"status": "rejected", "code": "bad_login_request", "message_ru": "Укажите логин, пароль и идентификатор устройства."}
@@ -187,6 +249,7 @@ class Service(WorkMixin, CalcMixin, StockMixin):
                    "message_ru": "Неверный логин или пароль, либо учётная запись отключена."}
 
         def tx(conn):
+            """Транзакция входа: проверка пароля, счётчик неудач/блокировка, создание сеанса, запись в журнал."""
             now = self.now()
             u = self._get(conn, users, login, "login")
             ok, rehash = security.verify_password(u["pwd_hash"] if u else None, password)
@@ -223,9 +286,11 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return self._tx(tx)
 
     def _logout(self, req: dict) -> dict:
+        """Выход: отозвать сеанс по токену. Повторный выход безопасен (revoked = 0)."""
         th = security.token_hash(req.get("token") or "")
 
         def tx(conn):
+            """Транзакция выхода: пометить сеанс отозванным."""
             now = self.now()
             n = conn.execute(sessions.update().where(sessions.c.token_hash == th, sessions.c.revoked_at.is_(None))
                              .values(revoked_at=now, revoked_reason="logout")).rowcount
@@ -233,6 +298,12 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return self._tx(tx)
 
     def _auth(self, conn, token, now, allow_restricted=False) -> tuple[dict, str, str]:
+        """Проверить токен сеанса и вернуть (пользователь, устройство, хэш токена).
+
+        Сеанс недействителен, если отозван, истёк абсолютный срок или превышен простой. Пользователь с временным
+        паролем может выполнить только смену пароля (allow_restricted). При успехе обновляется время последней
+        активности сеанса.
+        """
         if not isinstance(token, str) or not token:
             raise Unauthenticated("no_token", "Требуется вход в систему.")
         th = security.token_hash(token)
@@ -250,6 +321,13 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     # ------------------------------------------------------------ команды
     def _command(self, req: dict, addr: Optional[str]) -> dict:
+        """Выполнить команду изменения с защитой от повторов и полным журналом.
+
+        Порядок: проверка формы конверта → хэш запроса → транзакция: сеанс → если operation_id уже был — вернуть
+        сохранённый ответ (или отказ, если под тем же id пришли другие данные) → обработчик внутри SAVEPOINT →
+        журнал → запись исхода в operations. При отказе (CommandOutcome) эффекты обработчика откатываются до
+        SAVEPOINT, но сам отказ и его исход фиксируются — повтор вернёт тот же ответ.
+        """
         op_id, command, payload, ev = req.get("operation_id"), req.get("command"), req.get("payload"), req.get("expected_version")
         if not isinstance(op_id, str) or not _UUID_RE.match(op_id):
             return {"status": "rejected", "code": "bad_operation_id", "message_ru": "operation_id должен быть UUID."}
@@ -263,6 +341,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         request_hash = hashlib.sha256(canon({"c": command, "p": payload, "v": ev}).encode()).hexdigest()
 
         def tx(conn):
+            """Транзакция одной команды (см. описание _command). Может выполниться повторно при конфликте сериализации
+            — поэтому без внешних эффектов.
+            """
             now = self.now()
             prev = self._get(conn, operations, op_id, "operation_id")
             try:
@@ -302,6 +383,7 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     # ------------------------------------------------------------ helpers
     def _require(self, conn, table, oid, what_ru) -> dict:
+        """Объект по id или отказ not_found с русским названием («Тендер: объект не найден»)."""
         o = self._get(conn, table, oid)
         if o is None:
             raise Rejected("not_found", f"{what_ru}: объект не найден.", {"id": oid})
@@ -309,6 +391,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     @staticmethod
     def _check_version(o: dict, expected: Optional[int], view):
+        """Оптимистическая блокировка: если клиент правил версию expected, а на сервере уже другая — Conflict с текущим
+        состоянием объекта (клиент покажет «моё / на сервере» и не сольёт молча).
+        """
         if expected is not None and o["version"] != expected:
             raise Conflict("version_conflict",
                            f"Объект изменён другим пользователем: ваша версия {expected}, на сервере {o['version']}. "
@@ -316,10 +401,16 @@ class Service(WorkMixin, CalcMixin, StockMixin):
                            {"expected_version": expected, "current": view(o)})
 
     def _ensure_new(self, conn, table, oid):
+        """Убедиться, что объекта с этим id ещё нет (id создаёт клиент; повтор уже выполненной операции сюда не доходит
+        — его ловит operations).
+        """
         if self._get(conn, table, oid) is not None:
             raise Rejected("id_exists", "Объект с таким идентификатором уже существует.", {"id": oid})
 
     def _update_versioned(self, ctx, table, o, values: dict):
+        """Обновить строку с увеличением версии; условие WHERE version = текущей — вторая защита от параллельной правки
+        поверх уровня изоляции.
+        """
         n = ctx.conn.execute(table.update().where(table.c.id == o["id"], table.c.version == o["version"])
                              .values(version=o["version"] + 1, **values)).rowcount
         if n != 1:  # дополнительная защита поверх SERIALIZABLE
@@ -329,10 +420,12 @@ class Service(WorkMixin, CalcMixin, StockMixin):
     # ------------------------------------------------------------ представления
     @staticmethod
     def v_customer(o):
+        """Заказчик для клиента (поля, версия, время изменения)."""
         return {"id": o["id"], "name": o["name"], "inn": o["inn"], "note": o["note"], "version": o["version"], "updated_at": iso(o["updated_at"])}
 
     @staticmethod
     def v_tender(o):
+        """Тендер для клиента: статус, причина статуса, срок подачи, ответственный, версия."""
         return {"id": o["id"], "customer_id": o["customer_id"], "title": o["title"],
                 "submission_deadline": o["submission_deadline"].isoformat() if o["submission_deadline"] else None,
                 "owner_user_id": o["owner_user_id"], "status": o["status"], "status_reason": o["status_reason"],
@@ -340,6 +433,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     @staticmethod
     def v_tkp(o):
+        """ТКП для клиента: сумма строкой (Decimal), валюта, ревизия содержимого, статус, факт отправки, автор
+        последней правки.
+        """
         return {"id": o["id"], "tender_id": o["tender_id"], "label": o["label"], "revision": o["revision"],
                 "amount": money.to_json(o["amount"]), "currency": o["currency"], "note": o["note"], "status": o["status"],
                 "sent_on": o["sent_on"].isoformat() if o["sent_on"] else None, "sent_channel": o["sent_channel"],
@@ -347,23 +443,29 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     @staticmethod
     def v_project(o):
+        """Проект для клиента: код, название, тендер-основание, статус, версия."""
         return {"id": o["id"], "code": o["code"], "title": o["title"], "tender_id": o["tender_id"], "status": o["status"],
                 "version": o["version"], "updated_at": iso(o["updated_at"])}
 
     @staticmethod
     def v_kit(o):
+        """Комплект проекта для клиента: код, название, версия."""
         return {"id": o["id"], "project_id": o["project_id"], "code": o["code"], "title": o["title"], "version": o["version"],
                 "updated_at": iso(o["updated_at"])}
 
     # ------------------------------------------------------------ заказчики
     @staticmethod
     def _inn(p):
+        """Необязательный ИНН: 10 или 12 цифр (контрольная сумма пока не проверяется — отмечено в сообщении)."""
         inn = opt_str(p, "inn", 12)
         if inn is not None and not _INN_RE.match(inn):
             raise Rejected("invalid_inn", "ИНН должен содержать 10 или 12 цифр (контрольная сумма пока не проверяется).")
         return inn
 
     def _customer_create(self, ctx, p, ev):
+        """customer.create {id, name, inn?, note?} — создать заказчика. Права: customer.create (A-03). Можно офлайн
+        (очередь).
+        """
         only_keys(p, {"id", "name", "inn", "note"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "customer.create", ctx.now)
         cid = req_uuid(p, "id")
@@ -376,6 +478,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"customer": self.v_customer(self._get(ctx.conn, customers, cid))}
 
     def _customer_update(self, ctx, p, ev):
+        """customer.update {id, name?, inn?, note?} + expected_version — изменить заказчика. Передаются только меняемые
+        поля; пустой набор — отказ no_changes.
+        """
         only_keys(p, {"id", "name", "inn", "note"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "customer.update", ctx.now)
         o = self._require(ctx.conn, customers, req_uuid(p, "id"), "Заказчик")
@@ -396,6 +501,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     # ------------------------------------------------------------ тендеры
     def _tender_create(self, ctx, p, ev):
+        """tender.create {id, customer_id, title, submission_deadline?, owner_user_id?} — создать тендер в начальном
+        статусе (draft). Ответственный по умолчанию — создатель (A-11).
+        """
         only_keys(p, {"id", "customer_id", "title", "submission_deadline", "owner_user_id"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "tender.create", ctx.now)
         tid = req_uuid(p, "id")
@@ -413,6 +521,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"tender": self.v_tender(self._get(ctx.conn, tenders, tid))}
 
     def _tender_update(self, ctx, p, ev):
+        """tender.update {id, title?, submission_deadline?, owner_user_id?} + версия — изменить тендер; в конечном
+        статусе (выигран/проигран/отменён) — запрещено.
+        """
         only_keys(p, {"id", "title", "submission_deadline", "owner_user_id"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "tender.update", ctx.now)
         o = self._require(ctx.conn, tenders, req_uuid(p, "id"), "Тендер")
@@ -436,6 +547,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"tender": self.v_tender(n)}
 
     def _tender_transition(self, ctx, p, ev):
+        """tender.transition {id, to, reason?} + версия — сменить статус по workflows (A-02); для «проигран»/«отменён»
+        причина обязательна. Победа НЕ создаёт проект — это отдельное явное действие project.start_rkd.
+        """
         only_keys(p, {"id", "to", "reason"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "tender.transition", ctx.now)
         o = self._require(ctx.conn, tenders, req_uuid(p, "id"), "Тендер")
@@ -456,6 +570,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
     # ------------------------------------------------------------ ТКП
     @staticmethod
     def _amount(p: dict) -> tuple[Optional[Decimal], Optional[str]]:
+        """Сумма и валюта ТКП: сумма — строгий Decimal или None («не указана»); если сумма есть, валюта ISO обязательна
+        (по умолчанию не подставляется).
+        """
         try:
             amount = money.parse_optional(p.get("amount"))
         except money.MoneyError as e:
@@ -469,10 +586,16 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     @staticmethod
     def _tkp_hash(o: dict) -> str:
+        """SHA-256 содержимого ТКП (сумма, валюта, метка, ревизия, примечание). Согласование привязано к этому хэшу:
+        изменённое после согласования ТКП отправить нельзя.
+        """
         return hashlib.sha256(canon({"id": o["id"], "tender_id": o["tender_id"], "label": o["label"], "revision": o["revision"],
                                      "amount": money.to_json(o["amount"]), "currency": o["currency"], "note": o["note"]}).encode()).hexdigest()
 
     def _tkp_create(self, ctx, p, ev):
+        """tkp.create {id, tender_id, label, amount?, currency?, note?} — новое ТКП-черновик к тендеру (не к
+        закрытому).
+        """
         only_keys(p, {"id", "tender_id", "label", "amount", "currency", "note"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "tkp.create", ctx.now)
         kid = req_uuid(p, "id")
@@ -489,6 +612,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"tkp": self.v_tkp(self._get(ctx.conn, tkp, kid))}
 
     def _tkp_update(self, ctx, p, ev):
+        """tkp.update {id, label?, amount?, currency?, note?} + версия — изменить черновик; каждая правка увеличивает
+        ревизию содержимого. Согласованное ТКП сначала явно возвращается в черновик (tkp.reopen).
+        """
         only_keys(p, {"id", "label", "amount", "currency", "note"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "tkp.update", ctx.now)
         o = self._require(ctx.conn, tkp, req_uuid(p, "id"), "ТКП")
@@ -512,6 +638,12 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"tkp": self.v_tkp(n)}
 
     def _tkp_approve(self, ctx, p, ev):
+        """tkp.approve {id, comment?} + версия — согласовать черновик ТКП (A-04).
+
+        Автор последней правки согласовать сам не может (разделение обязанностей). Запись согласования хранит
+        ревизию, хэш содержимого и id выдачи роли согласующего — по ним при отправке проверяется, что согласование
+        всё ещё действительно.
+        """
         only_keys(p, {"id", "comment"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "tkp.approve", ctx.now)
         o = self._require(ctx.conn, tkp, req_uuid(p, "id"), "ТКП")
@@ -529,6 +661,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"tkp": self.v_tkp(n)}
 
     def _tkp_reopen(self, ctx, p, ev):
+        """tkp.reopen {id, reason} + версия — вернуть согласованное ТКП в черновик; действующее согласование помечается
+        заменённым (не удаляется — история сохраняется).
+        """
         only_keys(p, {"id", "reason"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "tkp.reopen", ctx.now)
         o = self._require(ctx.conn, tkp, req_uuid(p, "id"), "ТКП")
@@ -543,6 +678,12 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"tkp": self.v_tkp(n)}
 
     def _tkp_record_sent(self, ctx, p, ev):
+        """tkp.record_sent {id, sent_on, channel?, note?} + версия — зарегистрировать факт отправки ТКП заказчику.
+
+        Проверяется, что согласование относится к текущей ревизии, содержимое не менялось (хэш) и роль согласующего
+        всё ещё действует (отзыв и повторная выдача не «оживляют» старое согласование). Дата не в будущем. Это
+        запись со слов пользователя — доставка не доказана (так и пишется в журнал).
+        """
         only_keys(p, {"id", "sent_on", "channel", "note"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "tkp.record_sent", ctx.now)
         o = self._require(ctx.conn, tkp, req_uuid(p, "id"), "ТКП")
@@ -572,6 +713,12 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     # ------------------------------------------------------------ проекты
     def _project_start_rkd(self, ctx, p, ev):
+        """project.start_rkd {id, tender_id, code, title} — «Начать РКД»: создать проект по выигранному тендеру (A-05).
+        Только онлайн.
+
+        Один проект на тендер; код проекта уникален в компании. ГИП не назначается автоматически — его назначает
+        администратор.
+        """
         only_keys(p, {"id", "tender_id", "code", "title"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "project.start_rkd", ctx.now)
         pid = req_uuid(p, "id")
@@ -597,6 +744,7 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"project": self.v_project(self._get(ctx.conn, projects, pid)), "gip_assigned": False}
 
     def _valid_until(self, ctx, p) -> Optional[datetime]:
+        """Необязательный срок действия назначения/роли: время ISO-8601 в будущем или None (бессрочно)."""
         if p.get("valid_until") is None:
             return None
         vu = parse_iso_utc(p["valid_until"], "valid_until")
@@ -605,6 +753,12 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return vu
 
     def _project_assign(self, ctx, p, ev):
+        """project.assign {project_id, user_id, project_role, valid_until?, reason?} — назначить пользователя в проект
+        (gip, rp, participant).
+
+        Право зависит от назначаемой роли (project.assign_gip — только admin; РП и участников — по матрице A-07).
+        ГИП в проекте один: нового — только после явного отзыва текущего.
+        """
         only_keys(p, {"project_id", "user_id", "project_role", "valid_until", "reason"})
         pr = self._require(ctx.conn, projects, req_uuid(p, "project_id"), "Проект")
         role = p.get("project_role")
@@ -629,6 +783,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"assignment_id": aid}
 
     def _project_revoke_assignment(self, ctx, p, ev):
+        """project.revoke_assignment {assignment_id, reason} — отозвать назначение (с той же проверкой права, что и при
+        назначении). Запись остаётся в истории.
+        """
         only_keys(p, {"assignment_id", "reason"})
         aid = opt_int(p, "assignment_id")
         row = self._get(ctx.conn, project_assignments, aid) if aid is not None else None
@@ -644,6 +801,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     # ------------------------------------------------------------ комплекты
     def _kit_create(self, ctx, p, ev):
+        """kit.create {id, project_id, code, title} — комплект в проекте (только в статусе «Разработка РКД»; код
+        уникален в проекте). Права A-08.
+        """
         only_keys(p, {"id", "project_id", "code", "title"})
         pr = self._require(ctx.conn, projects, req_uuid(p, "project_id"), "Проект")
         auth = self.policy.check(ctx.conn, ctx.user_id, "kit.create", ctx.now, project_id=pr["id"])
@@ -661,6 +821,7 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"kit": self.v_kit(self._get(ctx.conn, kits, kid))}
 
     def _kit_update(self, ctx, p, ev):
+        """kit.update {id, code?, title?} + версия — изменить комплект."""
         only_keys(p, {"id", "code", "title"})
         o = self._require(ctx.conn, kits, req_uuid(p, "id"), "Комплект")
         auth = self.policy.check(ctx.conn, ctx.user_id, "kit.update", ctx.now, project_id=o["project_id"])
@@ -681,17 +842,25 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     # ------------------------------------------------------------ учётные записи
     def _revoke_sessions(self, conn, user_id, now, reason, except_hash=None) -> int:
+        """Отозвать все сеансы пользователя (кроме текущего, если передан except_hash). Возвращает число отозванных.
+        """
         q = sessions.update().where(sessions.c.user_id == user_id, sessions.c.revoked_at.is_(None))
         if except_hash:
             q = q.where(sessions.c.token_hash != except_hash)
         return conn.execute(q.values(revoked_at=now, revoked_reason=reason)).rowcount
 
     def _check_password(self, pwd, login):
+        """Проверить пароль по политике; при нарушении — отказ weak_password со списком причин."""
         problems = security.password_problems(pwd, login, self.sec)
         if problems:
             raise Rejected("weak_password", " ".join(problems))
 
     def _account_change_password(self, ctx, p, ev):
+        """account.change_password {current_password, new_password} — смена своего пароля.
+
+        Нужен текущий пароль (защита от украденного сеанса) и ограничение частоты попыток. После смены остальные
+        сеансы пользователя отзываются, текущий остаётся.
+        """
         only_keys(p, {"current_password", "new_password"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "account.change_password", ctx.now)
         if not self.pwd_rate.allow(ctx.user_id, ctx.now.timestamp()):
@@ -710,6 +879,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"password_changed": True, "other_sessions_revoked": n}
 
     def _admin_create_user(self, ctx, p, ev):
+        """admin.create_user {login, display_name, initial_password} — создать учётную запись с временным паролем (при
+        первом входе обязательна смена). Роли выдаются отдельно.
+        """
         only_keys(p, {"login", "display_name", "initial_password"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "admin.create_user", ctx.now)
         login = req_str(p, "login", 64)
@@ -726,6 +898,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"user_id": uid}
 
     def _admin_reset_password(self, ctx, p, ev):
+        """admin.reset_password {user_id, temporary_password, reason} — задать временный пароль: снимает блокировку,
+        отзывает все сеансы, требует смены при входе.
+        """
         only_keys(p, {"user_id", "temporary_password", "reason"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "admin.reset_password", ctx.now)
         u = self._get(ctx.conn, users, p.get("user_id")) if isinstance(p.get("user_id"), str) else None
@@ -741,12 +916,18 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"user_id": u["id"], "sessions_revoked": n}
 
     def _active_admins(self, conn, now) -> set[str]:
+        """Множество id действующих администраторов (роль действует и учётка включена) — для защиты «нельзя остаться
+        без администратора».
+        """
         rows = conn.execute(sa.select(role_grants.c.user_id).join(users, users.c.id == role_grants.c.user_id).where(
             role_grants.c.role == "admin", role_grants.c.revoked_at.is_(None), role_grants.c.valid_from <= now,
             sa.or_(role_grants.c.valid_until.is_(None), role_grants.c.valid_until > now), users.c.active == sa.true()))
         return {r.user_id for r in rows}
 
     def _admin_set_user_active(self, ctx, p, ev):
+        """admin.set_user_active {user_id, active, reason} — включить/отключить учётку. Нельзя отключить себя и
+        последнего администратора; при отключении сеансы отзываются.
+        """
         only_keys(p, {"user_id", "active", "reason"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "admin.set_user_active", ctx.now)
         u = self._get(ctx.conn, users, p.get("user_id")) if isinstance(p.get("user_id"), str) else None
@@ -767,6 +948,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"user_id": u["id"], "active": active}
 
     def _admin_grant_role(self, ctx, p, ev):
+        """admin.grant_role {user_id, role, valid_until?, reason} — выдать глобальную роль. Каждая выдача — новая
+        запись с новым id (основание для журнала).
+        """
         only_keys(p, {"user_id", "role", "valid_until", "reason"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "admin.grant_role", ctx.now)
         if p.get("role") not in self.contracts.permissions["roles"]:
@@ -781,6 +965,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"grant_id": gid}
 
     def _admin_revoke_role(self, ctx, p, ev):
+        """admin.revoke_role {grant_id, reason} — отозвать выдачу роли. Нельзя отозвать роль admin у последнего
+        действующего администратора.
+        """
         only_keys(p, {"grant_id", "reason"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "admin.revoke_role", ctx.now)
         gid = opt_int(p, "grant_id")
@@ -801,6 +988,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return {"grant_id": gid, "revoked": True}
 
     def _admin_revoke_sessions(self, ctx, p, ev):
+        """admin.revoke_sessions {user_id, reason} — принудительно завершить все сеансы пользователя (например, при
+        утере ноутбука).
+        """
         only_keys(p, {"user_id", "reason"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "admin.revoke_sessions", ctx.now)
         u = self._get(ctx.conn, users, p.get("user_id")) if isinstance(p.get("user_id"), str) else None
@@ -813,7 +1003,11 @@ class Service(WorkMixin, CalcMixin, StockMixin):
 
     # ------------------------------------------------------------ запросы
     def _query(self, req: dict) -> dict:
+        """Запросы чтения: pull (всё, что пользователю можно видеть), history (история объекта), users (список учёток —
+        только администратору).
+        """
         def tx(conn):
+            """Транзакция запроса: проверка сеанса и выбор запроса."""
             now = self.now()
             try:
                 user, _, _ = self._auth(conn, req.get("token"), now)
@@ -832,9 +1026,16 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return self._tx(tx)
 
     def _rows(self, conn, stmt) -> list[dict]:
+        """Все строки запроса как список словарей."""
         return [dict(r._mapping) for r in conn.execute(stmt)]
 
     def _pull(self, conn, user, now) -> dict:
+        """Снимок данных для клиента: каждая часть — только если у пользователя есть право её читать.
+
+        Проекты, комплекты, назначения, задачи, документы и расчёты — только по читаемым проектам; склад — по
+        stock.read; потребности — по need.read в их проекте. Справочник людей — только имена (без логинов). me.roles
+        — подсказка для интерфейса, а не решение о правах.
+        """
         uid = user["id"]
         can = lambda action, pid=None: self.policy.can(conn, uid, action, now, pid)  # noqa: E731
         out: dict[str, Any] = {"server_time": iso(now), "customers": [], "tenders": [], "tkp": [], "projects": [], "kits": [], "assignments": [], "people": []}
@@ -873,6 +1074,9 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return out
 
     def _users(self, conn, now) -> list[dict]:
+        """Список учёток для администратора: состояние, блокировка, требование смены пароля, выдачи ролей с признаком
+        «действует».
+        """
         out = []
         for u in self._rows(conn, sa.select(users).order_by(users.c.login)):
             grants = self._rows(conn, sa.select(role_grants).where(role_grants.c.user_id == u["id"]).order_by(role_grants.c.id))
@@ -884,6 +1088,11 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         return out
 
     def _history(self, conn, uid, now, otype, oid) -> dict:
+        """История объекта из журнала аудита — если пользователь может читать сам объект.
+
+        Для объектов внутри проекта (комплект, задача, документ, черновик расчёта, потребность) право проверяется в
+        их проекте. Возвращает кто, когда, какой командой, на каком основании и что изменилось.
+        """
         action = {"customer": "customer.read", "tender": "tender.read", "tkp": "tkp.read", "project": "project.read",
                   "kit": "kit.read", "task": "task.read", "document": "document.read",
                   "calc_draft": "calc.read", "project_calc": "calc.read_revisions",
@@ -911,4 +1120,5 @@ class Service(WorkMixin, CalcMixin, StockMixin):
              "result": r["result"], "details": json.loads(r["details_json"])} for r in rows]}
 
     def about(self) -> dict:
+        """Сведения о программе для «О программе» и диагностики: название, версия, версия API и схемы БД."""
         return {"product": "ВЕКТОР", "product_en": "VECTOR", "version": __version__, "api": "v1", "schema_version": db.SCHEMA_VERSION}
