@@ -129,7 +129,9 @@ def test_plaintext_not_visible_in_file(world, tmp_path, keyfile):
     out = tmp_path / "a.vbak"
     bk.create_backup(world.svc.engine, out, bk.KeySource(key_file=keyfile))
     raw = out.read_bytes()
-    for needle in ("АО Заказчик".encode(), b"argon2id", b"1234567.8901", b"rp1"):
+    # Логин ищем в кавычках, как он записан в JSON строки копии: три байта «rp1» изредка случайно встречаются в
+    # шифротексте (вероятность ≈ размер / 16 млн), и тест падал без причины.
+    for needle in ("АО Заказчик".encode(), b"argon2id", b"1234567.8901", b'"rp1"'):
         assert needle not in raw
 
 
