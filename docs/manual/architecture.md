@@ -169,6 +169,7 @@ python tools/sync_contracts.py --check && python tools/gen_manual_ref.py --check
 | `tools/gen_manual_ref.py [--check]` | Сгенерировать [reference.md](reference.md) (права, команды, статусы) из контрактов |
 | `tools/check_doc_links.py` | Проверить относительные ссылки и якоря во всей документации |
 | `tools/ui_harness.py --out docs/screenshots` | Снять снимки экранов (светлая и тёмная тема) для документации |
+| `tools/brand_assets.py` | Построить фирменные изображения клиента (прозрачный логотип, тёмные варианты, знак, фон) из исходников `docs/brand/source/` — см. [docs/brand](../brand/README.md) |
 | `tools/qt_offscreen_stubs.py` | Заглушки OpenGL для запуска Qt без видеокарты (песочница, CI) |
 
 ## 9. Как добавить новую команду (чек-лист)
