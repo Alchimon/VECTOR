@@ -67,3 +67,61 @@ def test_inn_checksum():
     for bad in ("7707083894", "50010073225", "500100732258", "77070838٩3", "abcdefghij", 7707083893):
         with pytest.raises(pu.PurchaseError):
             pu.check_inn(bad)
+
+
+# ---------------------------------------------------------------- D-33: НДС, готовность к согласованию, реквизиты
+def test_vat_totals_by_rate_and_unknown():
+    """Итоги НДС — суммы строк (A-38); без режима или ставки — неизвестно (None), а не меньше."""
+    D = Decimal
+    ln = lambda amt, rate: pu.Line(str(amt), "i", D(1), amt, amt, None, None, None, rate)  # noqa: E731
+    lines = [ln(D("100"), "22"), ln(D("110"), "10"), ln(D("50"), "none"), ln(None, None)]
+    t = pu.vat_totals(lines, "included")
+    assert (t["net"], t["vat"], t["gross"], t["unknown_count"]) == ("231.9700", "28.0300", "260.0000", 0)
+    assert [(b["rate"], b["vat"]) for b in t["by_rate"]] == [("22", "18.0300"), ("10", "10.0000"), ("none", "0.0000")]
+    assert pu.vat_totals(lines, None)["net"] is None
+    t = pu.vat_totals(lines + [ln(D("1"), None)], "excluded")
+    assert (t["gross"], t["unknown_count"]) == (None, 1)
+    assert pu.vat_totals([ln(None, "22")], "included")["gross"] is None          # нет цен — нет итога
+    with pytest.raises(pu.PurchaseError):
+        pu.check_vat_mode("gross")
+    assert pu.check_vat_mode("") is None
+
+
+def test_ready_problems_for_approval():
+    """Чего не хватает для согласования: строки, валюта, режим цен, ставки строк с ценой (все замечания сразу)."""
+    D = Decimal
+    assert [p["code"] for p in pu.ready_problems([], None, None)] == ["no_lines"]
+    priced = pu.Line("a", "i", D(1), D(5), D(5), None, None, None, None)
+    unpriced = pu.Line("b", "i", D(1), None, None, None, None, None, None)
+    assert [(p["code"], p["line"]) for p in pu.ready_problems([unpriced, priced], None, None)] == \
+        [("currency_required", None), ("vat_mode_required", None), ("vat_rate_required", 2)]
+    assert pu.ready_problems([unpriced], None, None) == []                      # без цен НДС не нужен
+    lines, _ = pu.parse_lines([{"line_id": str(uuid.uuid4()), "item_id": str(uuid.uuid4()), "qty": "1",
+                                "unit_price": "5", "vat_rate": "10"}], "RUB")
+    assert pu.ready_problems(lines, "RUB", "excluded") == []
+
+
+def test_requisites_checks():
+    """Реквизиты (A-39): необязательны; формат и контрольные цифры; согласованность с типом ИНН."""
+    ok = {"kpp": "000001001", "ogrn": "1020000001010", "bik": "040000001", "bank_account": "4070 2810 7000 0000 0101",
+          "corr_account": "30101810100000000001", "address": " г. Демоград ", "bank_name": "АО «Демо-Банк»"}
+    out = pu.check_requisites(ok, "0000001011")
+    assert (out["bank_account"], out["address"]) == ("40702810700000000101", "г. Демоград")   # пробелы убраны
+    assert pu.check_requisites({}, None) == {"kpp": None, "ogrn": None, "bik": None, "bank_account": None,
+                                             "corr_account": None, "address": None, "bank_name": None}
+
+    def codes(p, inn=None):
+        """Коды замечаний (поле, код)."""
+        with pytest.raises(pu.PurchaseError) as e:
+            pu.check_requisites(p, inn)
+        return [(x["field"], x["code"]) for x in e.value.problems]
+    assert codes({"kpp": "12AB"}) == [("kpp", "invalid_kpp")]
+    assert codes({"ogrn": "1020000001011"}) == [("ogrn", "invalid_ogrn")]           # контрольная цифра
+    assert codes({"bik": "04000000"}) == [("bik", "invalid_bik")]
+    assert codes({"bank_account": ok["bank_account"]}) == [("bank_account", "bik_required")]
+    assert codes({**ok, "corr_account": "30101810100000000002"}, "0000001011") == [("corr_account", "invalid_account")]
+    assert codes({"kpp": "000001001"}, "500100732259") == [("kpp", "kpp_for_ip")]
+    assert codes({"ogrn": "1020000001010"}, "500100732259") == [("ogrn", "ogrn_mismatch")]
+    assert codes({"address": "x" * 501}) == [("address", "too_long")]
+    # Ошибки копятся: все замечания сразу.
+    assert len(codes({"kpp": "1", "ogrn": "2", "bik": "3"})) == 3
