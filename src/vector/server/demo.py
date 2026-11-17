@@ -10,6 +10,7 @@
 Учётные записи (пароль у всех один — задаёт тестировщик):
   a.smirnova — РП; p.volkov — ГИП; e.orlova — руководитель отдела; d.kuznetsov — инженер;
   m.lebedev — ведущий инженер; o.nikitina — бухгалтерия; i.belova — склад; s.morozov — закупка;
+  v.zaitseva — согласование закупок; t.fedorova, a.grishin — технологи; k.pavlov, r.sergeev — производство (D-36);
   n.sokolov — без роли, должен сменить пароль.
 """
 from __future__ import annotations
@@ -35,6 +36,11 @@ ACCOUNTS = [
     ("i.belova", "Белова Ирина", "warehouse", "Склад"),
     ("s.morozov", "Морозов Сергей", "procurement", "Закупка"),
     ("v.zaitseva", "Зайцева Вера", "po_approver", "Согласование закупок (коммерческий директор)"),
+    # Технология и производство (D-36): два технолога — ТП утверждает не автор («четыре глаза»), и есть кем заменить.
+    ("t.fedorova", "Федорова Татьяна", "technologist", "Технолог"),
+    ("a.grishin", "Гришин Алексей", "technologist", "Технолог"),
+    ("k.pavlov", "Павлов Кирилл", "production", "Производство (сборщик-монтажник)"),
+    ("r.sergeev", "Сергеев Роман", "production", "Производство (наладчик)"),
     ("n.sokolov", "Соколов Никита", None, "Без роли; при первом входе должен сменить пароль"),
 ]
 
@@ -67,11 +73,21 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     фиксация (С3) → склады, номенклатура, приходы, сторно, потребность и резерв (С4). Любой отказ команды прерывает
     наполнение с понятным текстом.
     """
+    tokens: dict[str, str] = {}
+
     def login(lg, pwd=None):
-        """Войти демо-пользователем (по умолчанию с общим демо-паролем) и вернуть токен сеанса."""
+        """Войти демо-пользователем (по умолчанию с общим демо-паролем) и вернуть токен сеанса.
+
+        Сеанс демо-пользователя запоминается и переиспользуется: вход ограничен по частоте с одного адреса
+        (login_rate_per_minute_per_addr), а пользователей в демо больше этого предела.
+        """
+        if pwd is None and lg in tokens:
+            return tokens[lg]
         r = svc.handle({"type": "login", "login": lg, "password": pwd or demo_password, "device_id": DEVICE}, DEVICE)
         if r["status"] != "accepted":
             raise DemoError(f"Вход «{lg}» не выполнен: {r.get('message_ru') or r.get('status')}")
+        if pwd is None:
+            tokens[lg] = r["token"]
         return r["token"]
 
     def cmd(tok, c, p, ev=None):
@@ -377,7 +393,56 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     pdeleg = cmd(gip, "delegation.create", {"to_user_id": people["m.lebedev"], "role": "gip", "project_id": pid,
                                             "valid_until": (today + timedelta(days=6)).isoformat(),
                                             "reason": "Командировка на объект (приказ № 118-к)"})["delegation"]
+    prod = _seed_production(cmd, login, people, svc, kits, atx_v1)
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
             "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
             "suppliers": sups, "contracts": contracts, "delegations": [deleg["id"], pdeleg["id"]],
-            "purchase_orders": [o1["id"], o2["id"], o3["id"], o4["id"], o5["id"]]}
+            "purchase_orders": [o1["id"], o2["id"], o3["id"], o4["id"], o5["id"]], **prod}
+
+
+def _seed_production(cmd, login, people, svc, kits, atx_v1) -> dict:
+    """Технология и производство (С5 шаги 1–6, D-36). Нормы, времена и номера ВЫМЫШЛЕНЫ.
+
+    * ТП «Сборка и наладка шкафов управления» (АТХ, ред. 1): составила t.fedorova, утвердил a.grishin (не автор);
+      спецификация — зафиксированная версия расчёта АТХ v1 (состав без цен).
+    * ТП электрооборудования (ЭМ) — черновик t.fedorova (ещё не утверждён).
+    * Наряд № 1 по ТП АТХ на 1 комплект: выпустила РП a.smirnova (мастер, A-42). Операция 10 выполнена (k.pavlov),
+      операция 20 в работе с сообщением о проблеме (k.pavlov), 30 назначена r.sergeev, 40 — без исполнителя.
+      Время событий — «по часам устройства» в прошлом относительно момента наполнения. Материалы на наряд со склада
+      ещё не выдавались (ШУ-1 и АРМ — «Не выдано полностью»): закрыть наряд нельзя, пока склад не выдаст их на наряд
+      (раздел «Склад» → «Выдать» с выбором наряда). Остальные демо-данные склада при этом не меняются.
+    """
+    tech, tech2, rp = login("t.fedorova"), login("a.grishin"), login("a.smirnova")
+    k1 = login("k.pavlov")
+    tp1 = cmd(tech, "tp.create", {"id": str(uuid.uuid4()), "kit_id": kits["АТХ"], "title": "Сборка и наладка шкафов управления",
+                                  "spec_version_id": atx_v1, "note": "По схеме ФСА изм. 1", "operations": [
+        {"op_no": 10, "name": "Сборка шкафа управления", "work_center": "Участок сборки", "norm_min": "240"},
+        {"op_no": 20, "name": "Монтаж кабельных соединений", "work_center": "Участок сборки", "norm_min": "90"},
+        {"op_no": 30, "name": "Проверка изоляции и прозвонка", "work_center": "Испытательный стенд", "norm_min": "45"},
+        {"op_no": 40, "name": "Загрузка и наладка ПЛК", "work_center": "Испытательный стенд", "norm_min": "120",
+         "note": "Версия ПО — по паспорту проекта"}]})["tech_process"]
+    tp1 = cmd(tech2, "tp.approve", {"id": tp1["id"]}, tp1["version"])["tech_process"]
+    with svc.engine.connect() as c:
+        em_v1 = c.execute(sa.select(calc_versions.c.id).where(calc_versions.c.kit_id == kits["ЭМ"])).scalar_one()
+    tp2 = cmd(tech, "tp.create", {"id": str(uuid.uuid4()), "kit_id": kits["ЭМ"], "title": "Сборка щитов 0,4 кВ",
+                                  "spec_version_id": em_v1, "operations": [
+        {"op_no": 10, "name": "Сборка щита", "work_center": "Участок сборки", "norm_min": "300"},
+        {"op_no": 20, "name": "Испытание повышенным напряжением", "work_center": "Испытательный стенд", "norm_min": "60"}]})["tech_process"]
+    r = cmd(rp, "wo.release", {"id": str(uuid.uuid4()), "tp_id": tp1["id"], "qty": 1, "title": "Шкафы управления котельной № 3",
+                               "assignees": {"10": people["k.pavlov"], "20": people["k.pavlov"], "30": people["r.sergeev"]}})
+    wo = r["work_order"]
+    ops = {o["op_no"]: o for o in r["wo_operations"]}
+    now = svc.now()
+
+    def ev(tok, op_no, kind, minutes_ago, **kw):
+        """Событие исполнителя с временем устройства «minutes_ago минут назад»."""
+        dt = (now - timedelta(minutes=minutes_ago)).isoformat()
+        return cmd(tok, "wo.op_event", {"id": ops[op_no]["id"], "kind": kind, "device_time": dt, **kw})
+    ev(k1, 10, "start", 300)
+    ev(k1, 10, "pause", 240)                 # обед
+    ev(k1, 10, "resume", 200)
+    ev(k1, 10, "finish", 70)
+    ev(k1, 20, "start", 60)
+    ev(k1, 20, "problem", 25, note="Не хватает наконечников НШВИ 1,5 — взял со склада участка, нужна выдача на наряд")
+    # r.sergeev пока не начинал: операция 30 ждёт выполнения операции 20.
+    return {"tech_processes": [tp1["id"], tp2["id"]], "work_orders": [wo["id"]]}

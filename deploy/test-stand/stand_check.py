@@ -1,4 +1,4 @@
-"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-11).
+"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-12).
 
 Запускается ПОСЛЕ установки, при запущенном сервере стенда, Python-ом из окружения стенда:
 
@@ -29,6 +29,10 @@ from pathlib import Path
 DEMO = [("a.smirnova", "rp"), ("p.volkov", "gip"), ("e.orlova", "dept_head"), ("d.kuznetsov", "engineer"),
         ("m.lebedev", "lead_engineer"), ("o.nikitina", "accountant"), ("i.belova", "warehouse"),
         ("s.morozov", "procurement"), ("v.zaitseva", "po_approver")]
+# Учётки технологии и производства (D-36). Появились в демо этапа 5: на стенде, обновлённом со старой версии, их нет —
+# это предупреждение, а не ошибка (новые демо-данные при обновлении не добавляются).
+DEMO_D36 = [("t.fedorova", "technologist"), ("a.grishin", "technologist"), ("k.pavlov", "production"),
+            ("r.sergeev", "production")]
 PROJECT = "П-2026-014"   # проект демо-данных, где p.volkov — ГИП, а m.lebedev его замещает (D-35)
 FRESH_HINT = ("так бывает на стенде, обновлённом со старой версии (новые демо-данные при обновлении не добавляются), "
               "или если демо уже проверяли. Для этой проверки поставьте свежий стенд в новый каталог: "
@@ -130,6 +134,11 @@ def main(argv: list[str] | None = None) -> int:
         rep.fail("сервер не отвечает — запустите ярлык «ВЕКТОР — сервер (тест)» и дождитесь строки "
                  "«Uvicorn running on …», затем повторите самопроверку")
         return finish(rep, tmp)
+    if first.status != "accepted" and (first.response or {}).get("code") == "rate_limited":
+        # Самопроверка входит ~15 раз, сервер пускает 20 входов в минуту с адреса — повтор сразу после прошлого прогона.
+        rep.fail("сервер временно ограничил входы с этого компьютера (недавно уже входили много раз) — подождите "
+                 "минуту и повторите самопроверку; пароль тут ни при чём")
+        return finish(rep, tmp)
     if first.status != "accepted":
         rep.fail(f"вход {DEMO[0][0]} не прошёл: {first.message_ru} — проверьте пароль демо-учёток (тот, что задали "
                  "при установке). Внимание: после 5 неверных паролей подряд учётка блокируется на 15 минут")
@@ -199,6 +208,34 @@ def main(argv: list[str] | None = None) -> int:
         rep.ok(f"a.smirnova — РП в {len(rps)} проектах: в форме замещения будут пункты «РП в проекте …»")
     else:
         rep.warn(f"a.smirnova — РП в {len(rps)} проектах (в демо — 2)")
+
+    print("\n5. Технология и производство (D-36, П-12)")
+    prod, missing = {}, []
+    for login, role in DEMO_D36:
+        c = client(str(ca))
+        r = c.login(login, pwd)
+        if r.status != "accepted":
+            missing.append(login)
+            continue
+        c.pull()
+        roles = (c.get_meta("me") or {}).get("roles") or []
+        rep.ok(f"{login}: вход, роль «{role}»") if role in roles else rep.fail(f"{login}: нет роли «{role}»")
+        prod[login] = c
+    if missing:   # одно предупреждение на все отсутствующие учётки — не четыре одинаковых
+        rep.warn(f"нет учёток {', '.join(missing)} — " + FRESH_HINT)
+    if "k.pavlov" in prod:
+        mine = [o for o in prod["k.pavlov"].list_local("wo_operation")
+                if o.get("assignee_id") == prod["k.pavlov"].user_id and o.get("state") in ("pending", "running", "paused")]
+        if any(o.get("state") == "running" for o in mine):
+            rep.ok(f"k.pavlov: операций в «Мои операции» — {len(mine)}, одна в работе (таймер идёт)")
+        else:
+            rep.warn("k.pavlov: нет операции в работе — демо-наряд уже проверяли; начните любую назначенную операцию")
+    tps = smirnova.list_local("tech_process")
+    if tps:
+        rep.ok(f"техпроцессов: {len(tps)} (утверждённых {sum(t.get('status') == 'approved' for t in tps)}), "
+               f"нарядов: {len(smirnova.list_local('work_order'))}")
+    elif prod:
+        rep.warn("техпроцессов нет — " + FRESH_HINT)
     return finish(rep, tmp)
 
 
@@ -214,7 +251,7 @@ def finish(rep: Report, tmp=None) -> int:
         print(f"ИТОГ: стенд работает; предупреждений {len(rep.warnings)} — часть сценариев на этих данных не проверить "
               "(см. выше).")
     else:
-        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-11; сценарии — test-pc.md § 6).")
+        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-12; сценарии — test-pc.md § 6).")
     return 0
 
 

@@ -208,7 +208,7 @@ def _plain(v):
 
 
 def main():
-    """Снять скриншоты 01–32 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
+    """Снять скриншоты 01–38 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
     args = ap.parse_args()
@@ -425,6 +425,38 @@ def main():
         dp = _plain(h.backend.property("me"))["delegated_project_roles"][0]
         h.go("projects", dp["project_id"])
         h.shot(out / f"{theme}-34-project-deputy.png")
+        h.backend.logout()
+        h.wait_idle()
+        # Производство (D-36): исполнитель — «Мои операции» с таймером операции в работе.
+        h.login("k.pavlov")
+        h.shot(out / f"{theme}-35-production-my-ops.png")
+        h.backend.logout()
+        h.wait_idle()
+        # Мастер (РП, A-42): наряд № 1 — снимок, операции, материалы и причины, почему закрыть нельзя.
+        h.login("a.smirnova")
+        h.go("production")
+        h.find("productionPage").setProperty("tab", "orders")
+        h.wait_idle()
+        wp = next(i for i in h.items("all") if i.isVisible())
+        wp.setProperty("selectedId", h.ids["work_orders"][0])
+        h.wait_idle()
+        h.shot(out / f"{theme}-36-work-order.png")
+        h.backend.logout()
+        h.wait_idle()
+        # Технолог: утверждённый ТП и редактор черновика (проверка операций по строкам, норма на изделие).
+        h.login("t.fedorova")
+        h.find("productionPage").setProperty("tab", "tps")
+        h.wait_idle()
+        tpp = next(i for i in h.items("all") if i.isVisible())
+        tpp.setProperty("selectedId", h.ids["tech_processes"][0])
+        h.wait_idle()
+        h.shot(out / f"{theme}-37-tech-process.png")
+        ed = next(o for o in h.win.findChildren(QObject) if o.objectName() == "tpEditor")
+        draft = next(t for t in _plain(tpp.property("all")) if t["id"] == h.ids["tech_processes"][1])
+        QMetaObject.invokeMethod(ed, "openFor", Q_ARG("QVariant", draft), Q_ARG("QVariant", False))
+        h.wait_idle()
+        h.shot(out / f"{theme}-38-tech-process-editor.png")
+        ed.setProperty("visible", False)
         h.backend.logout()
         h.wait_idle()
         # Настройки компании (D-26, A-26): администратор, вкладка «Настройки компании».

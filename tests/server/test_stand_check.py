@@ -83,6 +83,7 @@ def test_fresh_stand_is_ready_and_check_is_read_only(stand, svc, capsys):
     assert "ИТОГ: стенд готов к проверке" in out and "[ВНИМ.]" not in out and "[ОШИБКА]" not in out
     assert "заказ № 5 на согласовании" in out and "m.lebedev замещает ГИП в П-2026-014" in out
     assert "без сертификата стенда соединение отклоняется" in out
+    assert "k.pavlov: операций в «Мои операции» — 1, одна в работе" in out and "техпроцессов: 2 (утверждённых 1)" in out
     assert _counts(svc) == before          # ни «прочитано», ни заказы, ни замещения не изменились
 
 
@@ -134,3 +135,12 @@ def test_cert_days_left_reads_real_certificate(tmp_path):
     assert 28 <= mod.cert_days_left(tmp_path / "server.pem") <= 30
     (tmp_path / "bad.pem").write_text("не сертификат", encoding="utf-8")
     assert mod.cert_days_left(tmp_path / "bad.pem") is None
+
+
+def test_rate_limited_is_not_reported_as_wrong_password(stand, svc, capsys, monkeypatch):
+    """Повтор самопроверки сразу после прошлой: сервер ограничил входы — подсказка «подождите минуту», не «пароль»."""
+    path, _ = stand
+    monkeypatch.setattr(svc.rate, "allow", lambda *a, **k: False)
+    assert _load().main(["--dir", str(path)]) == 1
+    out = capsys.readouterr().out
+    assert "подождите минуту и повторите самопроверку" in out and "проверьте пароль" not in out
