@@ -40,7 +40,10 @@ $env:PYTHONIOENCODING = "utf-8"
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $Templates = $PSScriptRoot
 
+# Заголовок очередного шага установки (голубым цветом).
 function Say([string]$text) { Write-Host ""; Write-Host "== $text" -ForegroundColor Cyan }
+# Сообщить об ошибке понятным текстом (красным) и завершить скрипт с кодом 1. Переменные окружения с паролями
+# живут только в этом процессе PowerShell и исчезают вместе с ним.
 function Fail([string]$text) {
     Write-Host ""
     Write-Host "ОШИБКА: $text" -ForegroundColor Red
@@ -60,6 +63,7 @@ function Probe([scriptblock]$block) {
     try { & $block 2>&1 | Out-Null } catch { return $false }
     return ($LASTEXITCODE -eq 0)
 }
+# Запросить пароль без отображения на экране; возвращает обычную строку только для передачи дочернему процессу.
 function Read-Secret([string]$prompt) {
     $s = Read-Host -AsSecureString $prompt
     $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
@@ -95,9 +99,11 @@ function Invoke-PasswordStep([string]$envName, [string]$prompt, [string]$failTex
     }
     Fail "${failText}: три попытки не удались. Запустите setup.cmd снова, предварительно удалив каталог стенда."
 }
+# Записать текстовый файл в UTF-8 без BOM (см. пояснение выше).
 function Write-Utf8([string]$path, [string]$text) {
     [IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding $false))
 }
+# Ярлык на рабочем столе пользователя: name — подпись, target — запускаемый .cmd, workdir — рабочий каталог.
 function New-Shortcut([string]$name, [string]$target, [string]$workdir) {
     $desktop = [Environment]::GetFolderPath("Desktop")
     $sh = New-Object -ComObject WScript.Shell

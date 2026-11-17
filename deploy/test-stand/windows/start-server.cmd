@@ -4,6 +4,7 @@ cd /d "%~dp0"
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 chcp 65001 >nul
+rem First check (config, certificates, DB schema); the server is not started if anything is wrong.
 "%~dp0venv\Scripts\vector-server.exe" check --config server.toml
 if errorlevel 1 goto fail
 "%~dp0venv\Scripts\vector-server.exe" serve --config server.toml
