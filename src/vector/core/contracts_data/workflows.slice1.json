@@ -1,5 +1,5 @@
 {
-  "contract": "workflows-slice1-v3",
+  "contract": "workflows-slice1-v4",
   "notes": "Переходы и условия — временные предположения A-02/A-05 (Decision Log). Статус меняется только явной командой.",
   "tender": {
     "initial": "draft",
@@ -127,5 +127,25 @@
     },
     "note": "consumed — автоматически, когда выдачи по резерву израсходовали его полностью; released — командой stock.release (неизрасходованное возвращается в доступное). Срок резерва не утверждён (A-23).",
     "assumption": "A-23"
+  },
+  "stock_transfer": {
+    "initial": "in_transit",
+    "terminal": [
+      "received",
+      "returned"
+    ],
+    "transitions": {
+      "in_transit": [
+        "received",
+        "returned"
+      ]
+    },
+    "labels_ru": {
+      "in_transit": "В пути",
+      "received": "Принято",
+      "returned": "Возвращено отправителю"
+    },
+    "note": "in_transit — после отгрузки (stock.transfer, расход на отправителе); received — stock.transfer_accept (приход на получателе); returned — stock.transfer_cancel (приход обратно на отправителе). Частичная приёмка и недостача не поддерживаются (A-29).",
+    "assumption": "A-29"
   }
 }

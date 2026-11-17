@@ -16,9 +16,11 @@ operation_id, аудит и проверка версий — в service.py; з�
     ручное сопоставление (need.match_line, A-25): закупка указывает позицию номенклатуры для строки, которую
                  автомат не сопоставил (или сопоставил не так); решение — неизменяемая запись с причиной,
                  строка-снимок не меняется. Пересопоставить можно, пока под строку нет резервов.
-    перемещение между складами (stock.transfer, A-28): расход на отправителе + приход на получателе одной
-                 транзакцией, связаны записью stock_transfers; только из доступного (резервы не переезжают);
-                 сторно половины запрещено — ошибку исправляют обратным перемещением.
+    перемещение между складами (A-28, D-29): stock.transfer — отгрузка (расход на отправителе, статус «В пути»);
+                 stock.transfer_accept — приёмка (приход на получателе, «Принято»); stock.transfer_cancel — возврат
+                 отправителю («Возвращено»). Только из доступного (резервы не переезжают); сторно движений перемещения
+                 запрещено — в пути его принимают или возвращают, после приёмки исправляют обратным перемещением.
+                 Одношаговые перемещения схемы v8 (stock_transfers) остаются в журнале как история.
 
 Главные инварианты (каждый закреплён тестом в tests/server/test_stock.py):
 
@@ -49,7 +51,8 @@ from vector.core.errors import Conflict, Denied, Rejected
 
 from .db import (calc_version_lines, calc_versions, item_aliases, kits, procurement_need_line_match_units,
                  procurement_need_line_matches, procurement_need_lines, procurement_needs, projects, unit_conversions,
-                 stock_balances, stock_items, stock_movements, stock_reservations, stock_transfers, warehouses)
+                 stock_balances, stock_items, stock_movements, stock_reservations, stock_shipments, stock_transfers,
+                 warehouses)
 from .validation import iso, only_keys, opt_str, req_str, req_uuid
 
 # Сколько последних движений отдаётся в pull (полный журнал — запросом истории/отчётом позже).
@@ -135,18 +138,17 @@ class StockMixin:
                 "created_by": o["created_by"], "created_at": iso(o["created_at"]), "updated_at": iso(o["updated_at"])}
 
     @staticmethod
-    def v_movement(o: dict, reversed_by: Optional[str] = None, transfer: Optional[dict] = None) -> dict:
+    def v_movement(o: dict, reversed_by: Optional[str] = None, leg: Optional[dict] = None) -> dict:
         """Движение журнала для клиента: номер, вид и подпись («Приход», «Сторно прихода», «Расход по перемещению»),
         количество, проект/резерв, ссылка на сторнируемое и сторнирующее, основание.
 
-        transfer — строка stock_transfers, если движение — половина перемещения: тогда в представлении есть id
-        перемещения, направление (out — со склада, in — на склад) и второй склад, а сторно для него недоступно.
+        leg — если движение относится к перемещению (см. `_legs`): id перемещения, направление (out — отгрузка,
+        in — приёмка, return — возврат отправителю) и второй склад маршрута. Для таких движений сторно недоступно.
         """
-        if transfer is not None:
-            out = transfer["out_movement_id"] == o["id"]
-            tr = {"transfer_id": transfer["id"], "transfer_direction": "out" if out else "in",
-                  "transfer_peer_warehouse_id": transfer["to_warehouse_id"] if out else transfer["from_warehouse_id"]}
-            label = stock.TRANSFER_LABELS_RU[o["kind"]]
+        if leg is not None:
+            tr = {"transfer_id": leg["transfer_id"], "transfer_direction": leg["direction"],
+                  "transfer_peer_warehouse_id": leg["peer_warehouse_id"]}
+            label = stock.TRANSFER_LABELS_RU[leg["direction"]]
         else:
             tr = {"transfer_id": None, "transfer_direction": None, "transfer_peer_warehouse_id": None}
             # Сторно имеет противоположный вид (сторно прихода — расход), поэтому подпись берём по исходному
@@ -160,13 +162,56 @@ class StockMixin:
                 "posted_by": o["posted_by"], "posted_at": iso(o["posted_at"])}
 
     @staticmethod
-    def v_transfer(o: dict) -> dict:
-        """Перемещение для клиента: позиция, откуда/куда, количество, обе половины в журнале, основание."""
+    def v_shipment(o: dict) -> dict:
+        """Перемещение (D-29) для клиента: позиция, маршрут, количество, статус с подписью, движения отгрузки и закрытия
+        (приёмки или возврата), основание, кто и когда отгрузил и закрыл, версия (для приёмки/возврата).
+        """
         return {"id": o["id"], "item_id": o["item_id"], "from_warehouse_id": o["from_warehouse_id"],
-                "to_warehouse_id": o["to_warehouse_id"], "qty": money.to_json(o["qty"]),
-                "out_movement_id": o["out_movement_id"], "in_movement_id": o["in_movement_id"],
-                "source_doc": o["source_doc"], "reason": o["reason"], "posted_by": o["posted_by"],
-                "posted_at": iso(o["posted_at"])}
+                "to_warehouse_id": o["to_warehouse_id"], "qty": money.to_json(o["qty"]), "status": o["status"],
+                "status_label": stock.TRANSFER_STATUS_LABELS_RU[o["status"]],
+                "out_movement_id": o["out_movement_id"], "close_movement_id": o["close_movement_id"],
+                "source_doc": o["source_doc"], "reason": o["reason"], "close_reason": o["close_reason"],
+                "version": o["version"], "created_by": o["created_by"], "created_at": iso(o["created_at"]),
+                "closed_by": o["closed_by"], "closed_at": iso(o["closed_at"]) if o["closed_at"] else None,
+                "legacy": False}
+
+    @staticmethod
+    def v_transfer(o: dict) -> dict:
+        """Одношаговое перемещение схемы v8 (история) в том же виде, что и v_shipment: сразу «Принято», без версии —
+        менять его нечем. legacy=True, чтобы клиент не предлагал действий.
+        """
+        return {"id": o["id"], "item_id": o["item_id"], "from_warehouse_id": o["from_warehouse_id"],
+                "to_warehouse_id": o["to_warehouse_id"], "qty": money.to_json(o["qty"]), "status": "received",
+                "status_label": stock.TRANSFER_STATUS_LABELS_RU["received"],
+                "out_movement_id": o["out_movement_id"], "close_movement_id": o["in_movement_id"],
+                "source_doc": o["source_doc"], "reason": o["reason"], "close_reason": None, "version": None,
+                "created_by": o["posted_by"], "created_at": iso(o["posted_at"]), "closed_by": o["posted_by"],
+                "closed_at": iso(o["posted_at"]), "legacy": True}
+
+    @staticmethod
+    def _legs(conn, since=None) -> dict[str, dict]:
+        """Какие движения журнала относятся к перемещениям: movement_id → {transfer_id, direction, peer_warehouse_id}.
+
+        since — не раньше этого времени (для pull: окно последних движений; движения перемещения проведены в моменты
+        его отгрузки и закрытия). Учитываются и одношаговые перемещения v8, и перемещения «в пути» v9.
+        """
+        legs: dict[str, dict] = {}
+        q1, q2 = sa.select(stock_transfers), sa.select(stock_shipments)
+        if since is not None:
+            q1 = q1.where(stock_transfers.c.posted_at >= since)
+            q2 = q2.where(sa.or_(stock_shipments.c.created_at >= since, stock_shipments.c.closed_at >= since))
+        for t in conn.execute(q1):
+            legs[t.out_movement_id] = {"transfer_id": t.id, "direction": "out", "peer_warehouse_id": t.to_warehouse_id}
+            legs[t.in_movement_id] = {"transfer_id": t.id, "direction": "in", "peer_warehouse_id": t.from_warehouse_id}
+        for t in conn.execute(q2):
+            legs[t.out_movement_id] = {"transfer_id": t.id, "direction": "out", "peer_warehouse_id": t.to_warehouse_id}
+            if t.close_movement_id:
+                # Приёмка — приход на получателе (второй склад — отправитель); возврат — приход обратно на отправителе
+                # (второй склад — тот, куда товар так и не доехал).
+                legs[t.close_movement_id] = ({"transfer_id": t.id, "direction": "in", "peer_warehouse_id": t.from_warehouse_id}
+                                             if t.status == "received" else
+                                             {"transfer_id": t.id, "direction": "return", "peer_warehouse_id": t.to_warehouse_id})
+        return legs
 
     # ------------------------------------------------------------ справочники
     def _warehouse_create(self, ctx, p, ev):
@@ -526,17 +571,18 @@ class StockMixin:
         reason = req_str(p, "reason", 2000)
         if orig["reverses_id"] is not None:
             raise Rejected("cannot_reverse_storno", "Сторно не сторнируется. Если сторно ошибочно — проведите движение заново.")
-        tr = ctx.conn.execute(sa.select(stock_transfers).where(sa.or_(stock_transfers.c.out_movement_id == orig["id"],
-                                                                      stock_transfers.c.in_movement_id == orig["id"]))).first()
+        tr = self._transfer_of_movement(ctx.conn, orig["id"])
         if tr is not None:
-            # Сторно одной половины «потеряло» бы товар: он ушёл бы с одного склада, оставшись на другом. Перемещение
-            # исправляют целиком — обратным перемещением (A-28).
+            # Сторно одного движения перемещения «потеряло» бы товар: он ушёл бы с одного склада, оставшись учтённым на
+            # другом (или «в пути»). Перемещение исправляют целиком (A-28, D-29).
             codes = {w.id: w.code for w in ctx.conn.execute(sa.select(warehouses.c.id, warehouses.c.code).where(
-                warehouses.c.id.in_([tr.from_warehouse_id, tr.to_warehouse_id])))}
-            raise Rejected("transfer_leg", f"Движение №{orig['doc_no']} — часть перемещения «{codes[tr.from_warehouse_id]} → "
-                           f"{codes[tr.to_warehouse_id]}». Отдельно его не сторнируют: ошибочное перемещение исправляют "
-                           f"обратным перемещением «{codes[tr.to_warehouse_id]} → {codes[tr.from_warehouse_id]}».",
-                           {"transfer_id": tr.id})
+                warehouses.c.id.in_([tr["from"], tr["to"]])))}
+            a, b = codes[tr["from"]], codes[tr["to"]]
+            fix = ("Перемещение ещё в пути: примите его на складе-получателе или верните отправителю."
+                   if tr["status"] == "in_transit" else
+                   f"Ошибочное перемещение исправляют обратным перемещением «{b} → {a}».")
+            raise Rejected("transfer_leg", f"Движение №{orig['doc_no']} — часть перемещения «{a} → {b}». Отдельно его не "
+                           f"сторнируют. {fix}", {"transfer_id": tr["id"]})
         done = ctx.conn.execute(sa.select(stock_movements.c.id).where(stock_movements.c.reverses_id == orig["id"])).first()
         if done:
             raise Rejected("already_reversed", f"Движение №{orig['doc_no']} уже сторнировано.", {"reversed_by": done.id})
@@ -555,21 +601,36 @@ class StockMixin:
         return {"movement": mv, "balance": {"warehouse_id": w["id"], "item_id": it["id"], **nb.to_json()}}
 
     # ------------------------------------------------------------ перемещение между складами
-    def _stock_transfer(self, ctx, p, ev):
-        """stock.transfer {id, item_id, from_warehouse_id, to_warehouse_id, qty, reason, source_doc?} — переместить
-        количество позиции с одного склада на другой (A-28). Только онлайн, только склад.
+    def _transfer_of_movement(self, conn, mid: str) -> Optional[dict]:
+        """Перемещение, к которому относится движение mid (v8 или v9), или None: {id, from, to, status}."""
+        t = conn.execute(sa.select(stock_transfers).where(sa.or_(stock_transfers.c.out_movement_id == mid,
+                                                                 stock_transfers.c.in_movement_id == mid))).first()
+        if t is not None:
+            return {"id": t.id, "from": t.from_warehouse_id, "to": t.to_warehouse_id, "status": "received"}
+        t = conn.execute(sa.select(stock_shipments).where(sa.or_(stock_shipments.c.out_movement_id == mid,
+                                                                 stock_shipments.c.close_movement_id == mid))).first()
+        if t is not None:
+            return {"id": t.id, "from": t.from_warehouse_id, "to": t.to_warehouse_id, "status": t.status}
+        return None
 
-        Одна транзакция: расход (issue) на отправителе + приход (receipt) на получателе + запись stock_transfers,
-        которая их связывает. Перемещать можно только ДОСТУПНОЕ на отправителе (остаток − резервы): резерв закреплён
-        за конкретным складом, и «увезти» его молча нельзя — сначала снять резерв (или дождаться следующего шага
-        «перемещение вместе с резервом»). Получатель должен быть действующим складом; отправитель может быть отключён
-        (именно так освобождают закрываемый склад). Позиция может быть отключена: общий запас не растёт.
-        Общий запас позиции не меняется, поэтому покрытие строк потребности (резервы) не затрагивается.
+    def _stock_transfer(self, ctx, p, ev):
+        """stock.transfer {id, item_id, from_warehouse_id, to_warehouse_id, qty, reason, source_doc?} — ОТГРУЗИТЬ
+        количество позиции на другой склад (A-28, D-29). Только онлайн, только склад.
+
+        Одна транзакция: расход (issue) на отправителе + запись перемещения в статусе «В пути». Приход на получателе
+        будет при приёмке (stock.transfer_accept); до тех пор товара нет ни на одном складе — его нельзя выдать или
+        зарезервировать, а в клиенте он показан отдельно как «в пути».
+
+        Отгружать можно только ДОСТУПНОЕ на отправителе (остаток − резервы): резерв закреплён за складом, и «увезти»
+        его молча нельзя — сначала снять резерв (перемещение вместе с резервом — открытый вопрос A-28). Получатель
+        должен быть действующим складом; отправитель может быть отключён (так освобождают закрываемый склад).
+        Позиция может быть отключена: запас компании не растёт.
         """
         only_keys(p, {"id", "item_id", "from_warehouse_id", "to_warehouse_id", "qty", "reason", "source_doc"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "stock.transfer", ctx.now)
         tid = req_uuid(p, "id")
-        self._ensure_new(ctx.conn, stock_transfers, tid)
+        self._ensure_new(ctx.conn, stock_shipments, tid)
+        self._ensure_new(ctx.conn, stock_transfers, tid)      # id перемещений v8 и v9 не пересекаются
         it = self._require(ctx.conn, stock_items, req_uuid(p, "item_id"), "Номенклатура")
         src = self._require(ctx.conn, warehouses, req_uuid(p, "from_warehouse_id"), "Склад-отправитель")
         dst = self._require(ctx.conn, warehouses, req_uuid(p, "to_warehouse_id"), "Склад-получатель")
@@ -581,35 +642,89 @@ class StockMixin:
         reason = req_str(p, "reason", 2000)              # зачем перемещаем — обязательно, как у выдачи (A-24)
         doc = opt_str(p, "source_doc", 200)              # накладная на перемещение — если оформляется
         row_s, b_s = self._load_balance(ctx.conn, src["id"], it["id"])
-        row_d, b_d = self._load_balance(ctx.conn, dst["id"], it["id"])
         try:
             nb_s = stock.issue_free(b_s, qty)            # только из доступного на отправителе
-            nb_d = stock.receive(b_d, qty)
         except stock.StockError as e:
             raise _stock_rejected(e)
         self._save_balance(ctx, src["id"], it["id"], row_s, nb_s)
-        self._save_balance(ctx, dst["id"], it["id"], row_d, nb_d)
-        # id половин выводятся из id перемещения: повтор транзакции (_tx) даёт те же id, а по журналу видно, какой
+        # id движений выводятся из id перемещения: повтор транзакции (_tx) даёт те же id, а по журналу видно, какой
         # операции принадлежит движение.
-        base = uuid.UUID(tid)
-        out_id, in_id = str(uuid.uuid5(base, "out")), str(uuid.uuid5(base, "in"))
+        out_id = str(uuid.uuid5(uuid.UUID(tid), "out"))
         common = {"transfer_id": tid, "from_warehouse_code": src["code"], "to_warehouse_code": dst["code"]}
         self._post(ctx, auth, mid=out_id, kind="issue", w=src, it=it, qty=qty, source_doc=doc, reason=reason,
                    details={**common, "balance_after": nb_s.to_json()})
-        self._post(ctx, auth, mid=in_id, kind="receipt", w=dst, it=it, qty=qty, source_doc=doc, reason=reason,
-                   details={**common, "balance_after": nb_d.to_json()})
-        ctx.conn.execute(stock_transfers.insert().values(
+        ctx.conn.execute(stock_shipments.insert().values(
             id=tid, item_id=it["id"], from_warehouse_id=src["id"], to_warehouse_id=dst["id"], qty=qty,
-            out_movement_id=out_id, in_movement_id=in_id, source_doc=doc, reason=reason, posted_by=ctx.user_id,
-            posted_at=ctx.now))
-        tr = self._get(ctx.conn, stock_transfers, tid)
-        ctx.log("stock_transfer", tid, auth, None, None,
-                {**common, "item_code": it["code"], "unit": it["unit"], "qty": money.to_json(qty),
-                 "out_movement_id": out_id, "in_movement_id": in_id, "source_doc": doc, "reason": reason})
-        return {"transfer": self.v_transfer(tr),
-                "movements": [self.v_movement(self._get(ctx.conn, stock_movements, m), transfer=tr) for m in (out_id, in_id)],
-                "balances": [{"warehouse_id": src["id"], "item_id": it["id"], **nb_s.to_json()},
-                             {"warehouse_id": dst["id"], "item_id": it["id"], **nb_d.to_json()}]}
+            status="in_transit", out_movement_id=out_id, source_doc=doc, reason=reason, version=1,
+            created_by=ctx.user_id, created_at=ctx.now))
+        sh = self._get(ctx.conn, stock_shipments, tid)
+        ctx.log("stock_transfer", tid, auth, None, 1,
+                {**common, "status": "in_transit", "item_code": it["code"], "unit": it["unit"], "qty": money.to_json(qty),
+                 "out_movement_id": out_id, "source_doc": doc, "reason": reason})
+        out = self._get(ctx.conn, stock_movements, out_id)
+        return {"transfer": self.v_shipment(sh),
+                "movements": [self.v_movement(out, leg={"transfer_id": tid, "direction": "out",
+                                                        "peer_warehouse_id": dst["id"]})],
+                "balances": [{"warehouse_id": src["id"], "item_id": it["id"], **nb_s.to_json()}]}
+
+    def _close_shipment(self, ctx, p, ev, command: str, outcome: str):
+        """Общая часть приёмки и возврата: проверить право, версию и статус «В пути», провести приход (на получателе
+        или обратно на отправителе), закрыть перемещение по version. Возвращает ответ команды.
+        """
+        auth = self.policy.check(ctx.conn, ctx.user_id, command, ctx.now)
+        sh = self._require(ctx.conn, stock_shipments, req_uuid(p, "id"), "Перемещение")
+        self._check_version(sh, ev, self.v_shipment)
+        if outcome == "received":
+            note = opt_str(p, "comment", 2000)           # комментарий приёмки — необязателен
+        else:
+            note = req_str(p, "reason", 2000)            # почему возвращаем — обязательно
+        if sh["status"] != "in_transit":
+            raise Rejected("transfer_state", f"Перемещение уже в статусе «{stock.TRANSFER_STATUS_LABELS_RU[sh['status']]}» — "
+                           "повторно принять или вернуть его нельзя.", {"status": sh["status"]})
+        it = self._get(ctx.conn, stock_items, sh["item_id"])
+        src = self._get(ctx.conn, warehouses, sh["from_warehouse_id"])
+        dst = self._get(ctx.conn, warehouses, sh["to_warehouse_id"])
+        # Возврат принимается и на отключённый склад-отправитель: это не новый запас, а отмена отгрузки. Приёмка на
+        # отключённый получатель — отказ с подсказкой (склад могли отключить, пока товар был в пути).
+        if outcome == "received" and not dst["active"]:
+            raise Rejected("warehouse_inactive", f"Склад-получатель «{dst['code']}» отключён: принять на него нельзя. "
+                           "Включите склад или верните перемещение отправителю.")
+        to_w = dst if outcome == "received" else src
+        row, b = self._load_balance(ctx.conn, to_w["id"], it["id"])
+        nb = stock.receive(b, sh["qty"])
+        self._save_balance(ctx, to_w["id"], it["id"], row, nb)
+        direction = "in" if outcome == "received" else "return"
+        mid = str(uuid.uuid5(uuid.UUID(sh["id"]), direction))
+        common = {"transfer_id": sh["id"], "from_warehouse_code": src["code"], "to_warehouse_code": dst["code"]}
+        self._post(ctx, auth, mid=mid, kind="receipt", w=to_w, it=it, qty=sh["qty"], source_doc=sh["source_doc"],
+                   reason=note or sh["reason"], details={**common, "direction": direction, "balance_after": nb.to_json()})
+        n = self._update_versioned(ctx, stock_shipments, sh, {"status": outcome, "close_movement_id": mid,
+                                                              "close_reason": note, "closed_by": ctx.user_id,
+                                                              "closed_at": ctx.now})
+        ctx.log("stock_transfer", sh["id"], auth, sh["version"], n["version"],
+                {**common, "status": outcome, "close_movement_id": mid, "close_reason": note,
+                 "item_code": it["code"], "unit": it["unit"], "qty": money.to_json(sh["qty"])})
+        mv = self._get(ctx.conn, stock_movements, mid)
+        peer = src["id"] if outcome == "received" else dst["id"]
+        return {"transfer": self.v_shipment(n),
+                "movements": [self.v_movement(mv, leg={"transfer_id": sh["id"], "direction": direction,
+                                                       "peer_warehouse_id": peer})],
+                "balances": [{"warehouse_id": to_w["id"], "item_id": it["id"], **nb.to_json()}]}
+
+    def _stock_transfer_accept(self, ctx, p, ev):
+        """stock.transfer_accept {id, comment?} + версия — ПРИНЯТЬ перемещение на складе-получателе (D-29): приход на
+        получатель, статус «Принято». Только онлайн, только склад. Принимается всё отгруженное количество (частичная
+        приёмка и недостача — открытый вопрос A-29).
+        """
+        only_keys(p, {"id", "comment"})
+        return self._close_shipment(ctx, p, ev, "stock.transfer_accept", "received")
+
+    def _stock_transfer_cancel(self, ctx, p, ev):
+        """stock.transfer_cancel {id, reason} + версия — ВЕРНУТЬ перемещение отправителю, пока оно в пути (D-29): приход
+        обратно на склад-отправитель, статус «Возвращено отправителю». Причина обязательна.
+        """
+        only_keys(p, {"id", "reason"})
+        return self._close_shipment(ctx, p, ev, "stock.transfer_cancel", "returned")
 
     # ------------------------------------------------------------ резервы
     def _need_line_covered(self, conn, need_id: str, line_id: str) -> Decimal:
@@ -986,7 +1101,8 @@ class StockMixin:
         """
         out: dict[str, Any] = {"warehouses": [], "stock_items": [], "stock_balances": [], "stock_reservations": [],
                                "stock_movements": [], "stock_movements_truncated": False, "needs": [], "stock_projects": [],
-                               "need_candidates": [], "item_aliases": [], "unit_conversions": []}
+                               "need_candidates": [], "item_aliases": [], "unit_conversions": [],
+                               "stock_transfers": []}
         can_stock = self.policy.can(conn, uid, "stock.read", now)
         if can_stock:
             out["warehouses"] = [self.v_warehouse(dict(r._mapping)) for r in conn.execute(sa.select(warehouses).order_by(warehouses.c.code))]
@@ -1005,15 +1121,24 @@ class StockMixin:
             rows = rows[:PULL_MOVEMENTS_LIMIT]
             rev = {r.reverses_id: r.id for r in conn.execute(sa.select(stock_movements.c.id, stock_movements.c.reverses_id)
                                                              .where(stock_movements.c.reverses_id.isnot(None)))}
-            # Перемещения, к которым относятся отданные движения: обе половины проведены в один момент, поэтому
-            # достаточно перемещений не старше самого раннего движения выборки (без длинного списка id в запросе —
-            # у MS SQL предел ~2100 параметров).
-            legs: dict[str, dict] = {}
-            if rows:
-                for t in conn.execute(sa.select(stock_transfers).where(
-                        stock_transfers.c.posted_at >= min(m["posted_at"] for m in rows))):
-                    legs[t.out_movement_id] = legs[t.in_movement_id] = dict(t._mapping)
+            # Перемещения, к которым относятся отданные движения: берём перемещения, отгруженные или закрытые не раньше
+            # самого раннего движения выборки (без длинного списка id в запросе — у MS SQL предел ~2100 параметров).
+            since = min(m["posted_at"] for m in rows) if rows else None
+            legs = self._legs(conn, since) if rows else {}
             out["stock_movements"] = [self.v_movement(m, rev.get(m["id"]), legs.get(m["id"])) for m in rows]
+            # Перемещения: ВСЕ «в пути» (по ним нужны действия) и закрытые/одношаговые — в том же окне, что и движения.
+            ships = sa.select(stock_shipments).where(stock_shipments.c.status == "in_transit")
+            if since is not None:
+                ships = sa.select(stock_shipments).where(sa.or_(stock_shipments.c.status == "in_transit",
+                                                                stock_shipments.c.created_at >= since,
+                                                                stock_shipments.c.closed_at >= since))
+            trs = [self.v_shipment(dict(r._mapping)) for r in conn.execute(ships)]
+            if since is not None:
+                trs += [self.v_transfer(dict(r._mapping)) for r in conn.execute(
+                    sa.select(stock_transfers).where(stock_transfers.c.posted_at >= since))]
+            # Сначала «в пути», внутри групп — новые сверху (сортировки устойчивы: сперва по времени, затем по группе).
+            trs.sort(key=lambda t: t["created_at"], reverse=True)
+            out["stock_transfers"] = sorted(trs, key=lambda t: t["status"] != "in_transit")
             # Склад выдаёт и резервирует «на проект» — ему нужен минимальный перечень проектов (код, название, статус).
             out["stock_projects"] = [{"id": r.id, "code": r.code, "title": r.title, "status": r.status}
                                      for r in conn.execute(sa.select(projects.c.id, projects.c.code, projects.c.title,

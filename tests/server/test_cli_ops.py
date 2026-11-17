@@ -199,7 +199,9 @@ def test_demo_seed_only_into_fresh_db(setup):
     wh = svc.handle({"type": "login", "login": "i.belova", "password": DEMO_PWD, "device_id": "t"}, "t")
     sp = svc.handle({"type": "query", "token": wh["token"], "query": "pull"}, "t")["result"]
     assert len(sp["warehouses"]) == 2 and any(m["reverses_id"] for m in sp["stock_movements"])
-    assert sum(1 for m in sp["stock_movements"] if m["transfer_id"]) == 2      # перемещение — две связанные записи
+    # Перемещения: принятое — две связанные записи журнала, второе ещё «в пути» — одна (отгрузка).
+    assert sum(1 for m in sp["stock_movements"] if m["transfer_id"]) == 3
+    assert sorted(t["status"] for t in sp["stock_transfers"]) == ["in_transit", "received"]
     assert svc.ledger_mismatches() == []
     buyer = svc.handle({"type": "login", "login": "s.morozov", "password": DEMO_PWD, "device_id": "t"}, "t")
     needs = svc.handle({"type": "query", "token": buyer["token"], "query": "pull"}, "t")["result"]["needs"]

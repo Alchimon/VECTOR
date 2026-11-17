@@ -347,7 +347,8 @@ def test_reserve_under_need_line_is_capped_by_open_quantity(world, st):
 
 def test_stock_commands_are_online_only_in_contract(world):
     cat = world.svc.contracts.catalog["commands"]
-    for c in ("stock.receive", "stock.issue", "stock.reverse", "stock.transfer", "stock.reserve", "stock.release",
+    for c in ("stock.receive", "stock.issue", "stock.reverse", "stock.transfer", "stock.transfer_accept",
+              "stock.transfer_cancel", "stock.reserve", "stock.release",
               "need.generate"):
         assert cat[c]["offline"] == "online_required", c
     for c in ("warehouse.create", "warehouse.update", "item.create", "item.update"):
@@ -361,7 +362,7 @@ def test_history_of_movement_visible_to_stock_roles_only(st):
     assert st.proj.gip.query("history", object_type="stock_movement", object_id=m["id"])["status"] == "denied"
 
 
-# ====================================================================== перемещение между складами (A-28)
+# ====================================================================== перемещение между складами (A-28, D-29)
 def second_warehouse(st, code="СК-2"):
     """Второй склад для перемещений."""
     w2 = new_id()
@@ -370,9 +371,19 @@ def second_warehouse(st, code="СК-2"):
 
 
 def transfer(s, st, qty, src=None, dst=None, **kw):
-    """Перемещение qty позиции теста со склада src (по умолчанию основной) на dst."""
+    """Отгрузка qty позиции теста со склада src (по умолчанию основной) на dst: перемещение «В пути»."""
     return s.cmd("stock.transfer", {"id": new_id(), "item_id": st.item, "from_warehouse_id": src or st.w,
                                     "to_warehouse_id": dst, "qty": qty, "reason": "На участок монтажа", **kw})
+
+
+def accept(s, t, **kw):
+    """Приёмка перемещения t (результат transfer) на складе-получателе, с версией перемещения."""
+    return s.cmd("stock.transfer_accept", {"id": t["id"], **kw}, expected_version=t["version"])
+
+
+def give_back(s, t, reason="Не тот склад", **kw):
+    """Возврат перемещения t отправителю (пока оно в пути)."""
+    return s.cmd("stock.transfer_cancel", {"id": t["id"], "reason": reason, **kw}, expected_version=t["version"])
 
 
 def bal_at(s, st, w):
@@ -382,28 +393,55 @@ def bal_at(s, st, w):
     return (b[0]["on_hand"], b[0]["reserved"], b[0]["available"]) if b else None
 
 
-def test_transfer_moves_available_with_two_linked_movements(world, st):
+def test_transfer_ships_in_transit_then_receiver_accepts(world, st):
     w2 = second_warehouse(st)
     receive(st.wh, st, "10")
     r = transfer(st.wh, st, "4", dst=w2, source_doc="Накладная на перемещение № 7")
     assert r["status"] == "accepted", r
-    t, (out, inn) = r["result"]["transfer"], r["result"]["movements"]
-    assert (t["qty"], t["from_warehouse_id"], t["to_warehouse_id"]) == ("4.0000", st.w, w2)
+    t, (out,) = r["result"]["transfer"], r["result"]["movements"]
+    assert (t["status"], t["status_label"], t["qty"], t["version"]) == ("in_transit", "В пути", "4.0000", 1)
     assert (out["kind"], out["warehouse_id"], out["kind_label"]) == ("issue", st.w, "Расход по перемещению")
-    assert (inn["kind"], inn["warehouse_id"], inn["kind_label"]) == ("receipt", w2, "Приход по перемещению")
-    assert out["doc_no"] + 1 == inn["doc_no"] and out["project_id"] is None
-    assert (out["transfer_direction"], out["transfer_peer_warehouse_id"]) == ("out", w2)
-    assert (inn["transfer_direction"], inn["transfer_peer_warehouse_id"]) == ("in", st.w)
-    # Общий запас не изменился — изменилось распределение по складам.
+    assert (out["transfer_direction"], out["transfer_peer_warehouse_id"], out["project_id"]) == ("out", w2, None)
+    # В пути: у отправителя уже нет, у получателя ещё нет — выдать или зарезервировать на получателе нечего.
     assert bal_at(st.wh, st, st.w) == ("6.0000", "0.0000", "6.0000")
-    assert bal_at(st.wh, st, w2) == ("4.0000", "0.0000", "4.0000")
+    assert bal_at(st.wh, st, w2) is None
+    assert reserve(st.wh, st, "1", warehouse_id=w2)["code"] == "insufficient_available"
+    pulled = st.pr.query("pull")["result"]
+    assert [(x["id"], x["status"]) for x in pulled["stock_transfers"]] == [(t["id"], "in_transit")]
     assert world.svc.ledger_mismatches() == []
-    # pull отдаёт половины с признаком перемещения; история перемещения видна складу и закупке.
-    pulled = {m["id"]: m for m in st.pr.query("pull")["result"]["stock_movements"]}
-    assert pulled[out["id"]]["transfer_id"] == pulled[inn["id"]]["transfer_id"] == t["id"]
+    # Приёмка: приход на получателе, «Принято»; повторно принять или вернуть — нельзя.
+    a = accept(st.wh2, t, comment="Принято без замечаний")
+    assert a["status"] == "accepted", a
+    t2, (inn,) = a["result"]["transfer"], a["result"]["movements"]
+    assert (t2["status"], t2["version"], t2["close_reason"]) == ("received", 2, "Принято без замечаний")
+    assert (inn["kind"], inn["warehouse_id"], inn["kind_label"], inn["transfer_peer_warehouse_id"]) == \
+        ("receipt", w2, "Приход по перемещению", st.w)
+    assert bal_at(st.wh, st, w2) == ("4.0000", "0.0000", "4.0000")
+    assert accept(st.wh, t2)["code"] == "transfer_state"
+    assert give_back(st.wh, t2)["code"] == "transfer_state"
+    assert accept(st.wh, t)["status"] == "conflict"                    # устаревшая версия — конфликт, не повтор
+    # pull: оба движения помечены перемещением; история — у ролей склада.
+    mv = {m["id"]: m for m in st.pr.query("pull")["result"]["stock_movements"]}
+    assert mv[out["id"]]["transfer_id"] == mv[inn["id"]]["transfer_id"] == t["id"]
     h = st.pr.query("history", object_type="stock_transfer", object_id=t["id"])
-    assert h["status"] == "accepted" and h["result"][0]["details"]["to_warehouse_code"] == "СК-2"
+    assert h["status"] == "accepted" and [x["details"]["status"] for x in h["result"]] == ["in_transit", "received"]
     assert st.proj.gip.query("history", object_type="stock_transfer", object_id=t["id"])["status"] == "denied"
+    assert world.svc.ledger_mismatches() == []
+
+
+def test_transfer_returned_to_sender_while_in_transit(world, st):
+    w2 = second_warehouse(st)
+    receive(st.wh, st, "5")
+    t = transfer(st.wh, st, "5", dst=w2)["result"]["transfer"]
+    assert give_back(st.wh, t, reason=" ")["code"] == "field_required"          # причина возврата обязательна
+    r = give_back(st.wh, t, reason="Отгрузили не на тот склад")
+    assert r["status"] == "accepted", r
+    t2, (ret,) = r["result"]["transfer"], r["result"]["movements"]
+    assert (t2["status"], t2["status_label"]) == ("returned", "Возвращено отправителю")
+    assert (ret["kind"], ret["warehouse_id"], ret["kind_label"]) == ("receipt", st.w, "Возврат по перемещению")
+    assert bal_at(st.wh, st, st.w) == ("5.0000", "0.0000", "5.0000") and bal_at(st.wh, st, w2) is None
+    assert accept(st.wh, t2)["code"] == "transfer_state"
+    assert world.svc.ledger_mismatches() == []
 
 
 def test_transfer_rules_and_rights(world, st):
@@ -416,34 +454,45 @@ def test_transfer_rules_and_rights(world, st):
     assert transfer(st.wh, st, "1", dst=st.w)["code"] == "same_warehouse"
     assert transfer(st.wh, st, "1", dst=w2, reason=" ")["code"] == "field_required"   # причина обязательна
     assert transfer(st.wh, st, "1,5", dst=w2)["status"] == "rejected"           # формат количества — как у выдачи
-    assert transfer(st.pr, st, "1", dst=w2)["status"] == "denied"             # закупка не проводит
-    assert transfer(world.admin, st, "1", dst=w2)["status"] == "denied"       # admin бизнес-прав не получает
-    assert transfer(st.proj.gip, st, "1", dst=w2)["status"] == "denied"
-    # Получатель — только действующий склад; отправитель может быть отключён (так освобождают закрываемый склад).
+    for who in (st.pr, world.admin, st.proj.gip):                              # закупка, admin, ГИП — не проводят
+        assert transfer(who, st, "1", dst=w2)["status"] == "denied"
+    t = transfer(st.wh, st, "1", dst=w2)["result"]["transfer"]
+    for who in (st.pr, world.admin):
+        assert accept(who, t)["status"] == "denied" and give_back(who, t)["status"] == "denied"
+    # Получатель отключили, пока товар в пути: принять нельзя (подсказка — вернуть), вернуть можно.
     st.wh.ok("warehouse.update", {"id": w2, "active": False}, expected_version=1)
     assert transfer(st.wh, st, "1", dst=w2)["code"] == "warehouse_inactive"
+    r = accept(st.wh, t)
+    assert r["code"] == "warehouse_inactive" and "верните" in r["message_ru"]
+    assert give_back(st.wh, t)["status"] == "accepted"
+    # С отключённого склада отгружать можно (так освобождают закрываемый склад), и возврат на него тоже проходит.
     st.wh.ok("warehouse.update", {"id": w2, "active": True}, expected_version=2)
-    assert transfer(st.wh, st, "2", dst=w2)["status"] == "accepted"
+    t = transfer(st.wh, st, "2", dst=w2)["result"]["transfer"]
+    accept(st.wh, t)
     st.wh.ok("warehouse.update", {"id": w2, "active": False}, expected_version=3)
-    assert transfer(st.wh, st, "2", src=w2, dst=st.w)["status"] == "accepted"
+    back = transfer(st.wh, st, "2", src=w2, dst=st.w)["result"]["transfer"]
+    assert accept(st.wh, back)["status"] == "accepted"
     assert bal_at(st.wh, st, w2) == ("0.0000", "0.0000", "0.0000")
     assert bal_at(st.wh, st, st.w) == ("5.0000", "3.0000", "2.0000")
     assert world.svc.ledger_mismatches() == []
 
 
-def test_transfer_leg_cannot_be_reversed_fix_is_reverse_transfer(world, st):
+def test_transfer_movements_cannot_be_reversed(world, st):
     w2 = second_warehouse(st)
     rc = receive(st.wh, st, "3")["result"]["movement"]
-    out, inn = transfer(st.wh, st, "3", dst=w2)["result"]["movements"]
+    t = transfer(st.wh, st, "3", dst=w2)["result"]
+    out = t["movements"][0]
+    r = st.wh.cmd("stock.reverse", {"id": new_id(), "movement_id": out["id"], "reason": "Ошибка"})
+    assert (r["code"], "в пути" in r["message_ru"]) == ("transfer_leg", True)
+    inn = accept(st.wh, t["transfer"])["result"]["movements"][0]
     for m in (out, inn):
         r = st.wh.cmd("stock.reverse", {"id": new_id(), "movement_id": m["id"], "reason": "Ошибка"})
         assert (r["status"], r["code"]) == ("rejected", "transfer_leg"), r
         assert "СК-2 → СК-1" in r["message_ru"]
-    # Приход на отправителе уже не сторнировать: товар уехал на другой склад (доступно 0).
-    r = st.wh.cmd("stock.reverse", {"id": new_id(), "movement_id": rc["id"], "reason": "Ошибка"})
-    assert r["status"] == "rejected"
-    # Исправление — обратное перемещение; после него сторно прихода снова возможно.
-    assert transfer(st.wh, st, "3", src=w2, dst=st.w, reason="Ошибочное перемещение")["status"] == "accepted"
+    # Приход на отправителе уже не сторнировать: товар уехал (доступно 0). Исправление — обратное перемещение.
+    assert st.wh.cmd("stock.reverse", {"id": new_id(), "movement_id": rc["id"], "reason": "Ошибка"})["status"] == "rejected"
+    back = transfer(st.wh, st, "3", src=w2, dst=st.w, reason="Ошибочное перемещение")["result"]["transfer"]
+    accept(st.wh, back)
     assert st.wh.cmd("stock.reverse", {"id": new_id(), "movement_id": rc["id"], "reason": "Ошибка"})["status"] == "accepted"
     assert bal_at(st.wh, st, st.w) == ("0.0000", "0.0000", "0.0000")
     assert world.svc.ledger_mismatches() == []
@@ -452,13 +501,18 @@ def test_transfer_leg_cannot_be_reversed_fix_is_reverse_transfer(world, st):
 def test_transfer_is_idempotent_and_ids_are_unique(world, st):
     w2 = second_warehouse(st)
     receive(st.wh, st, "5")
-    tid = new_id()
-    p = {"id": tid, "item_id": st.item, "from_warehouse_id": st.w, "to_warehouse_id": w2, "qty": "2", "reason": "x"}
+    p = {"id": new_id(), "item_id": st.item, "from_warehouse_id": st.w, "to_warehouse_id": w2, "qty": "2", "reason": "x"}
     op = new_id()
     a = st.wh.cmd("stock.transfer", p, op_id=op)
     b = st.wh.cmd("stock.transfer", p, op_id=op)        # повтор той же операции (обрыв связи) — тот же итог
     assert a["status"] == b["status"] == "accepted" and a["result"] == b["result"]
     assert st.wh.cmd("stock.transfer", p)["code"] == "id_exists"  # новая операция с тем же id перемещения — отказ
+    assert bal_at(st.wh, st, st.w) == ("3.0000", "0.0000", "3.0000")
+    op = new_id()
+    t = a["result"]["transfer"]
+    x = st.wh.cmd("stock.transfer_accept", {"id": t["id"]}, expected_version=1, op_id=op)
+    y = st.wh.cmd("stock.transfer_accept", {"id": t["id"]}, expected_version=1, op_id=op)
+    assert x["status"] == y["status"] == "accepted" and x["result"] == y["result"]
     assert bal_at(st.wh, st, w2) == ("2.0000", "0.0000", "2.0000")
 
 
@@ -470,3 +524,36 @@ def test_concurrent_transfers_of_last_units_only_one_wins(world, st):
     results = _race(world, [st.wh.token, st.wh2.token], [mk(w2), mk(w3)])
     assert sorted(r["status"] for r in results) == ["accepted", "rejected"], results
     assert world.svc.ledger_mismatches() == []
+
+
+def test_concurrent_accept_and_return_only_one_wins(world, st):
+    w2 = second_warehouse(st)
+    receive(st.wh, st, "2")
+    t = transfer(st.wh, st, "2", dst=w2)["result"]["transfer"]
+    results = _race(world, [st.wh.token, st.wh2.token],
+                    [("stock.transfer_accept", {"id": t["id"]}), ("stock.transfer_cancel", {"id": t["id"], "reason": "x"})])
+    assert sorted(r["status"] for r in results) in (["accepted", "rejected"], ["accepted", "conflict"]), results
+    on_hand = (bal_at(st.wh, st, st.w)[0], (bal_at(st.wh, st, w2) or ("0.0000",))[0])
+    assert on_hand in (("0.0000", "2.0000"), ("2.0000", "0.0000"))     # товар ровно в одном месте
+    assert world.svc.ledger_mismatches() == []
+
+
+def test_legacy_one_step_transfers_stay_visible_and_protected(world, st):
+    """Перемещения, проведённые версией со схемой v8 (одним шагом, таблица stock_transfers), после обновления видны
+    как «Принято» без действий, и их движения по-прежнему нельзя сторнировать по отдельности."""
+    w2 = second_warehouse(st)
+    a = receive(st.wh, st, "2")["result"]["movement"]
+    b = receive(st.wh, st, "2", w=w2)["result"]["movement"]
+    tid = new_id()
+    with world.svc.engine.begin() as c:     # запись, как её оставила версия v8 (связка двух движений)
+        c.execute(db.stock_transfers.insert().values(
+            id=tid, item_id=st.item, from_warehouse_id=st.w, to_warehouse_id=w2, qty=Decimal("2"),
+            out_movement_id=a["id"], in_movement_id=b["id"], reason="v8", posted_by=st.wh.user_id,
+            posted_at=world.clock.now()))
+    r = st.wh.query("pull")["result"]
+    legacy = [t for t in r["stock_transfers"] if t["id"] == tid]
+    assert legacy and (legacy[0]["status"], legacy[0]["legacy"], legacy[0]["version"]) == ("received", True, None)
+    mv = {m["id"]: m for m in r["stock_movements"]}
+    assert (mv[a["id"]]["kind_label"], mv[b["id"]]["kind_label"]) == ("Расход по перемещению", "Приход по перемещению")
+    rv = st.wh.cmd("stock.reverse", {"id": new_id(), "movement_id": a["id"], "reason": "x"})
+    assert rv["code"] == "transfer_leg"

@@ -142,7 +142,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, ConfigMixin):
             "item_alias.create": self._item_alias_create, "item_alias.update": self._item_alias_update,
             "unit_conversion.create": self._unit_conversion_create, "unit_conversion.update": self._unit_conversion_update,
             "stock.receive": self._stock_receive, "stock.issue": self._stock_issue, "stock.reverse": self._stock_reverse,
-            "stock.transfer": self._stock_transfer,
+            "stock.transfer": self._stock_transfer, "stock.transfer_accept": self._stock_transfer_accept,
+            "stock.transfer_cancel": self._stock_transfer_cancel,
             "stock.reserve": self._stock_reserve, "stock.release": self._stock_release,
             "need.generate": self._need_generate, "need.match_line": self._need_match_line,
         }
