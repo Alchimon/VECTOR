@@ -30,6 +30,17 @@
 * **реквизиты поставщика** (check_requisites, A-39): КПП, ОГРН/ОГРНИП, БИК, расчётный и корреспондентский счета —
   необязательны; если указаны — проверяются формат и контрольные цифры (алгоритмы ФНС и Банка России) и
   согласованность (КПП и ОГРН — у организации, ОГРНИП — у ИП; счёт — только вместе с БИК).
+
+Дополнения D-34 (ответ владельца на A-38: «ни в коем случае не должно быть, что из-за ошибок посчитано неверно»):
+* **самопроверка расчёта** (vat_totals): каждый НДС строки пересчитывается второй, независимой реализацией на
+  точных дробях (fractions.Fraction, своё округление в целых копейках) и сверяется с основной; проверяются и
+  тождества «без НДС + НДС = с НДС» по строкам и в итоге, «сумма НДС по ставкам = НДС итога». Не сошлось — суммы
+  НЕ показываются (check_failed), заказ нельзя отправить на согласование (calc_check_failed). Fail-closed;
+* **сверка со счётом поставщика** (invoice_check): итог «с НДС» и НДС по счёту вводятся в черновике и сравниваются
+  с расчётом до копейки; расхождение или невозможность сверить (строки без цены) — при отправке на согласование
+  нужна причина, согласующий видит её в блоке «Контроль расчёта» (calc_control);
+* **доли копейки** (kopeck_lines): сумма строки точная (количество × цена), но в счёте она будет в целых копейках —
+  такие строки помечаются, чтобы расхождение со счётом было видно заранее.
 """
 from __future__ import annotations
 
@@ -38,6 +49,7 @@ import json
 import re
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
+from fractions import Fraction
 from typing import Any, Optional
 
 from . import money
@@ -53,7 +65,8 @@ FIELD_LABELS_RU = {"line_id": "Идентификатор строки", "item_i
                    "need_id": "Потребность", "need_line_id": "Строка потребности", "note": "Примечание",
                    "currency": "Валюта", "lines": "Строки", "amount": "Сумма", "inn": "ИНН", "vat_rate": "Ставка НДС",
                    "vat_mode": "Цены с НДС / без НДС", "kpp": "КПП", "ogrn": "ОГРН", "bik": "БИК",
-                   "bank_account": "Расчётный счёт", "corr_account": "Корр. счёт"}
+                   "bank_account": "Расчётный счёт", "corr_account": "Корр. счёт",
+                   "invoice_gross": "Сумма по счёту с НДС", "invoice_vat": "НДС по счёту", "invoice_reason": "Причина расхождения"}
 
 # Ставки НДС (ст. 164 НК РФ в редакции 425-ФЗ: основная 22 % с 01.01.2026, льготные 10 % и 0 %, специальные 5 % и
 # 7 % для УСН) и «без НДС» (поставщик не плательщик / операция освобождена). Код ставки — строка, как в протоколе.
@@ -247,11 +260,38 @@ def line_vat(amount: Optional[Decimal], rate: Optional[str], mode: Optional[str]
     return amount, vat, amount + vat
 
 
+def _vat_exact(amount: Decimal, rate: Optional[str], mode: str) -> tuple[Fraction, Fraction, Fraction]:
+    """Независимый расчёт НДС строки для самопроверки (D-34): точные дроби и округление в целых копейках.
+
+    Намеренно не использует Decimal и quantize основной реализации: сумма переводится в дробь, НДС считается
+    точной дробью и округляется «половина — от нуля» через целочисленное деление. Если обе реализации дают одно и то
+    же — ошибка округления или формулы в одной из них исключена.
+    """
+    a = Fraction(amount)                      # Decimal → точная дробь (без двоичной погрешности)
+    r = VAT_RATES[rate]
+    if not r:
+        return a, Fraction(0), a
+    r = Fraction(r)
+    exact = a * r / (100 + r) if mode == "included" else a * r / 100
+    cents = exact * 100
+    sign = -1 if cents < 0 else 1
+    k = abs(cents)
+    whole = k.numerator // k.denominator
+    if (k - whole) * 2 >= 1:                  # 0,5 копейки и больше — вверх (математическое округление)
+        whole += 1
+    vat = Fraction(sign * whole, 100)
+    return (a - vat, vat, a) if mode == "included" else (a, vat, a + vat)
+
+
 def vat_totals(lines: list[Line], mode: Optional[str]) -> dict:
     """Итоги НДС по строкам с известной ценой: без НДС, НДС, с НДС и НДС по ставкам.
 
     unknown_count — строки с ценой, для которых НДС не посчитать (не указан режим цен заказа или ставка строки);
     если такие есть, net/vat/gross — None (итог НДС неизвестен, а не меньше). Без цен — тоже None.
+
+    Самопроверка (D-34, A-38): каждый НДС строки сверяется с независимым расчётом _vat_exact, проверяются тождества
+    по строкам, итогам и ставкам. Если хоть что-то не сошлось — check_failed=True и все суммы None: неверные числа
+    не показываются и не уходят на согласование (лучше «не посчитано», чем «посчитано неверно»).
     """
     priced = [ln for ln in lines if ln.amount is not None]
     parts = [(ln, line_vat(ln.amount, ln.vat_rate, mode)) for ln in priced]
@@ -261,12 +301,30 @@ def vat_totals(lines: list[Line], mode: Optional[str]) -> dict:
         if v is not None:
             by_rate[ln.vat_rate] = by_rate.get(ln.vat_rate, ZERO) + v[1]
     known = bool(priced) and unknown == 0
-    return {"net": money.to_json(sum((v[0] for _, v in parts), ZERO)) if known else None,
-            "vat": money.to_json(sum((v[1] for _, v in parts), ZERO)) if known else None,
-            "gross": money.to_json(sum((v[2] for _, v in parts), ZERO)) if known else None,
-            "by_rate": [{"rate": r, "label": VAT_RATE_LABELS_RU[r], "vat": money.to_json(by_rate[r])}
-                        for r in VAT_RATES if r in by_rate],
-            "unknown_count": unknown, "mode": mode}
+    net = sum((v[0] for _, v in parts if v), ZERO)
+    vat = sum((v[1] for _, v in parts if v), ZERO)
+    gross = sum((v[2] for _, v in parts if v), ZERO)
+    failed = not _totals_consistent(parts, mode, net, vat, gross, by_rate)
+    show = known and not failed
+    return {"net": money.to_json(net) if show else None,
+            "vat": money.to_json(vat) if show else None,
+            "gross": money.to_json(gross) if show else None,
+            "by_rate": [] if failed else [{"rate": r, "label": VAT_RATE_LABELS_RU[r], "vat": money.to_json(by_rate[r])}
+                                          for r in VAT_RATES if r in by_rate],
+            "unknown_count": unknown, "mode": mode, "check_failed": failed}
+
+
+def _totals_consistent(parts: list, mode: Optional[str], net: Decimal, vat: Decimal, gross: Decimal,
+                       by_rate: dict[str, Decimal]) -> bool:
+    """Самопроверка итогов НДС: независимый пересчёт каждой строки и тождества (см. vat_totals). True — всё сошлось."""
+    for ln, v in parts:
+        if v is None:
+            continue
+        if v[0] + v[1] != v[2] or v[1] != v[1].quantize(_KOPECK):
+            return False
+        if tuple(Fraction(x) for x in v) != _vat_exact(ln.amount, ln.vat_rate, mode):
+            return False
+    return net + vat == gross and sum(by_rate.values(), ZERO) == vat
 
 
 def ready_problems(lines: list[Line], currency: Optional[str], vat_mode: Optional[str]) -> list[dict]:
@@ -287,16 +345,144 @@ def ready_problems(lines: list[Line], currency: Optional[str], vat_mode: Optiona
     for n in priced:
         if lines[n - 1].vat_rate is None:
             out.append(_problem(n, "vat_rate", "vat_rate_required", "Укажите ставку НДС (или «Без НДС»)."))
+    if priced and vat_mode is not None and vat_totals(lines, vat_mode)["check_failed"]:
+        out.append(_problem(None, "vat", "calc_check_failed", CALC_CHECK_FAILED_RU))
     return out
 
 
+CALC_CHECK_FAILED_RU = ("Расчёт НДС не прошёл самопроверку — суммы не показываются, отправить заказ нельзя. "
+                        "Это ошибка программы: сообщите администратору (данные заказа не изменены).")
+
+
+# ------------------------------------------------------------ контроль расчёта и сверка со счётом (D-34, A-38)
+INVOICE_STATE_LABELS_RU = {"none": "Сверка со счётом поставщика не проведена (суммы по счёту не введены)",
+                           "match": "Сходится со счётом поставщика до копейки",
+                           "mismatch": "Расхождение со счётом поставщика",
+                           "unknown": "Сверить со счётом нельзя: расчёт неполный"}
+
+
+def check_invoice_amount(value: Any, field: str) -> Optional[Decimal]:
+    """Сумма по счёту поставщика (с НДС или НДС): None/пусто — не введена; иначе Decimal ≥ 0 в целых копейках.
+
+    В счёте суммы всегда в копейках, поэтому больше двух знаков после запятой — ошибка ввода, а не округление.
+    """
+    if value in (None, ""):
+        return None
+    label = "Сумма по счёту с НДС" if field == "invoice_gross" else "НДС по счёту"
+    try:
+        d = money.parse_decimal(value)
+    except money.MoneyError as e:
+        raise PurchaseError([_problem(None, field, e.code, f"«{label}»: {e.message_ru}")])
+    if d < 0:
+        raise PurchaseError([_problem(None, field, "negative_amount", f"«{label}» не может быть отрицательной.")])
+    if d != d.quantize(_KOPECK):
+        raise PurchaseError([_problem(None, field, "not_kopecks", f"«{label}» — в рублях и копейках (два знака после "
+                                                                  "запятой), как в счёте.")])
+    return d
+
+
+def kopeck_lines(lines: list[Line]) -> list[int]:
+    """Номера строк (с 1), сумма которых не в целых копейках (например, 333 × 3,8555 = 1 283,8815)."""
+    return [n for n, ln in enumerate(lines, start=1) if ln.amount is not None and ln.amount != ln.amount.quantize(_KOPECK)]
+
+
+def invoice_check(lines: list[Line], mode: Optional[str], inv_gross: Optional[Decimal],
+                  inv_vat: Optional[Decimal]) -> dict:
+    """Сверка расчёта со счётом поставщика: state = none / match / mismatch / unknown и разницы (счёт − расчёт).
+
+    * none — суммы по счёту не введены;
+    * unknown — расчёт неполный (строки без цены, не указан режим или ставки, самопроверка не прошла): сравнивать
+      не с чем, итог по счёту наверняка больше;
+    * match — все введённые суммы совпали до копейки; mismatch — хоть одна не совпала.
+    """
+    t = vat_totals(lines, mode)
+    out = {"state": "none", "invoice_gross": money.to_json(inv_gross), "invoice_vat": money.to_json(inv_vat),
+           "computed_gross": t["gross"], "computed_vat": t["vat"], "diff_gross": None, "diff_vat": None}
+    if inv_gross is None and inv_vat is None:
+        return out
+    if t["gross"] is None or any(ln.amount is None for ln in lines):
+        out["state"] = "unknown"
+        return out
+    dg = inv_gross - Decimal(t["gross"]) if inv_gross is not None else None
+    dv = inv_vat - Decimal(t["vat"]) if inv_vat is not None else None
+    out.update(diff_gross=money.to_json(dg), diff_vat=money.to_json(dv),
+               state="match" if not dg and not dv else "mismatch")
+    return out
+
+
+def calc_control(lines: list[Line], mode: Optional[str], inv_gross: Optional[Decimal] = None,
+                 inv_vat: Optional[Decimal] = None) -> dict:
+    """Блок «Контроль расчёта» для карточки заказа и проверки при отправке (D-34): список проверок со статусом.
+
+    checks — [{code, state: ok / warn / error / info, text}]; invoice — результат invoice_check; needs_reason —
+    при отправке на согласование нужна причина (расхождение со счётом или сверить нельзя).
+    """
+    t = vat_totals(lines, mode)
+    priced = [ln for ln in lines if ln.amount is not None]
+    checks = []
+    if t["check_failed"]:
+        checks.append({"code": "self_check", "state": "error", "text": CALC_CHECK_FAILED_RU})
+    elif t["gross"] is not None:
+        checks.append({"code": "self_check", "state": "ok",
+                       "text": "Самопроверка пройдена: НДС каждой строки пересчитан вторым способом, "
+                               "без НДС + НДС = с НДС по строкам и в итоге"})
+    unpriced = len(lines) - len(priced)
+    if unpriced:
+        checks.append({"code": "unpriced", "state": "warn",
+                       "text": f"Строк без цены: {unpriced} — итог неполный, они не входят в суммы"})
+    if t["unknown_count"]:
+        checks.append({"code": "vat_unknown", "state": "warn",
+                       "text": "НДС не посчитан: не указан режим цен или ставка у строк с ценой"})
+    kl = kopeck_lines(lines)
+    if kl:
+        checks.append({"code": "kopecks", "state": "warn",
+                       "text": ("Сумма строки " if len(kl) == 1 else "Суммы строк ") + ", ".join(map(str, kl)) + " с долями копейки — в счёте поставщика "
+                               "будет в целых копейках; сверьте итог со счётом"})
+    inv = invoice_check(lines, mode, inv_gross, inv_vat)
+    if inv["state"] == "match":
+        checks.append({"code": "invoice", "state": "ok", "text": INVOICE_STATE_LABELS_RU["match"]})
+    elif inv["state"] == "mismatch":
+        parts = []
+        if inv["diff_gross"] is not None and Decimal(inv["diff_gross"]):
+            parts.append(f"с НДС: по счёту {_ru(inv['invoice_gross'])}, по расчёту {_ru(inv['computed_gross'])}")
+        if inv["diff_vat"] is not None and Decimal(inv["diff_vat"]):
+            parts.append(f"НДС: по счёту {_ru(inv['invoice_vat'])}, по расчёту {_ru(inv['computed_vat'])}")
+        checks.append({"code": "invoice", "state": "error",
+                       "text": INVOICE_STATE_LABELS_RU["mismatch"] + " — " + "; ".join(parts)})
+    elif inv["state"] == "unknown":
+        checks.append({"code": "invoice", "state": "warn", "text": INVOICE_STATE_LABELS_RU["unknown"]})
+    else:
+        checks.append({"code": "invoice", "state": "info", "text": INVOICE_STATE_LABELS_RU["none"]})
+    return {"checks": checks, "invoice": inv, "needs_reason": inv["state"] in ("mismatch", "unknown"),
+            "check_failed": t["check_failed"]}
+
+
+def _ru(v: Optional[str]) -> str:
+    """«1234.5000» → «1 234,50», «1283.8815» → «1 283,8815» для текстов проверок (без валюты; None → «—»).
+
+    Не округляет: доли копейки показываются, иначе разница со счётом в 0,0015 выглядела бы как «1 283,88 и 1 283,88».
+    """
+    if v is None:
+        return "—"
+    whole, _, frac = format(Decimal(v), "f").partition(".")
+    frac = frac.rstrip("0").ljust(2, "0")
+    sign = "−" if whole.startswith("-") else ""
+    whole = whole.lstrip("-")
+    groups = []
+    while whole:
+        groups.insert(0, whole[-3:])
+        whole = whole[:-3]
+    return f"{sign}{' '.join(groups)},{frac}"
+
+
 def content_hash(supplier_id: str, currency: Optional[str], lines: list[Line], contract_id: Optional[str] = None,
-                 vat_mode: Optional[str] = None) -> str:
+                 vat_mode: Optional[str] = None, invoice_gross: Optional[Decimal] = None,
+                 invoice_vat: Optional[Decimal] = None) -> str:
     """SHA-256 содержания заказа (поставщик, валюта, строки в порядке; с D-33 — договор, режим цен и ставки НДС).
 
     Используется для placed_hash (замороженные условия размещённого заказа) и для согласования (согласовано
     именно это содержание). Поля D-33 входят в тело, только если заданы: у заказов, размещённых до D-33, сумма не
-    меняется и hash_ok остаётся верным.
+    меняется и hash_ok остаётся верным. С D-34 так же входят суммы по счёту поставщика (сверка — часть согласуемого).
     """
     rows = []
     for ln in lines:
@@ -309,6 +495,10 @@ def content_hash(supplier_id: str, currency: Optional[str], lines: list[Line], c
         body["contract_id"] = contract_id
     if vat_mode is not None:
         body["vat_mode"] = vat_mode
+    if invoice_gross is not None:
+        body["invoice_gross"] = money.to_json(invoice_gross)
+    if invoice_vat is not None:
+        body["invoice_vat"] = money.to_json(invoice_vat)
     return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
