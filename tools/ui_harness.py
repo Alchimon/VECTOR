@@ -208,7 +208,7 @@ def _plain(v):
 
 
 def main():
-    """Снять скриншоты 01–18 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
+    """Снять скриншоты 01–20 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
     args = ap.parse_args()
@@ -266,6 +266,10 @@ def main():
         sp.setProperty("tab", "journal")
         h.wait_idle()
         h.shot(out / f"{theme}-16-stock-journal.png")
+        # Справочник аналогов и пересчёта единиц (D-25, A-27).
+        sp.setProperty("tab", "directory")
+        h.wait_idle()
+        h.shot(out / f"{theme}-19-stock-directory.png")
         h.backend.logout()
         h.wait_idle()
         h.login("s.morozov")
@@ -287,6 +291,15 @@ def main():
         h.shot(out / f"{theme}-18-procurement-match.png")
         QMetaObject.invokeMethod(lm, "close")
         h.wait_idle()
+        h.backend.logout()
+        h.wait_idle()
+        # Настройки компании (D-26, A-26): администратор, вкладка «Настройки компании».
+        h.login("admin")
+        h.go("admin")
+        ap = next(i for i in h.items("sv") if i.isVisible())
+        ap.setProperty("tab", "settings")
+        h.wait_idle()
+        h.shot(out / f"{theme}-20-admin-settings.png")
         h.backend.logout()
         h.wait_idle()
         h.login()
