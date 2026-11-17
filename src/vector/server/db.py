@@ -31,7 +31,7 @@ from vector.core import money
 #        сопоставлении (D-25, A-27);
 #   v8 — перемещения между складами: связка двух движений журнала (A-28);
 #   v9 — перемещение со статусом «в пути»: отгрузка → приёмка получателем или возврат отправителю (D-29, A-29).
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -805,6 +805,72 @@ purchase_receipts = sa.Table("purchase_receipts", metadata,
     sa.Column("qty", Qty, nullable=False),
     sa.CheckConstraint("qty > 0", name="qty_pos"))
 
+# ---------------------------------------------------------------- v13: реквизиты, договоры, НДС, согласование (D-33)
+# Миграции добавляют только новые таблицы (migrate.py, принцип 3), поэтому дополнения к поставщику и заказу —
+# таблицы-расширения «один к одному», а не новые столбцы: старые строки остаются как были, у новых полей нет
+# значения по умолчанию, которое могло бы что-то «придумать».
+
+# Реквизиты поставщика (A-39): все необязательны; формат и контрольные цифры проверяет vector.core.purchasing.
+# vat_rate — ставка НДС, которую редактор подставляет в новые строки заказов этому поставщику (только подсказка).
+supplier_requisites = sa.Table("supplier_requisites", metadata,
+    sa.Column("supplier_id", ID, sa.ForeignKey("suppliers.id"), primary_key=True),
+    sa.Column("kpp", sa.String(9)),
+    sa.Column("ogrn", sa.String(15)),
+    sa.Column("address", U(500)),
+    sa.Column("bank_name", U(300)),
+    sa.Column("bik", sa.String(9)),
+    sa.Column("bank_account", sa.String(20)),
+    sa.Column("corr_account", sa.String(20)),
+    sa.Column("vat_rate", sa.String(8)))
+
+# Договоры с поставщиком: номер (уникален у поставщика), дата заключения, срок действия (необязателен — бессрочный),
+# предмет. Правятся как справочник (офлайн через очередь); не удаляются, а отключаются. Заказ может ссылаться на
+# договор своего поставщика — при согласовании и размещении договор должен действовать на эту дату.
+supplier_contracts = sa.Table("supplier_contracts", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("supplier_id", ID, sa.ForeignKey("suppliers.id"), nullable=False, index=True),
+    sa.Column("number", U(100), nullable=False),
+    sa.Column("signed_on", sa.Date, nullable=False),
+    sa.Column("valid_until", sa.Date),
+    sa.Column("subject", U(500)),
+    sa.Column("note", U(1000)),
+    sa.Column("active", sa.Boolean, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("supplier_id", "number", name="uq_supplier_contracts_number"),
+    sa.CheckConstraint("valid_until IS NULL OR valid_until >= signed_on", name="valid_range"))
+
+# Условия заказа сверх v12: договор и режим цен (с НДС / без НДС). Строки нет — договор не указан, режим не указан.
+purchase_order_terms = sa.Table("purchase_order_terms", metadata,
+    sa.Column("order_id", ID, sa.ForeignKey("purchase_orders.id"), primary_key=True),
+    sa.Column("contract_id", ID, sa.ForeignKey("supplier_contracts.id")),
+    sa.Column("vat_mode", sa.String(8)),
+    sa.CheckConstraint("vat_mode IS NULL OR vat_mode IN ('included','excluded')", name="vat_mode"))
+
+# Ставка НДС строки заказа (код из vector.core.purchasing.VAT_RATES). Строки черновика заменяются целиком — вместе
+# с ними и эти. Нет строки — ставка не указана (НДС «не указан», а не 0).
+purchase_order_line_taxes = sa.Table("purchase_order_line_taxes", metadata,
+    sa.Column("order_id", ID, sa.ForeignKey("purchase_orders.id"), primary_key=True),
+    sa.Column("line_id", ID, primary_key=True),
+    sa.Column("vat_rate", sa.String(8), nullable=False))
+
+# Согласование заказа (D-33, A-37): неизменяемый журнал событий по черновику — submit (отправлен на согласование,
+# с SHA-256 содержания), approve (согласован — то же содержание), return (возвращён на доработку, причина),
+# withdraw (отозван закупкой). Текущее состояние — последнее событие; разместить можно только согласованное
+# содержание (хэш последнего approve = хэш заказа сейчас). seq — порядковый номер события в заказе.
+purchase_order_approvals = sa.Table("purchase_order_approvals", metadata,
+    sa.Column("order_id", ID, sa.ForeignKey("purchase_orders.id"), primary_key=True),
+    sa.Column("seq", sa.Integer, primary_key=True),
+    sa.Column("kind", sa.String(8), nullable=False),
+    sa.Column("content_hash", sa.String(64)),
+    sa.Column("comment", U(2000)),
+    sa.Column("actor_id", ID, nullable=False),
+    sa.Column("at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("kind IN ('submit','approve','return','withdraw')", name="kind"),
+    sa.CheckConstraint("seq > 0", name="seq_pos"),
+    sa.CheckConstraint("kind NOT IN ('submit','approve') OR content_hash IS NOT NULL", name="hash_when_needed"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -891,7 +957,7 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (procurement_need_line_matches, 50009), (config_versions, 50010),
                  (procurement_need_line_match_units, 50011), (stock_transfers, 50012),
                  (stock_transfer_acts, 50013), (stock_shipment_terms, 50014), (stock_shipment_losses, 50015),
-                 (signatures, 50016), (purchase_receipts, 50017)):
+                 (signatures, 50016), (purchase_receipts, 50017), (purchase_order_approvals, 50018)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

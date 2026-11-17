@@ -9,7 +9,8 @@
    (DDL транзакционен на PostgreSQL, MS SQL и SQLite). Сбой посередине — БД остаётся в прежней версии.
 3. **Только добавление.** Шаги не удаляют и не переписывают существующие данные; переходы v3 → v4
    (таблицы расчётов), v4 → v5 (склад и закупка) v5 → v6 (ручное сопоставление потребности), v6 → v7 (настройки, справочник пересчёта) и v7 → v8 (перемещения
-   между складами) v8 → v9 (перемещение «в пути») v9 → v10 (акт недостачи, срок прибытия) v10 → v11 (акт об утрате, подписи) и v11 → v12 (поставщики, заказы, факты поставки) только создают новые таблицы. Шаги, меняющие данные, потребуют отдельного решения (Decision Log).
+   между складами) v8 → v9 (перемещение «в пути») v9 → v10 (акт недостачи, срок прибытия) v10 → v11 (акт об утрате, подписи), v11 → v12 (поставщики, заказы, факты поставки) и v12 → v13 (реквизиты и
+   договоры поставщиков, НДС и согласование заказов — таблицы-расширения) только создают новые таблицы. Шаги, меняющие данные, потребуют отдельного решения (Decision Log).
 4. **Fail-closed.** Неизвестная/более новая версия, незавершённое восстановление, уже существующая таблица,
    которую шаг должен создать, — отказ без изменений.
 
@@ -57,6 +58,9 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     11: [db.stock_shipment_losses, db.signatures],
     # Заказы поставщикам (С4 шаг 5, D-32).
     12: [db.suppliers, db.purchase_orders, db.purchase_order_lines, db.purchase_receipts],
+    # Реквизиты и договоры поставщиков, НДС и согласование заказов (D-33). Порядок — по внешним ключам.
+    13: [db.supplier_requisites, db.supplier_contracts, db.purchase_order_terms, db.purchase_order_line_taxes,
+         db.purchase_order_approvals],
 }
 
 
@@ -89,7 +93,8 @@ def _create_tables(tables: list[sa.Table]) -> Callable:
 STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(ADDED_IN[5]),
                               5: _create_tables(ADDED_IN[6]), 6: _create_tables(ADDED_IN[7]),
                               7: _create_tables(ADDED_IN[8]), 8: _create_tables(ADDED_IN[9]),
-                              9: _create_tables(ADDED_IN[10]), 10: _create_tables(ADDED_IN[11]), 11: _create_tables(ADDED_IN[12])}
+                              9: _create_tables(ADDED_IN[10]), 10: _create_tables(ADDED_IN[11]), 11: _create_tables(ADDED_IN[12]),
+                              12: _create_tables(ADDED_IN[13])}
 
 
 @dataclass
