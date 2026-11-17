@@ -144,3 +144,12 @@ class RateLimiter:
                 for k in [k for k, v in self._hits.items() if not v or now - v[-1] > 60]:
                     del self._hits[k]
             return True
+
+    def blocked(self, key: str, now: float | None = None) -> bool:
+        """Исчерпан ли лимит за последние 60 секунд — БЕЗ записи новой попытки. Вместе с allow() позволяет считать
+        только неудачные попытки (подпись акта паролем, D-31): проверка — blocked(), неудача — allow().
+        """
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            q = self._hits.get(key)
+            return bool(q) and sum(1 for t in q if now - t <= 60) >= self.per_minute

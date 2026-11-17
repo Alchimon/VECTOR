@@ -689,8 +689,12 @@ def test_act_signature_setting_default_password_and_methods(world, st):
                                       "p": {"id": t["id"], **short}, "v": t["version"]}).encode()).hexdigest()
     # Перебор паролей подписи ограничен.
     t2 = transfer(st.wh, st, "1", dst=w2)["result"]["transfer"]
-    codes = [accept(st.wh2, t2, **short | {"accepted_qty": "0.5"}, sign_password="x")["code"] for _ in range(8)]
-    assert "rate_limited" in codes
+    codes = [accept(st.wh2, t2, **short | {"accepted_qty": "0.5"}, sign_password="x")["code"] for _ in range(6)]
+    assert codes[-1] == "rate_limited" and codes[0] == "bad_sign_password"
+    # Даже верный пароль во время блокировки не принимается; через минуту — снова можно.
+    assert accept(st.wh2, t2, **short | {"accepted_qty": "0.5"}, sign_password=PWD)["code"] == "rate_limited"
+    world.clock.advance(seconds=61)
+    assert accept(st.wh2, t2, **short | {"accepted_qty": "0.5"}, sign_password=PWD)["status"] == "accepted"
     # confirm: достаточно явного «подписываю».
     assert set_signature(world, "confirm")["status"] == "accepted"
     t3 = transfer(st.wh, st, "2", dst=w2)["result"]["transfer"]

@@ -292,8 +292,8 @@ class StockMixin:
 
         * sign_act = true — явное «подписываю» в любом способе (подпись не ставится «по умолчанию»);
         * password — ещё и пароль вошедшего пользователя (sign_password): защищает от действия с чужого незаблокированного
-          компьютера. Частота попыток ограничена (как у смены пароля); пароль никуда не сохраняется и в хэш запроса не
-          входит (vector.core.redact);
+          компьютера. Неверных паролей — не больше порога блокировки входа за минуту (sign_rate); пароль никуда не
+          сохраняется и в хэш запроса не входит (vector.core.redact);
         * qes — КЭП: пока не подключена → отказ (fail-closed; опубликовать такое значение настройки тоже нельзя).
 
         Записывает неизменяемую строку signatures с SHA-256 содержания документа. Вызывается внутри транзакции команды:
@@ -310,9 +310,12 @@ class StockMixin:
             pwd = p.get("sign_password")
             if not isinstance(pwd, str) or not pwd:
                 raise Rejected("sign_password_required", "Для подписи акта введите свой пароль.", {"field": "sign_password"})
-            if not self.pwd_rate.allow(ctx.user_id, ctx.now.timestamp()):
-                raise Rejected("rate_limited", "Слишком много попыток ввода пароля. Подождите минуту.")
+            if self.sign_rate.blocked(ctx.user_id, ctx.now.timestamp()):
+                raise Rejected("rate_limited", "Слишком много неверных паролей подписи. Подождите минуту.")
             if not security.verify_password(ctx.user["pwd_hash"], pwd)[0]:
+                # Неудача учитывается (allow записывает попытку). Отказ откатывает транзакцию, но счётчик — в памяти
+                # сервера, поэтому учёт сохраняется.
+                self.sign_rate.allow(ctx.user_id, ctx.now.timestamp())
                 raise Rejected("bad_sign_password", "Пароль неверный — акт не подписан, ничего не проведено.",
                                {"field": "sign_password"})
         sig = {"id": str(uuid.uuid5(uuid.UUID(object_id), "signature/" + object_type)), "object_type": object_type,

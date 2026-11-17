@@ -116,6 +116,9 @@ class Service(WorkMixin, CalcMixin, StockMixin, ConfigMixin):
         self.rate = security.RateLimiter(self.sec.login_rate_per_minute_per_addr)
         # Подбор текущего пароля через украденный сеанс: не чаще lockout_threshold попыток в минуту на пользователя.
         self.pwd_rate = security.RateLimiter(self.sec.lockout_threshold)
+        # Неверные пароли подписи актов (D-31) — отдельный счётчик и только неудачи: подписывать много актов подряд
+        # можно, перебирать пароль — нет.
+        self.sign_rate = security.RateLimiter(self.sec.lockout_threshold)
         self._fault_after_effect: Optional[str] = None
         self.handlers: dict[str, Callable[[Ctx, dict, Optional[int]], dict]] = {
             "customer.create": self._customer_create, "customer.update": self._customer_update,
