@@ -9,8 +9,8 @@
 | Файл | Что фиксирует | Статус |
 |---|---|---|
 | `money-vectors.json` | Разбор денежных значений: Decimal, ≤4 знаков, диапазон NUMERIC(18,4), запрет float, «неизвестно» ≠ 0 | Проверяется тестами эталонного ядра |
-| `command-catalog.slice1.json` | Команды (v4: + `calc.save_draft` queued, `calc.freeze` online_required; v5: + `warehouse.*`, `item.*` queued, `stock.receive/issue/reverse/reserve/release`, `need.generate` online_required) и их офлайн-класс (`offline_full` / `queued` / `online_required`) | Проверяется тестами |
-| `permissions.slice1.json` | Правила «действие × объект × контекст» среза 1 и последующих (v4: `calc.*` — расчёт комплекта, A-18; v5: `stock.*`, `warehouse.*`, `item.*`, `need.*` — склад и закупка, A-20…A-22) | Проверяется тестами; правила помечены как **временные предположения** (см. Decision Log) |
+| `command-catalog.slice1.json` | Команды (v4: + `calc.save_draft` queued, `calc.freeze` online_required; v5: + `warehouse.*`, `item.*` queued, `stock.receive/issue/reverse/reserve/release`, `need.generate` online_required; v6: + `need.match_line` online_required) и их офлайн-класс (`offline_full` / `queued` / `online_required`) | Проверяется тестами |
+| `permissions.slice1.json` | Правила «действие × объект × контекст» среза 1 и последующих (v4: `calc.*` — расчёт комплекта, A-18; v5: `stock.*`, `warehouse.*`, `item.*`, `need.*` — склад и закупка, A-20…A-22; v6: `need.match_line` — закупка, A-25) | Проверяется тестами; правила помечены как **временные предположения** (см. Decision Log) |
 | `workflows.slice1.json` | Разрешённые переходы статусов тендера, ТКП, проекта, задачи, резерва (`stock_reservation`, A-23) | Проверяется тестами; значения — предположения |
 
 Изменение любого файла — изменение контракта: требует записи в `docs/blueprint/12-decision-log.md`

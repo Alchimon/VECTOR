@@ -127,7 +127,7 @@ OUT_OF_SPIKE_SCOPE = frozenset({
     "document.create", "document.update", "document.add_version",
     "calc.save_draft", "calc.freeze",
     "warehouse.create", "warehouse.update", "item.create", "item.update",
-    "stock.receive", "stock.issue", "stock.reverse", "stock.reserve", "stock.release", "need.generate",
+    "stock.receive", "stock.issue", "stock.reverse", "stock.reserve", "stock.release", "need.generate", "need.match_line",
 })
 
 

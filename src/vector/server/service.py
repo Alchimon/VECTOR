@@ -138,7 +138,7 @@ class Service(WorkMixin, CalcMixin, StockMixin):
             "item.create": self._item_create, "item.update": self._item_update,
             "stock.receive": self._stock_receive, "stock.issue": self._stock_issue, "stock.reverse": self._stock_reverse,
             "stock.reserve": self._stock_reserve, "stock.release": self._stock_release,
-            "need.generate": self._need_generate,
+            "need.generate": self._need_generate, "need.match_line": self._need_match_line,
         }
         diff = set(self.contracts.catalog["commands"]) ^ set(self.handlers)
         if diff:

@@ -13,6 +13,9 @@ operation_id, аудит и проверка версий — в service.py; з�
                  └──stock.release──────▶ released (неизрасходованное вернулось в доступное)
     потребность: снимок ПОСЛЕДНЕЙ зафиксированной версии расчёта комплекта (без цен), строки сопоставлены
                  с номенклатурой по точному коду и единице; покрытие строки = резервы под неё.
+    ручное сопоставление (need.match_line, A-25): закупка указывает позицию номенклатуры для строки, которую
+                 автомат не сопоставил (или сопоставил не так); решение — неизменяемая запись с причиной,
+                 строка-снимок не меняется. Пересопоставить можно, пока под строку нет резервов.
 
 Главные инварианты (каждый закреплён тестом в tests/server/test_stock.py):
 
@@ -27,7 +30,7 @@ operation_id, аудит и проверка версий — в service.py; з�
 
 Чего здесь НЕТ (следующие шаги С4, см. issue «Этап 4 / С4»): черновики движений, заказ поставщику и факт
 поставки, совместное решение «склад + закупка», предложения перемещения, корректировка остатка (нужна
-подпись руководителя склада), пополнение расходников по порогу, ручное сопоставление строк потребности.
+подпись руководителя склада), пополнение расходников по порогу.
 """
 from __future__ import annotations
 
@@ -40,7 +43,8 @@ import sqlalchemy as sa
 from vector.core import money, stock
 from vector.core.errors import Conflict, Rejected
 
-from .db import (calc_version_lines, calc_versions, kits, procurement_need_lines, procurement_needs, projects,
+from .db import (calc_version_lines, calc_versions, kits, procurement_need_line_matches, procurement_need_lines,
+                 procurement_needs, projects,
                  stock_balances, stock_items, stock_movements, stock_reservations, warehouses)
 from .validation import iso, only_keys, opt_str, req_str, req_uuid
 
@@ -407,10 +411,11 @@ class StockMixin:
                 raise Rejected("not_found", "Строка потребности не найдена.", {"field": "need_line_id"})
             if need["project_id"] != pr["id"]:
                 raise Rejected("need_mismatch", "Потребность относится к другому проекту.")
-            if ln.item_id is None:
+            line_item = self._line_items(ctx.conn, need["id"]).get(line_id, ln.item_id)
+            if line_item is None:
                 raise Rejected("need_line_unmatched", "Строка потребности не сопоставлена с номенклатурой — резерв под неё "
                                "невозможен. " + (ln.match_note or ""))
-            if ln.item_id != it["id"]:
+            if line_item != it["id"]:
                 raise Rejected("need_mismatch", "Строка потребности относится к другой позиции номенклатуры.")
             open_qty = ln.qty - self._need_line_covered(ctx.conn, need["id"], line_id)
             if qty > open_qty:
@@ -510,17 +515,107 @@ class StockMixin:
                  "calc_content_hash": cv["content_hash"], "line_count": len(rows), "matched_count": matched})
         return {"need": self.v_need(ctx.conn, self._get(ctx.conn, procurement_needs, nid), with_stock=True)}
 
+    def _line_matches(self, conn, need_id: str) -> dict[str, dict]:
+        """Действующие ручные сопоставления строк потребности: line_id → последняя запись (наибольший seq)
+        с полем count — сколько всего было ручных решений по строке (для истории в интерфейсе).
+        """
+        out: dict[str, dict] = {}
+        for r in conn.execute(sa.select(procurement_need_line_matches)
+                              .where(procurement_need_line_matches.c.need_id == need_id)
+                              .order_by(procurement_need_line_matches.c.line_id, procurement_need_line_matches.c.seq)):
+            out[r.line_id] = {**dict(r._mapping), "count": r.seq}
+        return out
+
+    def _line_items(self, conn, need_id: str) -> dict[str, str]:
+        """line_id → позиция номенклатуры по ручному сопоставлению (только для строк, где оно есть).
+        Для остальных строк действует автоматическое item_id из снимка — вызывающий берёт его сам.
+        """
+        return {lid: m["item_id"] for lid, m in self._line_matches(conn, need_id).items()}
+
+    def _need_match_line(self, ctx, p, ev):
+        """need.match_line {id, need_id, line_id, item_id, reason} + версия потребности — сопоставить строку
+        потребности с позицией номенклатуры вручную (A-25, временное предположение).
+
+        Зачем: автомат сопоставляет только по ТОЧНОМУ совпадению обозначения и единицы (A-22). Строка без
+        обозначения или с обозначением, которого нет в номенклатуре, остаётся «Не сопоставлена» — под неё
+        нельзя резервировать. Закупка решает, какая позиция подходит, и записывает почему.
+
+        Правила (каждое закреплено тестом):
+        * только закупка (право need.match_line в проекте потребности), только при связи;
+        * единица позиции = единица строки — пересчёт единиц не придумываем (коэффициентов нет);
+        * позиция действующая (не отключена) и отличается от того, что действует сейчас;
+        * пересопоставить можно, только пока под строку нет резервов (ни действующих, ни израсходованных):
+          иначе покрытие «поплывёт» между позициями. Сначала снять резервы (stock.release);
+        * expected_version потребности — два закупщика не перезапишут решения друг друга молча;
+        * запись неизменяема; новая запись получает следующий seq, прежние остаются историей.
+        """
+        only_keys(p, {"id", "need_id", "line_id", "item_id", "reason"})
+        need = self._require(ctx.conn, procurement_needs, req_uuid(p, "need_id"), "Потребность")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "need.match_line", ctx.now, project_id=need["project_id"])
+        self._check_version(need, ev, lambda o: self.v_need(ctx.conn, o, with_stock=True))
+        mid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, procurement_need_line_matches, mid)
+        line_id = req_uuid(p, "line_id")
+        reason = req_str(p, "reason", 2000)
+        ln = ctx.conn.execute(sa.select(procurement_need_lines).where(
+            procurement_need_lines.c.need_id == need["id"], procurement_need_lines.c.line_id == line_id)).first()
+        if ln is None:
+            raise Rejected("not_found", "Строка потребности не найдена.", {"field": "line_id"})
+        it = self._require(ctx.conn, stock_items, req_uuid(p, "item_id"), "Позиция номенклатуры")
+        if not it["active"]:
+            raise Rejected("item_inactive", f"Позиция «{it['code']}» отключена — сопоставлять с ней нельзя.",
+                           {"field": "item_id"})
+        if it["unit"] != ln.unit:
+            raise Rejected("unit_mismatch", f"Единица строки «{ln.unit}» не совпадает с единицей позиции «{it['unit']}». "
+                           "Пересчёт единиц не выполняется — выберите позицию с той же единицей.", {"field": "item_id"})
+        matches = self._line_matches(ctx.conn, need["id"])
+        current = matches[line_id]["item_id"] if line_id in matches else ln.item_id
+        if current == it["id"]:
+            raise Rejected("already_matched", "Строка уже сопоставлена с этой позицией.", {"field": "item_id"})
+        covered = self._need_line_covered(ctx.conn, need["id"], line_id)
+        if covered > 0:
+            raise Rejected("need_line_reserved", f"Под строку уже зарезервировано {money.to_json(covered)} {ln.unit} — "
+                           "пересопоставить нельзя. Сначала снимите резервы по этой строке.",
+                           {"reserved": money.to_json(covered)})
+        seq = matches[line_id]["count"] + 1 if line_id in matches else 1
+        ctx.conn.execute(procurement_need_line_matches.insert().values(
+            id=mid, need_id=need["id"], line_id=line_id, seq=seq, item_id=it["id"], previous_item_id=current,
+            reason=reason, matched_by=ctx.user_id, matched_at=ctx.now))
+        # Число сопоставленных строк — производное поле потребности; версия растёт, чтобы параллельная правка
+        # другой строки той же потребности получила конфликт, а не «старую» картину.
+        items_now = {**{r.line_id: r.item_id for r in ctx.conn.execute(
+            sa.select(procurement_need_lines.c.line_id, procurement_need_lines.c.item_id)
+            .where(procurement_need_lines.c.need_id == need["id"]))}, **self._line_items(ctx.conn, need["id"])}
+        matched = sum(1 for v in items_now.values() if v)
+        n = self._update_versioned(ctx, procurement_needs, need, {"matched_count": matched,
+                                                                  "updated_by": ctx.user_id, "updated_at": ctx.now})
+        prev_code = self._get(ctx.conn, stock_items, current)["code"] if current else None
+        ctx.log("procurement_need", need["id"], auth, need["version"], n["version"],
+                {"line_id": line_id, "line_code": ln.code, "line_name": ln.name, "item_code": it["code"],
+                 "previous_item_code": prev_code, "seq": seq, "matched_count": matched, "reason": reason})
+        return {"need": self.v_need(ctx.conn, n, with_stock=True)}
+
     def v_need(self, conn, o: dict, with_stock: bool, available: Optional[dict] = None) -> dict:
         """Потребность со строками и покрытием. with_stock=False — «доступно» неизвестно (нет права stock.read)."""
         if with_stock and available is None:
             available = self._available_by_item(conn)
         lines = []
+        matches = self._line_matches(conn, o["id"])
         for r in conn.execute(sa.select(procurement_need_lines).where(procurement_need_lines.c.need_id == o["id"])
                               .order_by(procurement_need_lines.c.pos)):
-            avail = available.get(r.item_id, Decimal(0)) if (with_stock and r.item_id) else None
+            # Действующая позиция: ручное решение закупки (A-25) важнее автоматического из снимка.
+            m = matches.get(r.line_id)
+            item_id = m["item_id"] if m else r.item_id
+            source = "manual" if m else ("auto" if r.item_id else None)
+            avail = available.get(item_id, Decimal(0)) if (with_stock and item_id) else None
             cov = stock.coverage(r.qty, self._need_line_covered(conn, o["id"], r.line_id), avail)
             lines.append({"pos": r.pos, "line_id": r.line_id, "code": r.code, "name": r.name, "unit": r.unit,
-                          "qty": money.to_json(r.qty), "item_id": r.item_id, "match_note": r.match_note, "coverage": cov})
+                          "qty": money.to_json(r.qty), "item_id": item_id,
+                          "match_note": None if item_id else r.match_note, "match_source": source,
+                          "auto_match_note": r.match_note,
+                          "match_reason": m["reason"] if m else None, "matched_by": m["matched_by"] if m else None,
+                          "matched_at": iso(m["matched_at"]) if m else None, "match_count": m["count"] if m else 0,
+                          "coverage": cov})
         last = self._latest_version(conn, o["kit_id"])
         kit, pr = self._get(conn, kits, o["kit_id"]), self._get(conn, projects, o["project_id"])
         return {"id": o["id"], "project_id": o["project_id"], "project_code": pr["code"], "project_title": pr["title"],
