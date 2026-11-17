@@ -25,6 +25,9 @@ from .demo import DemoError
 
 
 def _keys(args) -> bk.KeySource:
+    """Источник ключа резервных копий: файл ключа (--key-file), иначе парольная фраза из VECTOR_BACKUP_PASSPHRASE или
+    ввод без эха. В аргументах командной строки секреты не принимаются.
+    """
     if getattr(args, "key_file", None):
         return bk.KeySource(key_file=Path(args.key_file))
     pp = os.environ.get("VECTOR_BACKUP_PASSPHRASE")
@@ -51,6 +54,11 @@ def _require_good_password(pwd: str, login: str, policy, what: str) -> None:
 
 
 def cmd_init(args):
+    """vector-server init — создать схему в ПУСТОЙ БД и первого администратора.
+
+    Пароль администратора — из VECTOR_ADMIN_PASSWORD или ввод без эха (дважды). Проверка пароля по политике идёт до
+    создания схемы, чтобы не оставить базу наполовину инициализированной.
+    """
     cfg = load_config(Path(args.config))
     pwd = os.environ.get("VECTOR_ADMIN_PASSWORD")
     if not pwd:
@@ -69,6 +77,10 @@ def cmd_init(args):
 
 
 def cmd_serve(args):
+    """vector-server serve — запустить сервер: проверить конфигурацию и версию схемы, затем HTTPS (uvicorn).
+
+    Журнал доступа uvicorn выключен (в нём могли бы оказаться адреса запросов); заголовок Server не отдаётся.
+    """
     cfg = load_config(Path(args.config))
     for w in cfg.warnings:
         logging.warning(w)
@@ -84,6 +96,10 @@ def cmd_serve(args):
 
 
 def cmd_backup(args):
+    """vector-server backup — зашифрованная резервная копия, её немедленная проверка и удаление старых копий (keep).
+
+    Код выхода 2, если проверка копии не прошла — планировщик заданий должен считать это ошибкой.
+    """
     cfg = load_config(Path(args.config))
     eng = db.make_engine(cfg.db_url)
     db.check_schema(eng)
@@ -101,6 +117,8 @@ def cmd_backup(args):
 
 
 def cmd_verify(args):
+    """vector-server verify-backup — проверить копию: расшифровка, подпись, контрольные суммы, число строк по таблицам.
+    """
     vr = bk.verify_backup(Path(args.file), _keys(args))
     h = vr.header
     print(f"Создана: {h['created_at']} · версия {h['app_version']} · схема v{h['schema_version']} · источник {h['source_dialect']}")
@@ -111,6 +129,11 @@ def cmd_verify(args):
 
 
 def cmd_restore(args):
+    """vector-server restore — восстановить копию в ПУСТУЮ БД (строка подключения — из переменной окружения).
+
+    Восстановление в непустую БД запрещено (иначе смешались бы данные). После загрузки — сверка; сервер не
+    запустится на БД с незавершённым восстановлением.
+    """
     url = os.environ.get(args.target_url_env)
     if not url:
         raise SystemExit(f"Переменная {args.target_url_env} со строкой подключения к ПУСТОЙ целевой БД не задана.")
@@ -121,11 +144,14 @@ def cmd_restore(args):
 
 
 def cmd_genkey(args):
+    """vector-server gen-backup-key — создать файл ключа резервных копий (права 600) и напечатать его отпечаток."""
     fp = bk.generate_key_file(Path(args.path))
     print(f"Ключ создан: {args.path} (отпечаток {fp}). Храните копию ключа отдельно от резервных копий — без него восстановление невозможно.")
 
 
 def cmd_check(args):
+    """vector-server check — проверить конфигурацию, подключение к БД и совместимость версии схемы (ничего не меняет).
+    """
     cfg = load_config(Path(args.config))
     print("Конфигурация: OK; БД:", cfg.masked_db_url())
     for w in cfg.warnings:
@@ -154,6 +180,9 @@ def cmd_migrate(args):
 
 
 def cmd_devcert(args):
+    """vector-server dev-cert — тестовый CA и сертификат сервера на 30 дней (только пилот/разработка; для работы —
+    сертификат CA компании).
+    """
     from .devcert import make_dev_ca_and_cert
     paths = make_dev_ca_and_cert(Path(args.dir), args.host or ["localhost"])
     print("Создан ТЕСТОВЫЙ CA и сертификат (только для пилота/разработки):")
@@ -195,6 +224,11 @@ def cmd_demo(args):
 
 
 def main(argv=None):
+    """Точка входа vector-server: разбор подкоманд и единая обработка ожидаемых ошибок.
+
+    Ожидаемые ошибки (конфигурация, копия, миграция, отказ) печатаются одной строкой «Ошибка: …» с кодом выхода 1 —
+    без трассировки стека. Неожиданные ошибки программы печатаются полностью.
+    """
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     p = argparse.ArgumentParser(prog="vector-server", description=f"Сервер ВЕКТОР {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)

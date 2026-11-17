@@ -26,14 +26,30 @@ FILE_SPOOL_IN_MEMORY = 1024 * 1024
 # Порция записи входящего потока во временный файл (меньше вызовов пула потоков).
 FILE_SPOOL_WRITE = 1024 * 1024
 
+# Предел тела JSON-запроса (1 МБ). Файлы идут отдельным маршрутом /api/v1/files со своим пределом (max_file_mb).
 MAX_BODY = 1 << 20
 log = logging.getLogger("vector.api")
 
+# Статус ответа сервиса → код HTTP. Клиент опирается на поле status в теле; код HTTP нужен прокси и мониторингу.
 _STATUS_HTTP = {"accepted": 200, "rejected": 422, "denied": 403, "conflict": 409, "unauthenticated": 401, "error": 500}
 
 
 def create_app(service: Service) -> Starlette:
+    """Собрать HTTP-приложение (Starlette) поверх сервиса бизнес-правил.
+
+    Все маршруты — тонкая обёртка: прочитать запрос (с ограничением размера), сложить «конверт» {type, token, …} и
+    передать его в Service.handle в пуле потоков. Решения о правах, проверках и записи принимает только сервис;
+    HTTP-слой лишь переводит статус ответа в код HTTP (_STATUS_HTTP).
+
+    Маршруты: /api/v1/auth/login|logout, /api/v1/command (изменения), /api/v1/query (чтение, в т. ч. pull),
+    /api/v1/files (файлы версий документов), /api/v1/health (жив ли сервер), /api/v1/about (версия, схема).
+    """
     async def body_json(request: Request) -> dict | None:
+        """Прочитать тело запроса как JSON-объект не больше MAX_BODY (1 МБ).
+
+        Заявленный размер проверяется до чтения, фактический — по мере чтения (клиент может соврать в Content-
+        Length). Любая ошибка — None, вызывающий отвечает «некорректный запрос» без подробностей.
+        """
         cl = request.headers.get("content-length")
         if cl is not None and (not cl.isdigit() or int(cl) > MAX_BODY):
             return None
@@ -49,34 +65,50 @@ def create_app(service: Service) -> Starlette:
         return data if isinstance(data, dict) else None
 
     def bearer(request: Request) -> str | None:
+        """Токен сеанса из заголовка Authorization: Bearer … (в URL токен не принимается — он попал бы в журналы
+        прокси).
+        """
         h = request.headers.get("authorization", "")
         return h[7:].strip() if h.lower().startswith("bearer ") else None
 
     def reply(resp: dict) -> Response:
+        """Ответ JSON с кодом HTTP по статусу (accepted → 200, conflict → 409 …) и запретом кэширования (данные
+        персональные).
+        """
         return JSONResponse(resp, status_code=_STATUS_HTTP.get(resp.get("status"), 200),
                             headers={"Cache-Control": "no-store"})
 
     def bad() -> Response:
+        """Стандартный ответ на нечитаемый/слишком большой запрос — без подробностей разбора."""
         return reply({"status": "rejected", "code": "bad_request", "message_ru": "Некорректный запрос (формат или размер)."})
 
     def addr(request: Request) -> str | None:
+        """IP-адрес клиента — для ограничения частоты входа и журнала аудита."""
         return request.client.host if request.client else None
 
     async def run(request: Request, envelope: dict) -> Response:
+        """Выполнить конверт в сервисе и вернуть HTTP-ответ."""
         # Сервис синхронный (транзакции БД) — выполняем в пуле потоков, не блокируя цикл событий.
         from starlette.concurrency import run_in_threadpool
         return reply(await run_in_threadpool(service.handle, envelope, addr(request)))
 
     async def login(request: Request):
+        """POST /api/v1/auth/login {login, password, device_id} → токен сеанса или отказ."""
         b = await body_json(request)
         if b is None:
             return bad()
         return await run(request, {"type": "login", "login": b.get("login"), "password": b.get("password"), "device_id": b.get("device_id")})
 
     async def logout(request: Request):
+        """POST /api/v1/auth/logout — завершить текущий сеанс (токен становится недействительным)."""
         return await run(request, {"type": "logout", "token": bearer(request)})
 
     async def command(request: Request):
+        """POST /api/v1/command {operation_id, command, payload, expected_version} — выполнить команду изменения.
+
+        operation_id создаёт клиент один раз на операцию: повтор с тем же id (после обрыва связи) вернёт сохранённый
+        ответ, а не выполнит действие второй раз.
+        """
         b = await body_json(request)
         if b is None:
             return bad()
@@ -84,6 +116,7 @@ def create_app(service: Service) -> Starlette:
                                    "command": b.get("command"), "payload": b.get("payload"), "expected_version": b.get("expected_version")})
 
     async def query(request: Request):
+        """POST /api/v1/query {query, …} — запросы чтения (pull, история объекта, версии документов…)."""
         b = await body_json(request)
         if b is None:
             return bad()
@@ -155,6 +188,7 @@ def create_app(service: Service) -> Starlette:
         spool.seek(0)
 
         def blocks():
+            """Отдавать проверенный временный файл клиенту блоками по FILE_CHUNK."""
             # Синхронный генератор: Starlette выполняет его в пуле потоков. finally закрывает временный файл
             # и при обрыве связи клиентом (генератор закрывается сборщиком мусора).
             try:
@@ -175,9 +209,12 @@ def create_app(service: Service) -> Starlette:
         })
 
     async def health(request: Request):
+        """GET /api/v1/health — проверка «сервер отвечает» для мониторинга и скриптов стенда (без входа, без данных).
+        """
         return JSONResponse({"status": "ok"}, headers={"Cache-Control": "no-store"})
 
     async def about(request: Request):
+        """GET /api/v1/about — версия программы и схемы БД (без секретов) для окна «О программе» и диагностики."""
         return JSONResponse(service.about())
 
     return Starlette(routes=[

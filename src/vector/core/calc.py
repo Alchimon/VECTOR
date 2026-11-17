@@ -66,6 +66,9 @@ class CalcError(ValueError):
     """Расчёт не прошёл проверку. problems — список {line, field, code, message_ru} (line — номер с 1 или None)."""
 
     def __init__(self, problems: list[dict]):
+        """Текст исключения строится по первому замечанию («Позиция 3: …») с числом остальных — для уведомления; полный
+        список остаётся в problems и показывается в редакторе по строкам.
+        """
         self.problems = problems
         first = problems[0]
         where = f"Позиция {first['line']}: " if first.get("line") else ""
@@ -76,10 +79,16 @@ class CalcError(ValueError):
 
 
 def _problem(line: Optional[int], field: str, code: str, message_ru: str) -> dict:
+    """Одно замечание к расчёту в едином формате {line, field, code, message_ru}."""
     return {"line": line, "field": field, "code": code, "message_ru": message_ru}
 
 
 def _text(raw: dict, key: str, n: int, required: bool, problems: list) -> Optional[str]:
+    """Текстовое поле позиции: обрезает пробелы, проверяет обязательность, тип и длину.
+
+    Ошибки не бросаются сразу, а копятся в problems — пользователь видит все замечания разом, а не по одному.
+    Возвращает строку или None (пусто/ошибка).
+    """
     v = raw.get(key)
     if v is None or (isinstance(v, str) and not v.strip()):
         if required:
@@ -247,6 +256,9 @@ def diff(base: Optional[list[dict]], new: list[dict], base_currency: Optional[st
             counts["removed"] += 1
 
     def known_total(items):
+        """Сумма позиций, если у всех известна цена; иначе None — разницу итогов при неизвестных ценах не показываем
+        (неизвестно ≠ 0).
+        """
         if any(i.get("amount") is None for i in items):
             return None
         return sum((Decimal(i["amount"]) for i in items), Decimal(0))

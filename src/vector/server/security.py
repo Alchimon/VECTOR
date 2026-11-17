@@ -32,6 +32,11 @@ _COMMON = {
 
 @dataclass(frozen=True)
 class SecurityPolicy:
+    """Технические параметры безопасности (секция [security] в server.toml).
+
+    Значения по умолчанию консервативны, но это не утверждённая политика ИБ компании (OQ-18): их можно поменять в
+    конфигурации, validate() не даст задать заведомо опасные значения.
+    """
     password_min_length: int = 12
     lockout_threshold: int = 5          # неудачных попыток подряд
     lockout_minutes: int = 15
@@ -42,6 +47,7 @@ class SecurityPolicy:
     max_file_mb: int = 200
 
     def validate(self) -> None:
+        """Отвергнуть недопустимые значения (пароль короче 8, нулевые сроки, размер файла вне 1…2048 МБ)."""
         if self.password_min_length < 8:
             raise ValueError("Минимальная длина пароля не может быть меньше 8")
         if self.lockout_threshold < 1 or self.lockout_minutes < 1:
@@ -61,11 +67,13 @@ def configure_hasher_for_tests() -> None:
 
 
 def production_hasher_parameters() -> dict:
+    """Параметры Argon2id в рабочем режиме — для теста, который проверяет, что они не ослаблены."""
     p = PasswordHasher()
     return {"type": p.type.name, "time_cost": p.time_cost, "memory_cost_kib": p.memory_cost, "parallelism": p.parallelism}
 
 
 def hash_password(password: str) -> str:
+    """Хэш пароля Argon2id (соль внутри хэша). Сам пароль нигде не сохраняется."""
     return _HASHER.hash(password)
 
 
@@ -81,6 +89,9 @@ def verify_password(stored_hash: str | None, password: str) -> tuple[bool, str |
 
 
 def password_problems(password: object, login: str, policy: SecurityPolicy) -> list[str]:
+    """Почему пароль не подходит — список понятных причин (пустой список = подходит): длина, совпадение с логином,
+    распространённый пароль, слишком однообразный.
+    """
     if not isinstance(password, str):
         return ["Пароль должен быть строкой."]
     out = []
@@ -98,11 +109,15 @@ def password_problems(password: object, login: str, policy: SecurityPolicy) -> l
 
 
 def new_token() -> tuple[str, str]:
+    """Новый токен сеанса: (токен для клиента, его SHA-256 для БД). Утечка таблицы сеансов не даёт войти — токенов в
+    ней нет.
+    """
     token = secrets.token_urlsafe(32)
     return token, token_hash(token)
 
 
 def token_hash(token: str) -> str:
+    """SHA-256 токена — по нему сеанс ищется в БД."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
@@ -114,6 +129,9 @@ class RateLimiter:
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def allow(self, key: str, now: float | None = None) -> bool:
+        """Можно ли принять ещё одну попытку входа с этого адреса: не больше per_minute за последние 60 секунд.
+        Работает в памяти одного процесса сервера.
+        """
         now = time.monotonic() if now is None else now
         with self._lock:
             q = self._hits.setdefault(key, deque())

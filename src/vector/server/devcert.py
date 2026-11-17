@@ -16,6 +16,9 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 
 def _write_private(path: Path, data: bytes) -> None:
+    """Записать файл с закрытым ключом сразу с правами 600 и только если его ещё нет (O_EXCL): существующий ключ не
+    перезаписывается, а посторонние не успеют его прочитать.
+    """
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(data)

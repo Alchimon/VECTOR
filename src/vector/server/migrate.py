@@ -29,6 +29,9 @@ from . import db
 
 
 class MigrationError(RuntimeError):
+    """Миграция невозможна или отменена. Текст — для администратора; к моменту исключения БД не изменена (всё или
+    ничего).
+    """
     pass
 
 
@@ -43,12 +46,19 @@ ADDED_IN: dict[int, list[sa.Table]] = {
 
 
 def tables_of_version(v: int) -> list[str]:
+    """Имена таблиц, которые существуют в схеме версии v, в порядке резервного копирования. Нужны, чтобы копия перед
+    миграцией содержала ровно таблицы старой версии.
+    """
     later = {t.name for ver, ts in ADDED_IN.items() if ver > v for t in ts}
     return [n for n in db.BACKUP_TABLE_ORDER if n not in later]
 
 
 def _create_tables(tables: list[sa.Table]) -> Callable:
+    """Шаг миграции «создать новые таблицы». Возвращает функцию step(conn), выполняемую внутри общей транзакции."""
     def step(conn) -> list[str]:
+        """Создать таблицы шага. Если хоть одна уже есть — БД в неожиданном состоянии: отказ без изменений (не
+        «досоздаём» частично).
+        """
         existing = set(sa.inspect(conn).get_table_names())
         clash = [t.name for t in tables if t.name in existing]
         if clash:
@@ -66,6 +76,9 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
 
 @dataclass
 class MigrationReport:
+    """Итог миграции: с какой на какую версию, где копия до миграции, какие таблицы созданы. Печатается командой
+    migrate.
+    """
     from_version: int
     to_version: int
     backup_path: Path | None = None
@@ -73,6 +86,8 @@ class MigrationReport:
 
 
 def current_version(engine: sa.Engine) -> int:
+    """Текущая версия схемы БД. Отказ, если схемы нет, версия не записана или не завершено восстановление из копии.
+    """
     with engine.connect() as conn:
         if "schema_meta" not in sa.inspect(conn).get_table_names():
             raise MigrationError("Схема ВЕКТОР не найдена. Для новой БД выполните «vector-server init».")

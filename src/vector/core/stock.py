@@ -51,6 +51,7 @@ class StockError(ValueError):
     """Нарушено складское правило. code — машинный код (как в ответе сервера), message_ru — для пользователя."""
 
     def __init__(self, code: str, message_ru: str, details: Optional[dict] = None):
+        """Сохраняет машинный код, русское сообщение и подробности (например, текущий остаток для подсказки)."""
         super().__init__(f"{code}: {message_ru}")
         self.code, self.message_ru, self.details = code, message_ru, details or {}
 
@@ -88,18 +89,27 @@ class Balance:
 
     @property
     def available(self) -> Decimal:
+        """Доступно = остаток − резерв: столько можно выдать без резерва или зарезервировать заново."""
         return self.on_hand - self.reserved
 
     def to_json(self) -> dict:
+        """Остаток для ответа сервера: три десятичные строки с 4 знаками (on_hand, reserved, available)."""
         return {"on_hand": money.to_json(self.on_hand), "reserved": money.to_json(self.reserved),
                 "available": money.to_json(self.available)}
 
 
 def _fmt(d: Decimal) -> str:
+    """Количество для текста сообщения («12.5000»); None не бывает, но на всякий случай показываем ноль, а не «None».
+    """
     return money.to_json(d) or "0.0000"
 
 
 def _checked(b: Balance) -> Balance:
+    """Проверить инварианты остатка после операции: 0 ≤ резерв ≤ остаток и остаток в диапазоне NUMERIC(18,4).
+
+    Правила операций уже не допускают нарушений; эта проверка ловит ошибку программы до записи в БД (там те же
+    ограничения продублированы CHECK).
+    """
     if abs(b.on_hand) > money.MAX_ABS:
         raise StockError("out_of_range", "Остаток вне допустимого диапазона NUMERIC(18,4).")
     if b.on_hand < 0 or b.reserved < 0 or b.reserved > b.on_hand:   # защита от ошибки программы

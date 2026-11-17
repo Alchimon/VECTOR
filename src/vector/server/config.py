@@ -18,11 +18,23 @@ from .security import SecurityPolicy
 
 
 class ConfigError(Exception):
+    """Ошибка конфигурации сервера. Текст — для администратора: что не так и как исправить. Сервер с такой ошибкой не
+    запускается.
+    """
     pass
 
 
 @dataclass
 class ServerConfig:
+    """Проверенная конфигурация сервера (результат load_config).
+
+    * db_url — строка подключения к БД (секрет: в журналы только через masked_db_url);
+    * host/port — где слушать; tls_cert/tls_key — сертификат и закрытый ключ HTTPS;
+    * dev_insecure_localhost — режим разработки без TLS (только 127.0.0.1);
+    * backup_dir/backup_keep — каталог резервных копий и сколько хранить;
+    * security — политика паролей, блокировки, сеансов, размера файлов;
+    * warnings — предупреждения, которые сервер печатает при старте (например, «SQLite только для пилота»).
+    """
     db_url: str
     host: str = "0.0.0.0"
     port: int = 8443
@@ -35,10 +47,14 @@ class ServerConfig:
     warnings: list[str] = field(default_factory=list)
 
     def masked_db_url(self) -> str:
+        """Строка подключения со скрытым паролем — для журналов и команды check."""
         return mask_url(self.db_url)
 
 
 def mask_url(url: str) -> str:
+    """Скрыть пароль в строке подключения. Если строку не удалось разобрать, не показываем её вовсе (в ней может быть
+    пароль).
+    """
     try:
         return sa.engine.make_url(url).render_as_string(hide_password=True)
     except Exception:
@@ -46,6 +62,11 @@ def mask_url(url: str) -> str:
 
 
 def _check_private_file(p: Path, what: str, warnings: list[str]) -> None:
+    """Проверить, что файл с секретом (ключ TLS, строка подключения) не читается другими пользователями.
+
+    В Linux права должны быть 600, иначе сервер не запускается. В Windows права задаются ACL, их проверить таким
+    способом нельзя — выводится предупреждение для администратора.
+    """
     if sys.platform.startswith("win"):
         warnings.append(f"{what}: проверьте ACL файла {p} (доступ только учётной записи службы и администраторов).")
         return
@@ -55,6 +76,12 @@ def _check_private_file(p: Path, what: str, warnings: list[str]) -> None:
 
 
 def load_config(path: Path) -> ServerConfig:
+    """Прочитать и проверить server.toml. Любое нарушение — ConfigError с понятным текстом.
+
+    Порядок: строка подключения (только из переменной окружения или отдельного файла — в самом server.toml секретов
+    нет); адрес и TLS (без сертификата сервер в сеть не выходит); политика безопасности; резервные копии.
+    Относительные пути считаются от папки server.toml.
+    """
     try:
         data = tomllib.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as e:
