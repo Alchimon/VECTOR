@@ -1,28 +1,47 @@
-"""Заказы поставщикам и факт поставки (сценарий С4, шаг 5; решение D-32).
+"""Заказы поставщикам и факт поставки (сценарий С4, шаг 5; решения D-32, D-33).
 
 Модуль — примесь (mixin) к `Service`, как stock.py: транзакция SERIALIZABLE, идемпотентность по operation_id,
 аудит и проверка версий — в service.py; здесь — только правила закупки.
 
-    поставщики (справочник; правка офлайн через очередь — supplier.create / supplier.update)
+    поставщики (справочник с реквизитами; правка офлайн через очередь — supplier.create / supplier.update)
+    договоры поставщика (contract.create / contract.update; офлайн через очередь)
 
     заказ:  draft ──po.place──▶ placed ──po.close──▶ closed
               │                   │
               └──po.cancel──▶ cancelled ◀──po.cancel (пока по заказу ничего не принято)
 
+    согласование черновика (D-33, обязательно перед размещением):
+              ┌───────── po.withdraw (закупка) ─────────┐
+              ▼                                         │
+         (правится) ──po.submit──▶ на согласовании ──po.approve──▶ согласован ──po.place──▶ placed
+              ▲                         │
+              └──────── po.return ──────┘ (согласующий, с причиной)
+
     факт поставки: po.receive — приход на склад по строке размещённого заказа (обычное движение журнала +
                    неизменяемая связь purchase_receipts). «Поставлено» = сумма таких приходов без сторнированных;
                    «ждём» = заказано − поставлено. Состояние «частично / полностью» — расчёт, а не статус.
 
-Главные правила (каждое закреплено тестом в tests/server/test_purchasing.py):
+Главные правила (каждое закреплено тестом в tests/server/test_purchasing.py и test_purchasing_approval.py):
 
-* черновик правит закупка, можно офлайн (очередь, версии); размещение, отмена, закрытие и приход — только онлайн;
-* размещённый заказ не меняется: строки заморожены, их SHA-256 — в placed_hash (проверяется при показе); у
-  размещённого можно уточнить только справочные поля — номер счёта поставщика, ожидаемую дату, примечание;
-* принять больше, чем ещё ждём по строке, нельзя (излишек — обычный приход с основанием, A-36); принимает склад;
+* черновик правит закупка, можно офлайн (очередь, версии); согласование, размещение, отмена, закрытие и приход —
+  только онлайн;
+* **согласование обязательно** (владелец, D-33): разместить можно только черновик, согласованный в ТЕКУЩЕМ виде —
+  SHA-256 содержания (поставщик, валюта, договор, режим цен, строки со ставками НДС) совпадает с согласованным.
+  Пока заказ на согласовании или согласован, его условия не меняются (только счёт, дата, примечание); чтобы
+  изменить — отозвать (po.withdraw) и отправить заново. Согласует роль «Согласование закупок» (po_approver) и
+  не тот, кто заказ создал или отправил на согласование (принцип «четырёх глаз», A-37);
+* размещённый заказ не меняется: условия заморожены, их SHA-256 — в placed_hash (проверяется при показе);
+* **НДС** (D-33, A-38): режим цен заказа (с НДС / без НДС) и ставка у каждой строки с ценой обязательны для
+  согласования; НДС строки — с округлением до копеек, итоги — суммы строк (vector.core.purchasing.line_vat);
+* **реквизиты и договоры** (D-33, A-39): реквизиты необязательны, но проверяются (контрольные цифры); договор в
+  заказе необязателен, а если указан — того же поставщика и действует на дату согласования и размещения;
+* принять больше, чем ещё ждём по строке, нельзя (излишек — обычный приход с основанием, A-36 подтверждено
+  владельцем); принимает склад;
 * строка, привязанная к строке потребности, — только той же позиции номенклатуры, что выбрана для строки
   потребности (иначе «заказано» в покрытии потребности было бы ложью);
-* цены видят закупка и бухгалтерия (po.read_prices); складу — количества без цен (A-35). НДС и курсы не считаются;
-* ничего не придумывается: валюта не подставляется, сумма не округляется (Q8), дата поставки — только для справки.
+* цены видят закупка, бухгалтерия и согласующий (po.read_prices); складу — количества без цен;
+* ничего не придумывается: валюта и режим цен не подставляются, сумма строки не округляется (Q8), дата поставки —
+  только для справки.
 """
 from __future__ import annotations
 
@@ -35,13 +54,20 @@ import sqlalchemy as sa
 from vector.core import money, purchasing as pu, stock
 from vector.core.errors import Rejected
 
-from .db import (procurement_need_lines, procurement_needs, purchase_order_lines, purchase_orders, purchase_receipts, stock_items,
-                 stock_movements, suppliers, warehouses)
+from .db import (procurement_need_lines, procurement_needs, purchase_order_approvals, purchase_order_line_taxes,
+                 purchase_order_lines, purchase_order_terms, purchase_orders, purchase_receipts, stock_items,
+                 stock_movements, supplier_contracts, supplier_requisites, suppliers, warehouses)
 from .stock import _code, _qty, _stock_rejected
 from .validation import iso, only_keys, opt_date, opt_str, req_str, req_uuid
 
 # Сколько последних закрытых/отменённых заказов отдаётся в pull (все черновики и размещённые — всегда).
 PULL_CLOSED_ORDERS_LIMIT = 300
+
+# Поля, которые после отправки на согласование (и после размещения) не меняются: это «условия» заказа, их хэш
+# согласуют и замораживают. Справочные поля (счёт поставщика, ожидаемая дата, примечание) меняются всегда.
+FROZEN_FIELDS = {"supplier_id", "currency", "lines", "contract_id", "vat_mode"}
+ORDER_KEYS = {"id", "supplier_id", "currency", "supplier_ref", "expected_on", "note", "lines", "contract_id", "vat_mode"}
+SUPPLIER_KEYS = {"name", "inn", "contact", "note", "vat_rate", *pu.REQUISITE_KEYS}
 
 
 def _purchase_rejected(e: pu.PurchaseError) -> Rejected:
@@ -49,14 +75,74 @@ def _purchase_rejected(e: pu.PurchaseError) -> Rejected:
     return Rejected(e.code, e.message_ru, {"problems": e.problems, "field": e.problems[0].get("field")})
 
 
+def _vat_rate(p: dict, key: str = "vat_rate") -> Optional[str]:
+    """Код ставки НДС из запроса (VAT_RATES) или None; иначе отказ."""
+    v = p.get(key)
+    if v in (None, ""):
+        return None
+    if v not in pu.VAT_RATES:
+        raise Rejected("invalid_vat_rate", "Ставка НДС — одна из: " + ", ".join(pu.VAT_RATE_LABELS_RU.values()) + ".",
+                       {"field": key})
+    return v
+
+
+def _d(v) -> Optional[str]:
+    """Дата → «ГГГГ-ММ-ДД» для JSON (None остаётся None)."""
+    return v.isoformat() if v else None
+
+
 class PurchasingMixin:
-    """Обработчики supplier.* / po.* и данные закупки для pull."""
+    """Обработчики supplier.* / contract.* / po.* и данные закупки для pull."""
+
+    # ------------------------------------------------------------ чтение расширений (v13)
+    def _requisites(self, conn, sid: str) -> dict:
+        """Реквизиты поставщика (пустой словарь — не заполнены)."""
+        r = self._get(conn, supplier_requisites, sid, "supplier_id")
+        return {k: v for k, v in r.items() if k != "supplier_id"} if r else {}
+
+    def _terms(self, conn, oid: str) -> dict:
+        """Условия заказа сверх v12: договор и режим цен (None — не указаны)."""
+        r = self._get(conn, purchase_order_terms, oid, "order_id")
+        return {"contract_id": r["contract_id"] if r else None, "vat_mode": r["vat_mode"] if r else None}
+
+    def _line_taxes(self, conn, oid: str) -> dict[str, str]:
+        """Ставки НДС строк заказа: line_id → код ставки."""
+        return {r.line_id: r.vat_rate for r in conn.execute(
+            sa.select(purchase_order_line_taxes).where(purchase_order_line_taxes.c.order_id == oid))}
+
+    def _approvals(self, conn, oid: str) -> list[dict]:
+        """События согласования заказа по порядку."""
+        return [dict(r._mapping) for r in conn.execute(
+            sa.select(purchase_order_approvals).where(purchase_order_approvals.c.order_id == oid)
+            .order_by(purchase_order_approvals.c.seq))]
+
+    @staticmethod
+    def _approval_state(events: list[dict]) -> Optional[str]:
+        """Состояние согласования — вид последнего события (submit / approve / return / withdraw) или None."""
+        return events[-1]["kind"] if events else None
 
     # ------------------------------------------------------------ представления
     @staticmethod
-    def v_supplier(o: dict) -> dict:
-        """Поставщик для клиента."""
-        return {k: o[k] for k in ("id", "code", "name", "inn", "contact", "note", "version")} | {"active": bool(o["active"])}
+    def v_supplier(o: dict, req: Optional[dict] = None) -> dict:
+        """Поставщик для клиента: карточка + реквизиты (пустые — None) + признак «реквизиты заполнены»."""
+        req = req or {}
+        out = {k: o[k] for k in ("id", "code", "name", "inn", "contact", "note", "version")} | {"active": bool(o["active"])}
+        out.update({k: req.get(k) for k in (*pu.REQUISITE_KEYS, "vat_rate")})
+        # «Заполнены» — есть ИНН, банк и счёт; у организации ещё КПП. Это подсказка в интерфейсе, не запрет (A-39).
+        out["requisites_complete"] = bool(o["inn"] and req.get("bik") and req.get("bank_account")
+                                          and (len(o["inn"]) == 12 or req.get("kpp")))
+        return out
+
+    def _supplier_view(self, conn, o: dict) -> dict:
+        """Поставщик с реквизитами из БД."""
+        return self.v_supplier(o, self._requisites(conn, o["id"]))
+
+    @staticmethod
+    def v_contract(o: dict) -> dict:
+        """Договор поставщика для клиента."""
+        return {"id": o["id"], "supplier_id": o["supplier_id"], "number": o["number"], "signed_on": _d(o["signed_on"]),
+                "valid_until": _d(o["valid_until"]), "subject": o["subject"], "note": o["note"],
+                "active": bool(o["active"]), "version": o["version"]}
 
     def _received_by_line(self, conn, where=None) -> dict[tuple[str, str], Decimal]:
         """Поставлено по строкам заказов: (order_id, line_id) → сумма приходов, которые НЕ сторнированы.
@@ -81,57 +167,95 @@ class PurchasingMixin:
 
     def _raw_lines(self, conn, oid: str) -> list[dict]:
         """Строки заказа из БД в форме запроса (без суммы) — чтобы перепроверить их теми же правилами ядра."""
-        return [{k: v for k, v in ln.to_json().items() if k != "amount"} for ln in self._core_lines(self._order_lines(conn, oid))]
+        return [{k: v for k, v in ln.to_json().items() if k != "amount"}
+                for ln in self._core_lines(self._order_lines(conn, oid), self._line_taxes(conn, oid))]
 
     @staticmethod
-    def _core_lines(rows: list[dict]) -> list[pu.Line]:
-        """Строки из БД → проверенные строки ядра (для итога и контрольной суммы)."""
+    def _core_lines(rows: list[dict], taxes: Optional[dict] = None) -> list[pu.Line]:
+        """Строки из БД (+ ставки НДС) → проверенные строки ядра (для итога, НДС и контрольной суммы)."""
+        taxes = taxes or {}
         out = []
         for r in rows:
             amount = pu.exact_amount(r["qty"], r["unit_price"]) if r["unit_price"] is not None else None
             out.append(pu.Line(r["line_id"], r["item_id"], r["qty"], r["unit_price"], amount, r["need_id"],
-                               r["need_line_id"], r["note"]))
+                               r["need_line_id"], r["note"], taxes.get(r["line_id"])))
         return out
 
-    def v_order(self, conn, o: dict, with_prices: bool, received: Optional[dict] = None,
-                items: Optional[dict] = None, sup: Optional[dict] = None) -> dict:
-        """Заказ для клиента: реквизиты, поставщик, строки с «поставлено / ждём», итог и состояние поставки.
+    def _order_hash(self, conn, o: dict) -> str:
+        """SHA-256 содержания заказа сейчас — для сверки с согласованным и замороженным (placed_hash)."""
+        t = self._terms(conn, o["id"])
+        return pu.content_hash(o["supplier_id"], o["currency"],
+                               self._core_lines(self._order_lines(conn, o["id"]), self._line_taxes(conn, o["id"])),
+                               t["contract_id"], t["vat_mode"])
 
-        with_prices=False — цены и суммы не отдаются (склад видит количества, A-35). received / items / sup —
-        заранее загруженные данные (pull), иначе читаются здесь. hash_ok — совпадают ли строки размещённого заказа с
-        замороженными при размещении (False — данные изменены в обход программы).
+    def v_order(self, conn, o: dict, with_prices: bool, pre: Optional[dict] = None) -> dict:
+        """Заказ для клиента: реквизиты, поставщик, договор, строки с НДС и «поставлено / ждём», итоги, согласование.
+
+        with_prices=False — цены, суммы и НДС в деньгах не отдаются (склад видит количества). pre — заранее
+        загруженные данные для pull (received, items, sups, terms, taxes, approvals, contracts), иначе читаются
+        здесь. hash_ok — совпадают ли условия размещённого заказа с замороженными (False — изменены в обход
+        программы); approval.hash_ok — совпадает ли содержание с согласованным.
         """
+        pre = pre or {}
         rows = self._order_lines(conn, o["id"])
+        received = pre.get("received")
         if received is None:
             received = self._received_by_line(conn, purchase_receipts.c.order_id == o["id"])
+        items = pre.get("items")
         if items is None:
             ids = {r["item_id"] for r in rows}
             items = {r.id: dict(r._mapping) for r in conn.execute(sa.select(stock_items).where(stock_items.c.id.in_(ids)))} if ids else {}
-        sup = sup or self._get(conn, suppliers, o["supplier_id"]) or {}
-        core = self._core_lines(rows)
+        sup = (pre["sups"].get(o["supplier_id"]) if "sups" in pre else self._get(conn, suppliers, o["supplier_id"])) or {}
+        terms = pre["terms"].get(o["id"], {"contract_id": None, "vat_mode": None}) if "terms" in pre else self._terms(conn, o["id"])
+        taxes = pre["taxes"].get(o["id"], {}) if "taxes" in pre else self._line_taxes(conn, o["id"])
+        events = pre["approvals"].get(o["id"], []) if "approvals" in pre else self._approvals(conn, o["id"])
+        cid = terms["contract_id"]
+        contract = ((pre["contracts"].get(cid) if "contracts" in pre else self._get(conn, supplier_contracts, cid))
+                    if cid else None)
+        mode = terms["vat_mode"]
+        core = self._core_lines(rows, taxes)
         lines, pairs = [], []
         for r, c in zip(rows, core):
             got = received.get((o["id"], r["line_id"]), Decimal(0))
             pairs.append((r["qty"], got))
             it = items.get(r["item_id"], {})
+            v = pu.line_vat(c.amount, c.vat_rate, mode) if with_prices else None
             lines.append({"line_id": r["line_id"], "pos": r["pos"], "item_id": r["item_id"], "item_code": it.get("code"),
                           "item_name": it.get("name"), "unit": it.get("unit"), "qty": money.to_json(r["qty"]),
                           "unit_price": money.to_json(r["unit_price"]) if with_prices else None,
                           "amount": money.to_json(c.amount) if with_prices else None,
+                          "vat_rate": c.vat_rate,
+                          "net": money.to_json(v[0]) if v else None, "vat": money.to_json(v[1]) if v else None,
+                          "gross": money.to_json(v[2]) if v else None,
                           "need_id": r["need_id"], "need_line_id": r["need_line_id"], "note": r["note"],
                           "received": money.to_json(got), "remaining": money.to_json(pu.remaining(r["qty"], got))})
         delivery = pu.delivery_state(pairs) if o["status"] in ("placed", "closed") else None
         t = pu.totals(core)
+        h_now = pu.content_hash(o["supplier_id"], o["currency"], core, cid, mode)
+        state = self._approval_state(events)
+        last_approve = next((e for e in reversed(events) if e["kind"] == "approve"), None)
+        last_submit = next((e for e in reversed(events) if e["kind"] == "submit"), None)
         return {"id": o["id"], "order_no": o["order_no"], "supplier_id": o["supplier_id"],
                 "supplier_code": sup.get("code"), "supplier_name": sup.get("name"), "status": o["status"],
                 "status_label": pu.STATUS_LABELS_RU[o["status"]], "delivery": delivery,
                 "delivery_label": pu.DELIVERY_LABELS_RU[delivery] if delivery else None,
                 "currency": o["currency"], "supplier_ref": o["supplier_ref"],
-                "expected_on": o["expected_on"].isoformat() if o["expected_on"] else None, "note": o["note"],
+                "expected_on": _d(o["expected_on"]), "note": o["note"],
+                "contract_id": cid, "contract_number": contract["number"] if contract else None,
+                "contract_signed_on": _d(contract["signed_on"]) if contract else None,
+                "contract_valid_until": _d(contract["valid_until"]) if contract else None,
+                "vat_mode": mode, "vat_mode_label": pu.VAT_MODES.get(mode) if mode else None,
                 "prices_visible": with_prices,
                 "total": t["total"] if with_prices else None, "unpriced_count": t["unpriced_count"] if with_prices else None,
-                "hash_ok": (o["placed_hash"] == pu.content_hash(o["supplier_id"], o["currency"], core))
-                if o["placed_hash"] else None,
+                "vat_totals": pu.vat_totals(core, mode) if with_prices else None,
+                "hash_ok": (o["placed_hash"] == h_now) if o["placed_hash"] else None,
+                "approval": {"state": state, "label": pu.APPROVAL_LABELS_RU[state],
+                             # Совпадает ли содержание с последним согласованным (для «Разместить»).
+                             "hash_ok": (last_approve["content_hash"] == h_now) if last_approve and state == "approve" else None,
+                             "submitted_by": last_submit["actor_id"] if last_submit else None,
+                             "events": [{"seq": e["seq"], "kind": e["kind"], "label": pu.APPROVAL_LABELS_RU[e["kind"]],
+                                         "actor_id": e["actor_id"], "at": iso(e["at"]), "comment": e["comment"]}
+                                        for e in events]},
                 "placed_by": o["placed_by"], "placed_at": iso(o["placed_at"]) if o["placed_at"] else None,
                 "closed_by": o["closed_by"], "closed_at": iso(o["closed_at"]) if o["closed_at"] else None,
                 "close_reason": o["close_reason"], "version": o["version"], "created_by": o["created_by"],
@@ -143,8 +267,13 @@ class PurchasingMixin:
         return self.v_order(ctx.conn, self._get(ctx.conn, purchase_orders, oid), prices)
 
     # ------------------------------------------------------------ поставщики
-    def _supplier_fields(self, p: dict, partial: bool) -> dict:
-        """Поля поставщика из запроса (name, inn, contact, note); partial — только присланные."""
+    def _supplier_fields(self, p: dict, partial: bool, current_inn: Optional[str] = None,
+                         current_req: Optional[dict] = None) -> tuple[dict, dict]:
+        """Поля поставщика из запроса → (поля карточки, реквизиты). partial — только присланные (для update).
+
+        Реквизиты проверяются вместе (ключ счёта — от БИК, КПП/ОГРН — от вида ИНН), поэтому при частичной правке
+        присланные значения накладываются на текущие и проверяется итог.
+        """
         out: dict[str, Any] = {}
         if not partial or "name" in p:
             out["name"] = req_str(p, "name", 300)
@@ -156,32 +285,122 @@ class PurchasingMixin:
         for k, n in (("contact", 500), ("note", 1000)):
             if not partial or k in p:
                 out[k] = opt_str(p, k, n)
-        return out
+        merged = {**(current_req or {}), **{k: p.get(k) for k in pu.REQUISITE_KEYS if not partial or k in p}}
+        try:
+            req = pu.check_requisites(merged, out["inn"] if "inn" in out else current_inn)
+        except pu.PurchaseError as e:
+            raise _purchase_rejected(e)
+        req["vat_rate"] = _vat_rate(p) if (not partial or "vat_rate" in p) else (current_req or {}).get("vat_rate")
+        return out, req
+
+    def _save_requisites(self, ctx, sid: str, req: dict) -> None:
+        """Записать реквизиты поставщика (вставка или замена строки-расширения)."""
+        ctx.conn.execute(supplier_requisites.delete().where(supplier_requisites.c.supplier_id == sid))
+        if any(v is not None for v in req.values()):
+            ctx.conn.execute(supplier_requisites.insert().values(supplier_id=sid, **req))
 
     def _supplier_create(self, ctx, p, ev):
-        """supplier.create {id, code, name, inn?, contact?, note?} — новый поставщик (закупка, A-34). Можно офлайн."""
-        only_keys(p, {"id", "code", "name", "inn", "contact", "note"})
+        """supplier.create {id, code, name, inn?, contact?, note?, kpp?, ogrn?, address?, bank_name?, bik?,
+        bank_account?, corr_account?, vat_rate?} — новый поставщик (закупка, A-34). Можно офлайн.
+        """
+        only_keys(p, {"id", "code", *SUPPLIER_KEYS})
         auth = self.policy.check(ctx.conn, ctx.user_id, "supplier.create", ctx.now)
         sid = req_uuid(p, "id")
         self._ensure_new(ctx.conn, suppliers, sid)
         code = _code(p)
         if self._get(ctx.conn, suppliers, code, "code"):
             raise Rejected("code_exists", f"Поставщик с кодом «{code}» уже есть.", {"field": "code"})
-        row = {"id": sid, "code": code, **self._supplier_fields(p, partial=False), "active": True, "version": 1,
+        fields, req = self._supplier_fields(p, partial=False)
+        row = {"id": sid, "code": code, **fields, "active": True, "version": 1,
                "created_by": ctx.user_id, "created_at": ctx.now, "updated_by": ctx.user_id, "updated_at": ctx.now}
         ctx.conn.execute(suppliers.insert().values(**row))
-        ctx.log("supplier", sid, auth, None, 1, {"code": code, "name": row["name"], "inn": row["inn"]})
-        return {"supplier": self.v_supplier(self._get(ctx.conn, suppliers, sid))}
+        self._save_requisites(ctx, sid, req)
+        ctx.log("supplier", sid, auth, None, 1, {"code": code, "name": row["name"], "inn": row["inn"],
+                                                 **{k: v for k, v in req.items() if v is not None}})
+        return {"supplier": self._supplier_view(ctx.conn, self._get(ctx.conn, suppliers, sid))}
 
     def _supplier_update(self, ctx, p, ev):
-        """supplier.update {id, name?, inn?, contact?, note?, active?} + версия. Код не меняется; отключённому
-        поставщику нельзя размещать новые заказы (уже размещённые остаются в силе).
+        """supplier.update {id, name?, inn?, contact?, note?, active?, реквизиты?} + версия. Код не меняется;
+        отключённому поставщику нельзя размещать и отправлять на согласование новые заказы (размещённые остаются).
         """
-        only_keys(p, {"id", "name", "inn", "contact", "note", "active"})
+        only_keys(p, {"id", "active", *SUPPLIER_KEYS})
         auth = self.policy.check(ctx.conn, ctx.user_id, "supplier.update", ctx.now)
         o = self._require(ctx.conn, suppliers, req_uuid(p, "id"), "Поставщик")
-        self._check_version(o, ev, self.v_supplier)
-        ch = self._supplier_fields(p, partial=True)
+        self._check_version(o, ev, lambda x: self._supplier_view(ctx.conn, x))
+        cur_req = self._requisites(ctx.conn, o["id"])
+        ch, req = self._supplier_fields(p, partial=True, current_inn=o["inn"],
+                                        current_req={k: cur_req.get(k) for k in pu.REQUISITE_KEYS + ("vat_rate",)})
+        if "active" in p:
+            if not isinstance(p["active"], bool):
+                raise Rejected("field_type", "Поле «active» должно быть true или false.", {"field": "active"})
+            ch["active"] = p["active"]
+        ch = {k: v for k, v in ch.items() if v != (bool(o[k]) if k == "active" else o[k])}
+        req_ch = {k: v for k, v in req.items() if v != cur_req.get(k)}
+        if not ch and not req_ch:
+            raise Rejected("no_changes", "Нет изменений.")
+        before = {**{k: (bool(o[k]) if k == "active" else o[k]) for k in ch}, **{k: cur_req.get(k) for k in req_ch}}
+        n = self._update_versioned(ctx, suppliers, o, {**ch, "updated_by": ctx.user_id, "updated_at": ctx.now})
+        if req_ch:
+            self._save_requisites(ctx, o["id"], req)
+        ctx.log("supplier", o["id"], auth, o["version"], n["version"], {"before": before, "after": {**ch, **req_ch}})
+        return {"supplier": self._supplier_view(ctx.conn, n)}
+
+    # ------------------------------------------------------------ договоры поставщика
+    def _contract_dates(self, p: dict, cur: Optional[dict] = None) -> tuple:
+        """Дата заключения и срок действия (присланные поверх текущих); срок не раньше заключения."""
+        signed = opt_date(p, "signed_on") if (cur is None or "signed_on" in p) else cur["signed_on"]
+        if signed is None:
+            raise Rejected("field_required", "Укажите дату заключения договора.", {"field": "signed_on"})
+        until = opt_date(p, "valid_until") if (cur is None or "valid_until" in p) else cur["valid_until"]
+        if until is not None and until < signed:
+            raise Rejected("invalid_period", "Срок действия договора не может закончиться раньше даты заключения.",
+                           {"field": "valid_until"})
+        return signed, until
+
+    def _contract_create(self, ctx, p, ev):
+        """contract.create {id, supplier_id, number, signed_on, valid_until?, subject?, note?} — договор с
+        поставщиком (закупка, A-39). Номер уникален у поставщика. Можно офлайн.
+        """
+        only_keys(p, {"id", "supplier_id", "number", "signed_on", "valid_until", "subject", "note"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "contract.create", ctx.now)
+        cid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, supplier_contracts, cid)
+        sup = self._require(ctx.conn, suppliers, req_uuid(p, "supplier_id"), "Поставщик")
+        number = req_str(p, "number", 100)
+        if ctx.conn.execute(sa.select(supplier_contracts.c.id).where(
+                supplier_contracts.c.supplier_id == sup["id"], supplier_contracts.c.number == number)).first():
+            raise Rejected("contract_exists", f"У поставщика «{sup['code']}» уже есть договор № {number}.", {"field": "number"})
+        signed, until = self._contract_dates(p)
+        row = {"id": cid, "supplier_id": sup["id"], "number": number, "signed_on": signed, "valid_until": until,
+               "subject": opt_str(p, "subject", 500), "note": opt_str(p, "note", 1000), "active": True, "version": 1,
+               "created_by": ctx.user_id, "created_at": ctx.now, "updated_by": ctx.user_id, "updated_at": ctx.now}
+        ctx.conn.execute(supplier_contracts.insert().values(**row))
+        ctx.log("supplier_contract", cid, auth, None, 1, {"supplier_code": sup["code"], "number": number,
+                                                          "signed_on": _d(signed), "valid_until": _d(until)})
+        return {"supplier_contract": self.v_contract(self._get(ctx.conn, supplier_contracts, cid))}
+
+    def _contract_update(self, ctx, p, ev):
+        """contract.update {id, number?, signed_on?, valid_until?, subject?, note?, active?} + версия. Поставщик
+        договора не меняется. Отключённый договор нельзя указать в новом заказе; заказы, уже размещённые по нему,
+        остаются в силе.
+        """
+        only_keys(p, {"id", "number", "signed_on", "valid_until", "subject", "note", "active"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "contract.update", ctx.now)
+        o = self._require(ctx.conn, supplier_contracts, req_uuid(p, "id"), "Договор")
+        self._check_version(o, ev, self.v_contract)
+        ch: dict[str, Any] = {}
+        if "number" in p:
+            ch["number"] = req_str(p, "number", 100)
+            dup = ctx.conn.execute(sa.select(supplier_contracts.c.id).where(
+                supplier_contracts.c.supplier_id == o["supplier_id"], supplier_contracts.c.number == ch["number"],
+                supplier_contracts.c.id != o["id"])).first()
+            if dup:
+                raise Rejected("contract_exists", f"У поставщика уже есть договор № {ch['number']}.", {"field": "number"})
+        if "signed_on" in p or "valid_until" in p:
+            ch["signed_on"], ch["valid_until"] = self._contract_dates(p, o)
+        for k, n in (("subject", 500), ("note", 1000)):
+            if k in p:
+                ch[k] = opt_str(p, k, n)
         if "active" in p:
             if not isinstance(p["active"], bool):
                 raise Rejected("field_type", "Поле «active» должно быть true или false.", {"field": "active"})
@@ -189,15 +408,35 @@ class PurchasingMixin:
         ch = {k: v for k, v in ch.items() if v != (bool(o[k]) if k == "active" else o[k])}
         if not ch:
             raise Rejected("no_changes", "Нет изменений.")
-        before = {k: (bool(o[k]) if k == "active" else o[k]) for k in ch}
-        n = self._update_versioned(ctx, suppliers, o, {**ch, "updated_by": ctx.user_id, "updated_at": ctx.now})
-        ctx.log("supplier", o["id"], auth, o["version"], n["version"], {"before": before, "after": ch})
-        return {"supplier": self.v_supplier(n)}
+        enc = lambda v: v.isoformat() if hasattr(v, "isoformat") else v  # noqa: E731 — даты в журнал аудита строкой
+        n = self._update_versioned(ctx, supplier_contracts, o, {**ch, "updated_by": ctx.user_id, "updated_at": ctx.now})
+        ctx.log("supplier_contract", o["id"], auth, o["version"], n["version"],
+                {"before": {k: enc(o[k]) for k in ch}, "after": {k: enc(v) for k, v in ch.items()}})
+        return {"supplier_contract": self.v_contract(n)}
+
+    def _contract_ref(self, ctx, cid: Optional[str], supplier_id: str, for_use: bool) -> Optional[dict]:
+        """Договор заказа: того же поставщика; for_use (согласование, размещение) — действующий на сегодня (UTC)."""
+        if cid is None:
+            return None
+        c = self._require(ctx.conn, supplier_contracts, cid, "Договор")
+        if c["supplier_id"] != supplier_id:
+            raise Rejected("contract_supplier_mismatch", f"Договор № {c['number']} заключён с другим поставщиком.",
+                           {"field": "contract_id"})
+        if for_use:
+            today = ctx.now.date()
+            if not c["active"]:
+                raise Rejected("contract_inactive", f"Договор № {c['number']} отключён — заказ по нему не оформить.",
+                               {"field": "contract_id"})
+            if c["signed_on"] > today or (c["valid_until"] is not None and c["valid_until"] < today):
+                period = f"с {c['signed_on']:%d.%m.%Y}" + (f" по {c['valid_until']:%d.%m.%Y}" if c["valid_until"] else "")
+                raise Rejected("contract_not_valid", f"Договор № {c['number']} действует {period} — сегодня он не "
+                               "действует. Выберите другой договор или продлите этот.", {"field": "contract_id"})
+        return c
 
     # ------------------------------------------------------------ черновик заказа
     def _check_order_lines(self, ctx, lines: list[pu.Line], for_place: bool) -> None:
-        """Проверить ссылки строк по БД: позиции существуют (при размещении — действующие); строка потребности
-        существует и для неё выбрана та же позиция номенклатуры.
+        """Проверить ссылки строк по БД: позиции существуют (при согласовании/размещении — действующие); строка
+        потребности существует и для неё выбрана та же позиция номенклатуры.
         """
         ids = {ln.item_id for ln in lines}
         items = {r.id: r for r in ctx.conn.execute(sa.select(stock_items).where(stock_items.c.id.in_(ids)))} if ids else {}
@@ -223,26 +462,43 @@ class PurchasingMixin:
                                    {"line": n, "field": "item_id"})
 
     def _write_lines(self, ctx, oid: str, lines: list[pu.Line]) -> None:
-        """Заменить строки черновика целиком (порядок = порядок в запросе)."""
+        """Заменить строки черновика целиком (порядок = порядок в запросе) вместе со ставками НДС."""
+        ctx.conn.execute(purchase_order_line_taxes.delete().where(purchase_order_line_taxes.c.order_id == oid))
         ctx.conn.execute(purchase_order_lines.delete().where(purchase_order_lines.c.order_id == oid))
         for pos, ln in enumerate(lines, start=1):
             ctx.conn.execute(purchase_order_lines.insert().values(
                 order_id=oid, pos=pos, line_id=ln.line_id, item_id=ln.item_id, qty=ln.qty, unit_price=ln.unit_price,
                 need_id=ln.need_id, need_line_id=ln.need_line_id, note=ln.note))
+            if ln.vat_rate is not None:
+                ctx.conn.execute(purchase_order_line_taxes.insert().values(order_id=oid, line_id=ln.line_id, vat_rate=ln.vat_rate))
+
+    def _write_terms(self, ctx, oid: str, contract_id: Optional[str], vat_mode: Optional[str]) -> None:
+        """Записать условия заказа (договор, режим цен); оба пустые — строки-расширения нет."""
+        ctx.conn.execute(purchase_order_terms.delete().where(purchase_order_terms.c.order_id == oid))
+        if contract_id is not None or vat_mode is not None:
+            ctx.conn.execute(purchase_order_terms.insert().values(order_id=oid, contract_id=contract_id, vat_mode=vat_mode))
 
     def _supplier_ref(self, ctx, sid: str, must_be_active: bool) -> dict:
-        """Поставщик по id (для размещения — действующий) или отказ."""
+        """Поставщик по id (для согласования и размещения — действующий) или отказ."""
         s = self._require(ctx.conn, suppliers, sid, "Поставщик")
         if must_be_active and not s["active"]:
             raise Rejected("supplier_inactive", f"Поставщик «{s['code']}» отключён — новые заказы ему не размещают.",
                            {"field": "supplier_id"})
         return s
 
+    @staticmethod
+    def _vat_mode(p: dict) -> Optional[str]:
+        """Режим цен из запроса (included / excluded / None) или отказ."""
+        try:
+            return pu.check_vat_mode(p.get("vat_mode"))
+        except pu.PurchaseError as e:
+            raise _purchase_rejected(e)
+
     def _po_create(self, ctx, p, ev):
-        """po.create {id, supplier_id, currency?, supplier_ref?, expected_on?, note?, lines[]} — черновик заказа.
-        Можно офлайн (очередь). Номер заказа — сквозной, назначает сервер при создании.
+        """po.create {id, supplier_id, currency?, contract_id?, vat_mode?, supplier_ref?, expected_on?, note?, lines[]}
+        — черновик заказа. Можно офлайн (очередь). Номер заказа — сквозной, назначает сервер при создании.
         """
-        only_keys(p, {"id", "supplier_id", "currency", "supplier_ref", "expected_on", "note", "lines"})
+        only_keys(p, ORDER_KEYS)
         auth = self.policy.check(ctx.conn, ctx.user_id, "po.create", ctx.now)
         oid = req_uuid(p, "id")
         self._ensure_new(ctx.conn, purchase_orders, oid)
@@ -251,6 +507,9 @@ class PurchasingMixin:
             lines, cur = pu.parse_lines(p.get("lines", []), p.get("currency"))
         except pu.PurchaseError as e:
             raise _purchase_rejected(e)
+        mode = self._vat_mode(p)
+        cid = req_uuid(p, "contract_id") if p.get("contract_id") is not None else None
+        self._contract_ref(ctx, cid, sup["id"], for_use=False)
         self._check_order_lines(ctx, lines, for_place=False)
         no = (ctx.conn.execute(sa.select(sa.func.max(purchase_orders.c.order_no))).scalar() or 0) + 1
         ctx.conn.execute(purchase_orders.insert().values(
@@ -259,26 +518,34 @@ class PurchasingMixin:
             note=opt_str(p, "note", 2000), version=1, created_by=ctx.user_id, created_at=ctx.now,
             updated_by=ctx.user_id, updated_at=ctx.now))
         self._write_lines(ctx, oid, lines)
+        self._write_terms(ctx, oid, cid, mode)
         ctx.log("purchase_order", oid, auth, None, 1, {"order_no": no, "supplier_code": sup["code"], "status": "draft",
-                                                       "lines": len(lines), "currency": cur, **pu.totals(lines)})
+                                                       "lines": len(lines), "currency": cur, "vat_mode": mode,
+                                                       "contract_id": cid, **pu.totals(lines)})
         return {"purchase_order": self._order_view(ctx, oid)}
 
     def _po_update(self, ctx, p, ev):
-        """po.update {id, …} + версия. Черновик — любые поля и строки целиком. Размещённый — только справочные поля
-        (supplier_ref, expected_on, note): условия заказа после размещения не меняются (A-36). Закрытый/отменённый —
-        ничего.
+        """po.update {id, …} + версия. Черновик — любые поля и строки целиком. Черновик на согласовании или
+        согласованный, а также размещённый — только справочные поля (supplier_ref, expected_on, note): условия,
+        которые согласуют и замораживают, не меняются (D-33, A-36). Закрытый/отменённый — ничего.
         """
-        only_keys(p, {"id", "supplier_id", "currency", "supplier_ref", "expected_on", "note", "lines"})
+        only_keys(p, ORDER_KEYS)
         auth = self.policy.check(ctx.conn, ctx.user_id, "po.update", ctx.now)
         o = self._require(ctx.conn, purchase_orders, req_uuid(p, "id"), "Заказ поставщику")
         self._check_version(o, ev, lambda x: self._order_view(ctx, x["id"]))
         if o["status"] in ("closed", "cancelled"):
             raise Rejected("order_state", f"Заказ № {o['order_no']} {pu.STATUS_LABELS_RU[o['status']].lower()} — менять его нельзя.")
-        frozen = {"supplier_id", "currency", "lines"} & set(p)
+        frozen = FROZEN_FIELDS & set(p)
         if o["status"] == "placed" and frozen:
-            raise Rejected("order_placed", f"Заказ № {o['order_no']} уже размещён: поставщик, валюта и строки не меняются. "
-                           "Нужны другие условия — закройте или отмените заказ и разместите новый.",
+            raise Rejected("order_placed", f"Заказ № {o['order_no']} уже размещён: поставщик, валюта, договор, НДС и "
+                           "строки не меняются. Нужны другие условия — закройте или отмените заказ и разместите новый.",
                            {"field": sorted(frozen)[0]})
+        state = self._approval_state(self._approvals(ctx.conn, o["id"]))
+        if frozen and state in ("submit", "approve"):
+            raise Rejected("order_on_approval", f"Заказ № {o['order_no']} {pu.APPROVAL_LABELS_RU[state].lower()}: его "
+                           "условия не меняются. Чтобы изменить — отзовите его с согласования и отправьте заново.",
+                           {"field": sorted(frozen)[0]})
+        terms = self._terms(ctx.conn, o["id"])
         ch: dict[str, Any] = {}
         if "supplier_id" in p:
             ch["supplier_id"] = self._supplier_ref(ctx, req_uuid(p, "supplier_id"), must_be_active=False)["id"]
@@ -288,6 +555,13 @@ class PurchasingMixin:
             ch["expected_on"] = opt_date(p, "expected_on")
         if "note" in p:
             ch["note"] = opt_str(p, "note", 2000)
+        new_terms = dict(terms)
+        if "vat_mode" in p:
+            new_terms["vat_mode"] = self._vat_mode(p)
+        if "contract_id" in p:
+            new_terms["contract_id"] = req_uuid(p, "contract_id") if p["contract_id"] is not None else None
+        # Договор — того же поставщика (в том числе если сменили поставщика, а договор оставили прежним).
+        self._contract_ref(ctx, new_terms["contract_id"], ch.get("supplier_id", o["supplier_id"]), for_use=False)
         lines_changed = False
         if "lines" in p or "currency" in p:
             cur_in = p["currency"] if "currency" in p else o["currency"]
@@ -305,21 +579,146 @@ class PurchasingMixin:
                     self._write_lines(ctx, o["id"], lines)
                     lines_changed = True
         ch = {k: v for k, v in ch.items() if v != o[k]}
-        if not ch and not lines_changed:
+        terms_ch = {k: v for k, v in new_terms.items() if v != terms[k]}
+        if not ch and not lines_changed and not terms_ch:
             raise Rejected("no_changes", "Нет изменений.")
+        if terms_ch:
+            self._write_terms(ctx, o["id"], new_terms["contract_id"], new_terms["vat_mode"])
         n = self._update_versioned(ctx, purchase_orders, o, {**ch, "updated_by": ctx.user_id, "updated_at": ctx.now})
+        enc = lambda v: v.isoformat() if hasattr(v, "isoformat") else v  # noqa: E731 — даты в журнал аудита строкой
         ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
-                {"order_no": o["order_no"], "changed": sorted(ch) + (["lines"] if lines_changed else []),
-                 "before": {k: (o[k].isoformat() if hasattr(o[k], "isoformat") else o[k]) for k in ch},
-                 "after": {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in ch.items()}})
+                {"order_no": o["order_no"], "changed": sorted(ch) + sorted(terms_ch) + (["lines"] if lines_changed else []),
+                 "before": {**{k: enc(o[k]) for k in ch}, **{k: terms[k] for k in terms_ch}},
+                 "after": {**{k: enc(v) for k, v in ch.items()}, **terms_ch}})
+        return {"purchase_order": self._order_view(ctx, o["id"])}
+
+    # ------------------------------------------------------------ согласование (D-33)
+    def _check_ready(self, ctx, o: dict) -> tuple[list[pu.Line], dict, dict, str]:
+        """Полная проверка черновика перед согласованием и размещением: поставщик действующий, строки (хотя бы одна,
+        позиции действующие, ссылки на потребность), валюта, режим цен и ставки НДС, договор действует сегодня.
+
+        Возвращает (строки, поставщик, условия, SHA-256 содержания). Все замечания ядра — одним отказом (problems).
+        """
+        sup = self._supplier_ref(ctx, o["supplier_id"], must_be_active=True)
+        try:
+            lines, cur = pu.parse_lines(self._raw_lines(ctx.conn, o["id"]), o["currency"], require_lines=True)
+        except pu.PurchaseError as e:
+            raise _purchase_rejected(e)
+        terms = self._terms(ctx.conn, o["id"])
+        probs = pu.ready_problems(lines, cur, terms["vat_mode"])
+        if probs:
+            raise _purchase_rejected(pu.PurchaseError(probs))
+        self._check_order_lines(ctx, lines, for_place=True)
+        self._contract_ref(ctx, terms["contract_id"], o["supplier_id"], for_use=True)
+        return lines, sup, terms, pu.content_hash(o["supplier_id"], cur, lines, terms["contract_id"], terms["vat_mode"])
+
+    def _add_approval(self, ctx, o: dict, kind: str, content_hash: Optional[str], comment: Optional[str]) -> None:
+        """Добавить событие в неизменяемый журнал согласования заказа (seq — следующий номер)."""
+        seq = (ctx.conn.execute(sa.select(sa.func.max(purchase_order_approvals.c.seq))
+                                .where(purchase_order_approvals.c.order_id == o["id"])).scalar() or 0) + 1
+        ctx.conn.execute(purchase_order_approvals.insert().values(order_id=o["id"], seq=seq, kind=kind,
+                                                                  content_hash=content_hash, comment=comment,
+                                                                  actor_id=ctx.user_id, at=ctx.now))
+
+    def _draft_for_approval(self, ctx, p, ev, action: str) -> tuple[dict, Any, list[dict]]:
+        """Общее начало команд согласования: право, заказ, версия, статус «черновик». → (заказ, основание, события)."""
+        auth = self.policy.check(ctx.conn, ctx.user_id, action, ctx.now)
+        o = self._require(ctx.conn, purchase_orders, req_uuid(p, "id"), "Заказ поставщику")
+        self._check_version(o, ev, lambda x: self._order_view(ctx, x["id"]))
+        if o["status"] != "draft":
+            raise Rejected("order_state", f"Заказ № {o['order_no']} уже {pu.STATUS_LABELS_RU[o['status']].lower()} — "
+                           "согласование касается только черновика.")
+        return o, auth, self._approvals(ctx.conn, o["id"])
+
+    def _po_submit(self, ctx, p, ev):
+        """po.submit {id, comment?} + версия — отправить черновик на согласование (закупка, онлайн).
+
+        Черновик проверяется так же полно, как при размещении; согласующему уходит именно это содержание (SHA-256).
+        """
+        only_keys(p, {"id", "comment"})
+        o, auth, events = self._draft_for_approval(ctx, p, ev, "po.submit")
+        state = self._approval_state(events)
+        if state in ("submit", "approve"):
+            raise Rejected("order_state", f"Заказ № {o['order_no']} уже {pu.APPROVAL_LABELS_RU[state].lower()}.")
+        lines, sup, terms, h = self._check_ready(ctx, o)
+        comment = opt_str(p, "comment", 2000)
+        self._add_approval(ctx, o, "submit", h, comment)
+        n = self._update_versioned(ctx, purchase_orders, o, {"updated_by": ctx.user_id, "updated_at": ctx.now})
+        ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
+                {"order_no": o["order_no"], "approval": "submit", "content_hash": h, "comment": comment,
+                 "supplier_code": sup["code"], "lines": len(lines), "vat_mode": terms["vat_mode"],
+                 **{k: v for k, v in pu.vat_totals(lines, terms["vat_mode"]).items() if k in ("net", "vat", "gross")}})
+        return {"purchase_order": self._order_view(ctx, o["id"])}
+
+    def _po_withdraw(self, ctx, p, ev):
+        """po.withdraw {id, reason?} + версия — отозвать заказ с согласования (или отказаться от согласования), чтобы
+        изменить условия (закупка, онлайн). После правки — отправить на согласование заново.
+        """
+        only_keys(p, {"id", "reason"})
+        o, auth, events = self._draft_for_approval(ctx, p, ev, "po.withdraw")
+        state = self._approval_state(events)
+        if state not in ("submit", "approve"):
+            raise Rejected("order_state", f"Заказ № {o['order_no']} не на согласовании — отзывать нечего.")
+        reason = opt_str(p, "reason", 2000)
+        self._add_approval(ctx, o, "withdraw", None, reason)
+        n = self._update_versioned(ctx, purchase_orders, o, {"updated_by": ctx.user_id, "updated_at": ctx.now})
+        ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
+                {"order_no": o["order_no"], "approval": "withdraw", "from": state, "reason": reason})
+        return {"purchase_order": self._order_view(ctx, o["id"])}
+
+    def _decision_checks(self, ctx, o: dict, events: list[dict]) -> dict:
+        """Общие проверки решения согласующего: заказ на согласовании, решает не автор и не отправивший (A-37)."""
+        state = self._approval_state(events)
+        if state != "submit":
+            raise Rejected("order_state", f"Заказ № {o['order_no']} не на согласовании "
+                           f"({pu.APPROVAL_LABELS_RU[state].lower()}).")
+        sub = events[-1]
+        if ctx.user_id in (sub["actor_id"], o["created_by"]):
+            raise Rejected("self_approval", "Нельзя согласовать заказ, который вы сами создали или отправили на "
+                           "согласование: решение принимает другой сотрудник с ролью «Согласование закупок».")
+        return sub
+
+    def _po_approve(self, ctx, p, ev):
+        """po.approve {id, comment?} + версия — согласовать заказ (роль «Согласование закупок», онлайн).
+
+        Согласуется ровно отправленное содержание: если хэш изменился (правка в обход программы) — отказ.
+        Перед решением проверяется и готовность (поставщик, договор и позиции могли отключить за это время).
+        """
+        only_keys(p, {"id", "comment"})
+        o, auth, events = self._draft_for_approval(ctx, p, ev, "po.approve")
+        sub = self._decision_checks(ctx, o, events)
+        lines, sup, terms, h = self._check_ready(ctx, o)
+        if h != sub["content_hash"]:
+            raise Rejected("approval_stale", f"Содержание заказа № {o['order_no']} изменилось после отправки на "
+                           "согласование — согласовать нельзя. Закупка должна отправить его заново.")
+        comment = opt_str(p, "comment", 2000)
+        self._add_approval(ctx, o, "approve", h, comment)
+        n = self._update_versioned(ctx, purchase_orders, o, {"updated_by": ctx.user_id, "updated_at": ctx.now})
+        ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
+                {"order_no": o["order_no"], "approval": "approve", "content_hash": h, "comment": comment,
+                 "submitted_by": sub["actor_id"]})
+        return {"purchase_order": self._order_view(ctx, o["id"])}
+
+    def _po_return(self, ctx, p, ev):
+        """po.return {id, reason} + версия — вернуть заказ на доработку (роль «Согласование закупок», онлайн).
+        Причина обязательна: закупка увидит её в карточке заказа.
+        """
+        only_keys(p, {"id", "reason"})
+        o, auth, events = self._draft_for_approval(ctx, p, ev, "po.return")
+        self._decision_checks(ctx, o, events)
+        reason = req_str(p, "reason", 2000)
+        self._add_approval(ctx, o, "return", None, reason)
+        n = self._update_versioned(ctx, purchase_orders, o, {"updated_by": ctx.user_id, "updated_at": ctx.now})
+        ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
+                {"order_no": o["order_no"], "approval": "return", "reason": reason})
         return {"purchase_order": self._order_view(ctx, o["id"])}
 
     # ------------------------------------------------------------ размещение, отмена, закрытие
     def _po_place(self, ctx, p, ev):
         """po.place {id} + версия — разместить заказ у поставщика: черновик → «Размещён». Только онлайн.
 
-        Проверяется всё заново: поставщик действующий, хотя бы одна строка, позиции действующие, ссылки на
-        потребность, валюта при ценах. Строки замораживаются (SHA-256 — placed_hash).
+        Нужен согласованный черновик (D-33), и содержание должно совпадать с согласованным. Всё проверяется заново:
+        поставщик, договор, позиции, ссылки на потребность, валюта и НДС. Условия замораживаются (placed_hash).
         """
         only_keys(p, {"id"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "po.place", ctx.now)
@@ -328,18 +727,20 @@ class PurchasingMixin:
         if o["status"] != "draft":
             raise Rejected("order_state", f"Заказ № {o['order_no']} уже {pu.STATUS_LABELS_RU[o['status']].lower()} — "
                            "разместить можно только черновик.")
-        sup = self._supplier_ref(ctx, o["supplier_id"], must_be_active=True)
-        try:
-            lines, cur = pu.parse_lines(self._raw_lines(ctx.conn, o["id"]), o["currency"], require_lines=True)
-        except pu.PurchaseError as e:
-            raise _purchase_rejected(e)
-        self._check_order_lines(ctx, lines, for_place=True)
-        h = pu.content_hash(o["supplier_id"], cur, lines)
+        events = self._approvals(ctx.conn, o["id"])
+        if self._approval_state(events) != "approve":
+            raise Rejected("approval_required", f"Заказ № {o['order_no']} не согласован "
+                           f"({pu.APPROVAL_LABELS_RU[self._approval_state(events)].lower()}). Разместить можно только "
+                           "согласованный заказ — отправьте его на согласование.")
+        lines, sup, terms, h = self._check_ready(ctx, o)
+        if h != events[-1]["content_hash"]:
+            raise Rejected("approval_stale", f"Содержание заказа № {o['order_no']} отличается от согласованного — "
+                           "разместить нельзя. Отправьте заказ на согласование заново.")
         n = self._update_versioned(ctx, purchase_orders, o, {"status": "placed", "placed_hash": h, "placed_by": ctx.user_id,
                                                              "placed_at": ctx.now, "updated_by": ctx.user_id, "updated_at": ctx.now})
         ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
                 {"order_no": o["order_no"], "status": "placed", "supplier_code": sup["code"], "lines": len(lines),
-                 "currency": cur, "placed_hash": h, **pu.totals(lines)})
+                 "currency": o["currency"], "placed_hash": h, "approved_by": events[-1]["actor_id"], **pu.totals(lines)})
         return {"purchase_order": self._order_view(ctx, o["id"])}
 
     def _po_cancel(self, ctx, p, ev):
@@ -455,14 +856,26 @@ class PurchasingMixin:
         return out
 
     def _pull_purchasing(self, conn, uid: str, now) -> dict:
-        """Часть pull: поставщики (supplier.read) и заказы (po.read; цены — только с po.read_prices).
+        """Часть pull: поставщики с реквизитами и договоры (supplier.read), заказы (po.read; цены — только с
+        po.read_prices).
 
-        Все черновики и размещённые заказы + последние PULL_CLOSED_ORDERS_LIMIT закрытых/отменённых.
+        Все черновики и размещённые заказы + последние PULL_CLOSED_ORDERS_LIMIT закрытых/отменённых. Расширения v13
+        (условия, ставки НДС, события согласования, договоры) загружаются одним запросом на таблицу.
         """
-        out: dict[str, Any] = {"suppliers": [], "purchase_orders": []}
-        if self.policy.can(conn, uid, "supplier.read", now):
-            out["suppliers"] = [self.v_supplier(dict(r._mapping)) for r in conn.execute(sa.select(suppliers).order_by(suppliers.c.code))]
-        if not self.policy.can(conn, uid, "po.read", now):
+        out: dict[str, Any] = {"suppliers": [], "supplier_contracts": [], "purchase_orders": []}
+        can_sup = self.policy.can(conn, uid, "supplier.read", now)
+        can_po = self.policy.can(conn, uid, "po.read", now)
+        if not can_sup and not can_po:
+            return out
+        sups = {r.id: dict(r._mapping) for r in conn.execute(sa.select(suppliers).order_by(suppliers.c.code))}
+        reqs = {r.supplier_id: {k: v for k, v in r._mapping.items() if k != "supplier_id"}
+                for r in conn.execute(sa.select(supplier_requisites))}
+        contracts = {r.id: dict(r._mapping) for r in conn.execute(sa.select(supplier_contracts))}
+        if can_sup:
+            out["suppliers"] = [self.v_supplier(s, reqs.get(s["id"])) for s in sups.values()]
+            out["supplier_contracts"] = [self.v_contract(c) for c in sorted(
+                contracts.values(), key=lambda c: (c["supplier_id"], c["signed_on"], c["number"]))]
+        if not can_po:
             return out
         prices = self.policy.can(conn, uid, "po.read_prices", now)
         rows = [dict(r._mapping) for r in conn.execute(
@@ -471,8 +884,17 @@ class PurchasingMixin:
         rows += [dict(r._mapping) for r in conn.execute(
             sa.select(purchase_orders).where(purchase_orders.c.status.in_(("closed", "cancelled")))
             .order_by(purchase_orders.c.order_no.desc()).limit(PULL_CLOSED_ORDERS_LIMIT))]
-        received = self._received_by_line(conn)
-        items = {r.id: dict(r._mapping) for r in conn.execute(sa.select(stock_items))}
-        sups = {r.id: dict(r._mapping) for r in conn.execute(sa.select(suppliers))}
-        out["purchase_orders"] = [self.v_order(conn, o, prices, received, items, sups.get(o["supplier_id"])) for o in rows]
+        taxes: dict[str, dict] = defaultdict(dict)
+        for r in conn.execute(sa.select(purchase_order_line_taxes)):
+            taxes[r.order_id][r.line_id] = r.vat_rate
+        approvals: dict[str, list] = defaultdict(list)
+        for r in conn.execute(sa.select(purchase_order_approvals).order_by(purchase_order_approvals.c.order_id,
+                                                                           purchase_order_approvals.c.seq)):
+            approvals[r.order_id].append(dict(r._mapping))
+        pre = {"received": self._received_by_line(conn),
+               "items": {r.id: dict(r._mapping) for r in conn.execute(sa.select(stock_items))},
+               "sups": sups, "contracts": contracts, "taxes": taxes, "approvals": approvals,
+               "terms": {r.order_id: {"contract_id": r.contract_id, "vat_mode": r.vat_mode}
+                         for r in conn.execute(sa.select(purchase_order_terms))}}
+        out["purchase_orders"] = [self.v_order(conn, o, prices, pre) for o in rows]
         return out

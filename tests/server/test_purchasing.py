@@ -1,7 +1,8 @@
-"""Заказы поставщикам и факт поставки (сценарий С4, шаг 5; D-32, A-34..A-36).
+"""Заказы поставщикам и факт поставки (сценарий С4, шаг 5; D-32, A-34..A-36; согласование и НДС — D-33).
 
 Каждый тест закрепляет одно правило из server/purchasing.py; запускается на SQLite и на встроенном PostgreSQL.
-Кто есть кто: wh1 — склад, pr1 — закупка, acc1 — бухгалтерия; команда проекта — как в test_tasks_documents.
+Кто есть кто: wh1 — склад, pr1 — закупка, acc1 — бухгалтерия, ap1 — согласование закупок; команда проекта — как в
+test_tasks_documents. Согласование, НДС, реквизиты и договоры — tests/server/test_purchasing_approval.py.
 """
 import uuid
 from decimal import Decimal
@@ -13,6 +14,28 @@ from test_stock import _freeze, calc_line, st  # noqa: F401  (фикстура s
 from test_tasks_documents import audit, proj  # noqa: F401
 from vector.server import db
 
+# World текущего теста — чтобы помощник placed() мог завести согласующего (ap1) по требованию.
+_W = {}
+
+
+@pytest.fixture(autouse=True)
+def _remember_world(world):
+    """Запомнить World теста для помощников модуля (approver)."""
+    _W["w"] = world
+    yield
+    _W.clear()
+
+
+def approver():
+    """Сеанс согласующего ap1 (роль po_approver); создаётся при первом обращении в тесте."""
+    w = _W["w"]
+    if "ap1" not in _W:                      # один вход на тест: частые входы ограничены (rate_limited)
+        if "ap1" not in w.users:
+            w.users["ap1"] = w.make_user("ap1", "po_approver")
+            w.clock.advance(seconds=61)      # входы при заведении учётки не должны съесть лимит входов теста
+        _W["ap1"] = w.login("ap1", addr="10.0.0.77")
+    return _W["ap1"]
+
 
 def supplier(s, code="ЭТМ", **kw):
     """Создать поставщика; вернуть его представление."""
@@ -20,19 +43,28 @@ def supplier(s, code="ЭТМ", **kw):
 
 
 def line(item, qty, price=None, **kw):
-    """Строка заказа (новый line_id)."""
+    """Строка заказа (новый line_id). У строки с ценой по умолчанию ставка НДС 22 % (нужна для согласования)."""
+    if price is not None:
+        kw.setdefault("vat_rate", "22")
     return {"line_id": str(uuid.uuid4()), "item_id": item, "qty": qty, "unit_price": price, **kw}
 
 
 def draft(st, sup, lines, currency="RUB", **kw):  # noqa: F811
-    """Черновик заказа от закупки; вернуть представление заказа."""
+    """Черновик заказа от закупки (по умолчанию цены с НДС); вернуть представление заказа."""
+    kw.setdefault("vat_mode", "included")
     return st.pr.ok("po.create", {"id": new_id(), "supplier_id": sup["id"], "currency": currency, "lines": lines,
                                   **kw})["purchase_order"]
 
 
+def approved(st, o):  # noqa: F811
+    """Отправить черновик на согласование (закупка) и согласовать (ap1); вернуть представление."""
+    o = st.pr.ok("po.submit", {"id": o["id"]}, expected_version=o["version"])["purchase_order"]
+    return approver().ok("po.approve", {"id": o["id"]}, expected_version=o["version"])["purchase_order"]
+
+
 def placed(st, sup, lines, **kw):  # noqa: F811
-    """Черновик → размещён; вернуть представление."""
-    o = draft(st, sup, lines, **kw)
+    """Черновик → согласован → размещён; вернуть представление."""
+    o = approved(st, draft(st, sup, lines, **kw))
     return st.pr.ok("po.place", {"id": o["id"]}, expected_version=o["version"])["purchase_order"]
 
 
@@ -117,35 +149,41 @@ def test_draft_update_replaces_lines_and_needs_version(st):  # noqa: F811
 def test_place_freezes_order_and_rechecks_everything(world, st):  # noqa: F811
     sup = supplier(st.pr)
     empty = draft(st, sup, [])
-    assert st.pr.cmd("po.place", {"id": empty["id"]}, expected_version=1)["code"] == "no_lines"
+    assert st.pr.cmd("po.submit", {"id": empty["id"]}, expected_version=1)["code"] == "no_lines"
     o = draft(st, sup, [line(st.item, "10", "2")])
+    # Без согласования не размещают (D-33).
+    assert st.pr.cmd("po.place", {"id": o["id"]}, expected_version=1)["code"] == "approval_required"
+    o = approved(st, o)
+    v = o["version"]
     # Размещает закупка, нужна версия; склад — нет.
-    assert st.wh.cmd("po.place", {"id": o["id"]}, expected_version=1)["status"] == "denied"
+    assert st.wh.cmd("po.place", {"id": o["id"]}, expected_version=v)["status"] == "denied"
     assert st.pr.cmd("po.place", {"id": o["id"]})["code"] == "expected_version_required"
-    # Отключённому поставщику новые заказы не размещают.
+    # Отключённому поставщику новые заказы не размещают (даже согласованные).
     st.pr.ok("supplier.update", {"id": sup["id"], "active": False}, expected_version=1)
-    assert st.pr.cmd("po.place", {"id": o["id"]}, expected_version=1)["code"] == "supplier_inactive"
+    assert st.pr.cmd("po.place", {"id": o["id"]}, expected_version=v)["code"] == "supplier_inactive"
     st.pr.ok("supplier.update", {"id": sup["id"], "active": True}, expected_version=2)
     # Отключённую позицию не заказывают.
     st.wh.ok("item.update", {"id": st.item, "active": False}, expected_version=1)
-    assert st.pr.cmd("po.place", {"id": o["id"]}, expected_version=1)["code"] == "item_inactive"
+    assert st.pr.cmd("po.place", {"id": o["id"]}, expected_version=v)["code"] == "item_inactive"
     st.wh.ok("item.update", {"id": st.item, "active": True}, expected_version=2)
-    p = st.pr.ok("po.place", {"id": o["id"]}, expected_version=1)["purchase_order"]
+    p = st.pr.ok("po.place", {"id": o["id"]}, expected_version=v)["purchase_order"]
     assert (p["status"], p["delivery"], p["delivery_label"], p["hash_ok"]) == ("placed", "none", "Ждём поставку", True)
-    assert st.pr.cmd("po.place", {"id": o["id"]}, expected_version=2)["code"] == "order_state"
+    v = p["version"]
+    assert st.pr.cmd("po.place", {"id": o["id"]}, expected_version=v)["code"] == "order_state"
     # Размещённый: условия не меняются, справочные поля — можно.
-    r = st.pr.cmd("po.update", {"id": o["id"], "lines": [line(st.item, "11", "2")]}, expected_version=2)
+    r = st.pr.cmd("po.update", {"id": o["id"], "lines": [line(st.item, "11", "2")]}, expected_version=v)
     assert (r["code"], r["details"]["field"]) == ("order_placed", "lines")
+    assert st.pr.cmd("po.update", {"id": o["id"], "vat_mode": "excluded"}, expected_version=v)["code"] == "order_placed"
     p = st.pr.ok("po.update", {"id": o["id"], "supplier_ref": "Счёт 99", "expected_on": "2026-12-20"},
-                 expected_version=2)["purchase_order"]
+                 expected_version=v)["purchase_order"]
     assert (p["supplier_ref"], p["expected_on"], p["hash_ok"]) == ("Счёт 99", "2026-12-20", True)
     # Правка строк в обход программы видна: контрольная сумма не сходится.
     with world.svc.engine.begin() as c:
         c.execute(db.purchase_order_lines.update().where(db.purchase_order_lines.c.order_id == o["id"]).values(qty=Decimal(12)))
     assert pulled_order(st.pr, o["id"])["hash_ok"] is False
     h = st.pr.query("history", object_type="purchase_order", object_id=o["id"])["result"]
-    assert [x["command"] for x in h] == ["po.create", "po.place", "po.update"]
-    assert len(h[1]["details"]["placed_hash"]) == 64
+    assert [x["command"] for x in h] == ["po.create", "po.submit", "po.approve", "po.place", "po.update"]
+    assert len(h[3]["details"]["placed_hash"]) == 64
 
 
 # ====================================================================== факт поставки
@@ -245,9 +283,9 @@ def test_need_link_must_match_line_item_and_shows_on_order(world, st):  # noqa: 
 
 def test_purchasing_commands_offline_classes(world):
     cat = world.svc.contracts.catalog["commands"]
-    for c in ("supplier.create", "supplier.update", "po.create", "po.update"):
+    for c in ("supplier.create", "supplier.update", "contract.create", "contract.update", "po.create", "po.update"):
         assert cat[c]["offline"] == "queued", c
-    for c in ("po.place", "po.cancel", "po.close", "po.receive"):
+    for c in ("po.submit", "po.withdraw", "po.approve", "po.return", "po.place", "po.cancel", "po.close", "po.receive"):
         assert cat[c]["offline"] == "online_required", c
 
 

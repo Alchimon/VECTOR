@@ -1,5 +1,5 @@
 {
-  "contract": "workflows-slice1-v7",
+  "contract": "workflows-slice1-v8",
   "notes": "Переходы и условия — временные предположения A-02/A-05 (Decision Log). Статус меняется только явной командой.",
   "tender": {
     "initial": "draft",
@@ -173,7 +173,39 @@
       "closed": "Закрыт",
       "cancelled": "Отменён"
     },
-    "note": "draft — po.create/po.update (можно офлайн); placed — po.place (строки заморожены, SHA-256); closed — po.close (больше не ждём; недопоставка — с причиной); cancelled — po.cancel (с причиной, только пока ничего не поставлено). Поставка (po.receive) — не статус: «нет / частично / полностью» считается по приходам без сторно (D-32).",
+    "note": "draft — po.create/po.update (можно офлайн); placed — po.place (только согласованный, D-33; условия заморожены, SHA-256); closed — po.close (больше не ждём; недопоставка — с причиной); cancelled — po.cancel (с причиной, только пока ничего не поставлено). Поставка (po.receive) — не статус: «нет / частично / полностью» считается по приходам без сторно (D-32).",
     "assumption": "A-36"
+  },
+  "purchase_order_approval": {
+    "initial": "none",
+    "terminal": [],
+    "transitions": {
+      "none": [
+        "submit"
+      ],
+      "submit": [
+        "approve",
+        "return",
+        "withdraw"
+      ],
+      "approve": [
+        "withdraw"
+      ],
+      "return": [
+        "submit"
+      ],
+      "withdraw": [
+        "submit"
+      ]
+    },
+    "labels_ru": {
+      "none": "Не отправлен на согласование",
+      "submit": "На согласовании",
+      "approve": "Согласован",
+      "return": "Возвращён на доработку",
+      "withdraw": "Отозван с согласования"
+    },
+    "note": "Согласование черновика заказа (D-33): состояние — последнее событие неизменяемого журнала purchase_order_approvals. submit — po.submit (закупка), approve — po.approve и return — po.return (согласующий, не автор), withdraw — po.withdraw (закупка). po.place — только из approve при совпадении SHA-256 содержания; размещённый заказ из этого процесса выходит.",
+    "assumption": "A-37"
   }
 }

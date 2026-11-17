@@ -22,7 +22,8 @@ OUT = ROOT / "docs" / "manual" / "reference.md"
 ROLE_LABELS = {"admin": "Администратор", "gip": "ГИП", "rp": "РП", "dept_head": "Руководитель отдела",
                "lead_engineer": "Ведущий инженер", "engineer": "Инженер", "designer": "Конструктор",
                "technologist": "Технолог", "production": "Производство", "warehouse": "Склад",
-               "procurement": "Закупка", "accountant": "Бухгалтерия"}
+               "procurement": "Закупка", "accountant": "Бухгалтерия",
+               "po_approver": "Согласование закупок"}
 PROJECT_ROLE_LABELS = {"gip": "ГИП проекта", "rp": "РП проекта", "participant": "Участник проекта"}
 OFFLINE_LABELS = {"queued": "можно без связи (очередь)", "online_required": "только при связи",
                   "offline_full": "полностью офлайн"}
@@ -32,7 +33,9 @@ EXTRA_ACTION_LABELS = {
     "project.read": "Просмотр проекта", "kit.read": "Просмотр комплектов", "task.read": "Просмотр задач",
     "document.read": "Просмотр документов и скачивание файлов", "calc.read": "Просмотр расчётов комплектов",
     "calc.read_revisions": "Просмотр проектного итога (ревизий)", "stock.read": "Просмотр остатков, резервов и журнала склада",
-    "need.read": "Просмотр потребностей", "admin.list_users": "Список учётных записей",
+    "need.read": "Просмотр потребностей", "supplier.read": "Просмотр поставщиков и договоров",
+    "po.read": "Просмотр заказов поставщикам", "po.read_prices": "Видеть цены, суммы и НДС заказов",
+    "admin.list_users": "Список учётных записей",
     "project.assign_gip": "Назначить ГИП проекта", "project.assign_rp": "Назначить РП проекта",
     "project.assign_participant": "Назначить участника проекта",
     "task.transition_own": "Сменить статус своей задачи (исполнитель)"}

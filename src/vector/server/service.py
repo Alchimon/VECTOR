@@ -156,6 +156,10 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin):
             "supplier.create": self._supplier_create, "supplier.update": self._supplier_update,
             "po.create": self._po_create, "po.update": self._po_update, "po.place": self._po_place,
             "po.cancel": self._po_cancel, "po.close": self._po_close, "po.receive": self._po_receive,
+            # Договоры поставщиков и согласование заказов (D-33).
+            "contract.create": self._contract_create, "contract.update": self._contract_update,
+            "po.submit": self._po_submit, "po.withdraw": self._po_withdraw, "po.approve": self._po_approve,
+            "po.return": self._po_return,
         }
         diff = set(self.contracts.catalog["commands"]) ^ set(self.handlers)
         if diff:
@@ -1134,7 +1138,7 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin):
                   "warehouse": "stock.read", "stock_item": "stock.read", "stock_movement": "stock.read",
                   "stock_transfer": "stock.read", "stock_reservation": "stock.read", "procurement_need": "need.read",
                   "item_alias": "stock.read", "unit_conversion": "stock.read", "config": "config.publish",
-                  "supplier": "supplier.read", "purchase_order": "po.read"}.get(otype)
+                  "supplier": "supplier.read", "supplier_contract": "supplier.read", "purchase_order": "po.read"}.get(otype)
         if not action or not isinstance(oid, str):
             return {"status": "rejected", "code": "bad_history_request", "message_ru": "Укажите тип и id объекта."}
         pid = oid if otype in ("project", "project_calc") else None
