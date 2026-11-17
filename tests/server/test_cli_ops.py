@@ -190,6 +190,14 @@ def test_demo_seed_only_into_fresh_db(setup):
     assert any(p["code"] == "П-2026-014" for p in pull["projects"])
     n = svc.handle({"type": "login", "login": "n.sokolov", "password": DEMO_PWD, "device_id": "t"}, "t")
     assert n["must_change_password"] is True
+    # Склад и закупка (С4): у кладовщика — остатки и журнал со сторно, у закупщика — потребность АТХ v1.
+    wh = svc.handle({"type": "login", "login": "i.belova", "password": DEMO_PWD, "device_id": "t"}, "t")
+    sp = svc.handle({"type": "query", "token": wh["token"], "query": "pull"}, "t")["result"]
+    assert len(sp["warehouses"]) == 2 and any(m["reverses_id"] for m in sp["stock_movements"])
+    assert svc.ledger_mismatches() == []
+    buyer = svc.handle({"type": "login", "login": "s.morozov", "password": DEMO_PWD, "device_id": "t"}, "t")
+    needs = svc.handle({"type": "query", "token": buyer["token"], "query": "pull"}, "t")["result"]["needs"]
+    assert [(x["kit_code"], x["calc_version_no"], x["matched_count"]) for x in needs] == [("АТХ", 1, 2)]
     with eng.connect() as c:
         assert c.execute(sa.select(sa.func.count()).select_from(db.audit_log).where(db.audit_log.c.device_id == "demo-seed")).scalar() > 20
         before = c.execute(sa.select(sa.func.count()).select_from(db.customers)).scalar()

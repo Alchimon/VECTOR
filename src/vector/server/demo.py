@@ -9,7 +9,8 @@
 
 Учётные записи (пароль у всех один — задаёт тестировщик):
   a.smirnova — РП; p.volkov — ГИП; e.orlova — руководитель отдела; d.kuznetsov — инженер;
-  m.lebedev — ведущий инженер; o.nikitina — бухгалтерия; n.sokolov — без роли, должен сменить пароль.
+  m.lebedev — ведущий инженер; o.nikitina — бухгалтерия; i.belova — склад; s.morozov — закупка;
+  n.sokolov — без роли, должен сменить пароль.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ import uuid
 
 import sqlalchemy as sa
 
-from .db import customers, users
+from .db import calc_versions, customers, users
 
 DEVICE = "demo-seed"
 
@@ -30,6 +31,8 @@ ACCOUNTS = [
     ("d.kuznetsov", "Кузнецов Дмитрий", "engineer", "Инженер"),
     ("m.lebedev", "Лебедев Максим", "lead_engineer", "Ведущий инженер"),
     ("o.nikitina", "Никитина Ольга", "accountant", "Бухгалтерия"),
+    ("i.belova", "Белова Ирина", "warehouse", "Склад"),
+    ("s.morozov", "Морозов Сергей", "procurement", "Закупка"),
     ("n.sokolov", "Соколов Никита", None, "Без роли; при первом входе должен сменить пароль"),
 ]
 
@@ -196,4 +199,46 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     cmd(rp, "project.start_rkd", {"id": pid2, "tender_id": t_won2, "code": "П-2026-011", "title": "ПАЗ цеха № 5"})
     cmd(adm, "project.assign", {"project_id": pid2, "user_id": people["a.smirnova"], "project_role": "rp", "reason": "Приказ № 98"})
     cmd(rp, "kit.create", {"id": str(uuid.uuid4()), "project_id": pid2, "code": "ПАЗ", "title": "Противоаварийная защита"})
-    return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs}
+    # Склад и закупка (С4). Количества и номера накладных ВЫМЫШЛЕНЫ. Номенклатура заведена с кодами, совпадающими
+    # с обозначениями части позиций расчёта АТХ, — так видно и сопоставленные строки потребности, и несопоставленные.
+    wh, buyer = login("i.belova"), login("s.morozov")
+    whs = {}
+    for code, name in [("СК-1", "Центральный склад"), ("СК-2", "Склад монтажного участка")]:
+        whs[code] = str(uuid.uuid4())
+        cmd(wh, "warehouse.create", {"id": whs[code], "code": code, "name": name})
+    items = {}
+    for code, name, unit, by in [("ШУ-1", "Шкаф управления котлом", "шт", wh), ("АРМ", "АРМ оператора", "компл", wh),
+                                 ("ДД", "Датчик давления", "шт", buyer), ("ЩР-1", "Щит распределительный 0,4 кВ", "шт", wh),
+                                 ("НШВИ-1.5", "Наконечник НШВИ 1,5 мм²", "шт", wh), ("ХМТ-200", "Хомут нейлоновый 200 мм", "шт", wh)]:
+        items[code] = str(uuid.uuid4())
+        cmd(by, "item.create", {"id": items[code], "code": code, "name": name, "unit": unit})
+
+    def receipt(w, item, qty, src):
+        return cmd(wh, "stock.receive", {"id": str(uuid.uuid4()), "warehouse_id": whs[w], "item_id": items[item],
+                                         "qty": qty, "source_doc": src})["movement"]
+    receipt("СК-1", "ШУ-1", "2", "ТН № 412 от ООО «Шкафы-Про»")
+    receipt("СК-1", "АРМ", "2", "ТН № 77 от ООО «ИТ-Снаб»")
+    wrong = receipt("СК-1", "НШВИ-1.5", "10000", "ТН № 1520")
+    cmd(wh, "stock.reverse", {"id": str(uuid.uuid4()), "movement_id": wrong["id"], "reason": "Ошибка ввода: лишний ноль"})
+    receipt("СК-1", "НШВИ-1.5", "1000", "ТН № 1520")
+    receipt("СК-2", "ХМТ-200", "500", "ТН № 1521")
+    receipt("СК-2", "ЩР-1", "1", "ТН № 90 от АО «Электрощит»")
+
+    # Закупка формирует потребность из последней зафиксированной версии АТХ (v1; черновик v2 не зафиксирован).
+    # id версии берётся из БД напрямую: закупка не видит расчёты (цены) через pull — и не должна.
+    with svc.engine.connect() as c:
+        atx_v1 = c.execute(sa.select(calc_versions.c.id).where(calc_versions.c.kit_id == kits["АТХ"])).scalar_one()
+    need = cmd(buyer, "need.generate", {"id": str(uuid.uuid4()), "calc_version_id": atx_v1})["need"]
+    line_of = {ln_["code"]: ln_["line_id"] for ln_ in need["lines"] if ln_["code"]}
+    res_shu = cmd(wh, "stock.reserve", {"id": str(uuid.uuid4()), "warehouse_id": whs["СК-1"], "item_id": items["ШУ-1"],
+                                        "project_id": pid, "qty": "2", "reason": "Под монтаж котлов № 1 и 2",
+                                        "need_id": need["id"], "need_line_id": line_of["ШУ-1"]})["reservation"]
+    res_arm = cmd(wh, "stock.reserve", {"id": str(uuid.uuid4()), "warehouse_id": whs["СК-1"], "item_id": items["АРМ"],
+                                        "project_id": pid, "qty": "2", "reason": "Под ПНР",
+                                        "need_id": need["id"], "need_line_id": line_of["АРМ"]})["reservation"]
+    cmd(wh, "stock.issue", {"id": str(uuid.uuid4()), "warehouse_id": whs["СК-1"], "item_id": items["АРМ"], "qty": "1",
+                            "reservation_id": res_arm["id"], "reason": "Выдано на ПНР, бригада Иванова"})
+    cmd(wh, "stock.issue", {"id": str(uuid.uuid4()), "warehouse_id": whs["СК-2"], "item_id": items["ХМТ-200"], "qty": "120",
+                            "project_id": pid, "reason": "Монтаж кабельных трасс"})
+    return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
+            "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]]}
