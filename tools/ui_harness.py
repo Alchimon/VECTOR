@@ -208,7 +208,7 @@ def _plain(v):
 
 
 def main():
-    """Снять скриншоты 01–23 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
+    """Снять скриншоты 01–24 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
     args = ap.parse_args()
@@ -296,9 +296,23 @@ def main():
         for name, text in (("acQty", "95"), ("acShortReason", "Пять хомутов с трещинами — не пригодны")):
             next(o for o in h.win.findChildren(QObject) if o.objectName() == name).setProperty("text", text)
         next(o for o in h.win.findChildren(QObject) if o.objectName() == "acSign").setProperty("checked", True)
+        # Подпись с вводом пароля (D-31, способ по умолчанию): в поле — точки, не текст.
+        next(o for o in h.win.findChildren(QObject) if o.objectName() == "acPwd").setProperty("text", PWD)
         h.wait_idle()
         h.shot(out / f"{theme}-23-transfer-shortage-act.png")
         QMetaObject.invokeMethod(af, "close")
+        h.wait_idle()
+        # Акт об утрате (D-31): форма «Утрата» по тому же перемещению — не пришло ничего.
+        lf = next(o for o in h.win.findChildren(QObject) if o.objectName() == "lostForm")
+        QMetaObject.invokeMethod(lf, "openFor", Q_ARG("QVariant", hmt))
+        h.wait_idle()
+        next(o for o in h.win.findChildren(QObject) if o.objectName() == "lsReason").setProperty(
+            "text", "Не прибыло с попутным транспортом; претензия перевозчику № 15")
+        next(o for o in h.win.findChildren(QObject) if o.objectName() == "lsSign").setProperty("checked", True)
+        next(o for o in h.win.findChildren(QObject) if o.objectName() == "lsPwd").setProperty("text", PWD)
+        h.wait_idle()
+        h.shot(out / f"{theme}-24-transfer-loss-act.png")
+        QMetaObject.invokeMethod(lf, "close")
         h.wait_idle()
         sp.setProperty("tab", "balances")
         h.wait_idle()
