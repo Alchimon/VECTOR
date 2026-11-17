@@ -28,8 +28,9 @@ from vector.core import money
 #   v5 — склад и закупка: номенклатура, склады, остатки, резервы, журнал движений, потребность (С4, D-23);
 #   v6 — ручное сопоставление строк потребности с номенклатурой (неизменяемая история, A-25);
 #   v7 — настройки компании (версии, D-26), справочник аналогов и пересчёта единиц, коэффициент в решении о
-#        сопоставлении (D-25, A-27).
-SCHEMA_VERSION = 7
+#        сопоставлении (D-25, A-27);
+#   v8 — перемещения между складами: связка двух движений журнала (A-28).
+SCHEMA_VERSION = 8
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -604,6 +605,28 @@ sa.Index("ux_stock_movements_reverses", stock_movements.c.reverses_id, unique=Tr
          mssql_where=stock_movements.c.reverses_id.isnot(None),
          sqlite_where=stock_movements.c.reverses_id.isnot(None))
 
+# Перемещение между складами (A-28, схема v8). Одна операция — ДВА движения журнала, проведённые в одной транзакции:
+# расход (issue) на складе-отправителе и приход (receipt) на складе-получателе; эта запись связывает их и хранит
+# общие реквизиты. Таблица stock_movements не меняется (миграции только добавляют), поэтому свёртка журнала и сверка
+# остатков (`ledger_mismatches`) работают без изменений. Запись неизменяема (триггеры ниже); каждое движение входит
+# не больше чем в одно перемещение (уникальные ключи); ошибочное перемещение исправляют ОБРАТНЫМ перемещением,
+# сторно отдельной половины запрещено (иначе товар «исчезнет» на одном складе и останется на другом).
+stock_transfers = sa.Table("stock_transfers", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id"), nullable=False),
+    sa.Column("from_warehouse_id", ID, sa.ForeignKey("warehouses.id"), nullable=False),
+    sa.Column("to_warehouse_id", ID, sa.ForeignKey("warehouses.id"), nullable=False),
+    sa.Column("qty", Qty, nullable=False),
+    sa.Column("out_movement_id", ID, sa.ForeignKey("stock_movements.id"), nullable=False, unique=True),
+    sa.Column("in_movement_id", ID, sa.ForeignKey("stock_movements.id"), nullable=False, unique=True),
+    sa.Column("source_doc", U(200)),                 # накладная на перемещение — если есть (необязательно)
+    sa.Column("reason", U(2000), nullable=False),    # зачем перемещаем — обязательно
+    sa.Column("posted_by", ID, nullable=False),
+    sa.Column("posted_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("from_warehouse_id <> to_warehouse_id", name="warehouses_differ"),
+    sa.CheckConstraint("out_movement_id <> in_movement_id", name="legs_differ"),
+    sa.CheckConstraint("qty > 0", name="qty_pos"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -688,7 +711,7 @@ BEGIN THROW {ms_error}, '{n} are immutable', 1; END""").execute_if(dialect="mssq
 for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_calc_revisions, 50005),
                  (project_calc_revision_items, 50006), (stock_movements, 50007), (procurement_need_lines, 50008),
                  (procurement_need_line_matches, 50009), (config_versions, 50010),
-                 (procurement_need_line_match_units, 50011)):
+                 (procurement_need_line_match_units, 50011), (stock_transfers, 50012)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

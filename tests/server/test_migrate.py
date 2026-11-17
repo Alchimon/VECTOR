@@ -1,9 +1,10 @@
-"""Миграция схемы v3 → … → v7 (vector-server migrate): копия до миграции, всё-или-ничего, только добавление.
+"""Миграция схемы v3 → … → v8 (vector-server migrate): копия до миграции, всё-или-ничего, только добавление.
 
 БД версии 3 строится честно: создаются только таблицы v3 и запись schema_version=3, затем данные среза 1
 вносятся обычными командами сервиса (они не касаются таблиц расчётов).
 """
 import uuid
+from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
@@ -56,7 +57,8 @@ def test_v3_to_v4_keeps_data_backs_up_first_and_enables_calc(backend, tmp_path, 
         db.check_schema(eng)                       # программа v4 на БД v3 не запускается (fail-closed)
 
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
-    # v3 → … → v7 одной транзакцией: все таблицы, добавленные после v3 (расчёты, склад, сопоставления, настройки).
+    # v3 → … → v8 одной транзакцией: все таблицы, добавленные после v3 (расчёты, склад, сопоставления, настройки,
+    # перемещения).
     assert (rep.from_version, rep.to_version) == (3, db.SCHEMA_VERSION)
     assert rep.created_tables == [t.name for v in sorted(mg.ADDED_IN) for t in mg.ADDED_IN[v]]
     assert db.check_schema(eng) == db.SCHEMA_VERSION
@@ -167,7 +169,7 @@ def test_v6_to_v7_adds_settings_and_unit_tables_with_immutability(backend, tmp_p
     before = counts(eng, mg.tables_of_version(6))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (6, db.SCHEMA_VERSION)
-    assert rep.created_tables == [t.name for t in mg.ADDED_IN[7]]
+    assert rep.created_tables == [t.name for v in (7, 8) for t in mg.ADDED_IN[v]]
     after = counts(eng, mg.tables_of_version(6))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
     with eng.begin() as c:
@@ -176,3 +178,39 @@ def test_v6_to_v7_adds_settings_and_unit_tables_with_immutability(backend, tmp_p
     with pytest.raises(sa.exc.DBAPIError):
         with eng.begin() as c:
             c.execute(db.config_versions.update().values(value_json='"y"'))
+
+
+def test_v7_to_v8_adds_transfers_immutable_and_checked(backend, tmp_path, clock, keys):
+    """v7 → v8: только новая таблица перемещений; запись неизменяема, склады должны различаться (CHECK в БД)."""
+    eng = make_v3(backend, tmp_path, clock, version=7)
+    before = counts(eng, mg.tables_of_version(7))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version, rep.created_tables) == (7, db.SCHEMA_VERSION, ["stock_transfers"])
+    assert rep.backup_path.exists()                     # сначала — проверенная копия БД v7
+    after = counts(eng, mg.tables_of_version(7))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    # Данные для проверки ограничений: склад, позиция, два движения.
+    now, uid, w1, w2, it, m1, m2 = clock.now(), new_id(), new_id(), new_id(), new_id(), new_id(), new_id()
+    with eng.begin() as c:
+        for w, code in ((w1, "СК-1"), (w2, "СК-2")):
+            c.execute(db.warehouses.insert().values(id=w, code=code, name=code, active=True, version=1, created_by=uid,
+                                                    created_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.stock_items.insert().values(id=it, code="Х", name="Х", unit="шт", active=True, version=1,
+                                                 created_by=uid, created_at=now, updated_by=uid, updated_at=now))
+        for no, (m, kind, w) in enumerate(((m1, "issue", w1), (m2, "receipt", w2)), start=1):
+            c.execute(db.stock_movements.insert().values(id=m, doc_no=no, kind=kind, warehouse_id=w, item_id=it,
+                                                         qty=Decimal("1"), posted_by=uid, posted_at=now))
+    row = dict(item_id=it, from_warehouse_id=w1, to_warehouse_id=w2, qty=Decimal("1"), out_movement_id=m1, in_movement_id=m2,
+               reason="Перенос", posted_by=uid, posted_at=now)
+    with pytest.raises(sa.exc.DBAPIError):                  # склад-отправитель = склад-получатель — БД не примет
+        with eng.begin() as c:
+            c.execute(db.stock_transfers.insert().values(id=new_id(), **{**row, "to_warehouse_id": w1}))
+    with eng.begin() as c:
+        c.execute(db.stock_transfers.insert().values(id=new_id(), **row))
+    with pytest.raises(sa.exc.DBAPIError):                  # одно движение — не больше чем в одном перемещении
+        with eng.begin() as c:
+            c.execute(db.stock_transfers.insert().values(id=new_id(), **row))
+    with pytest.raises(sa.exc.DBAPIError):                  # неизменяемость
+        with eng.begin() as c:
+            c.execute(db.stock_transfers.update().values(reason="Подмена"))
