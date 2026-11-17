@@ -24,7 +24,7 @@ ColumnLayout {
         textRole: s.textRole
         font.family: Theme.family; font.pixelSize: Theme.fs
         Accessible.name: s.label
-        contentItem: Text { leftPadding: 12; text: box.displayText; color: Theme.text; font: box.font; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
+        contentItem: Text { leftPadding: 12; rightPadding: 36; text: box.displayText; color: Theme.text; font: box.font; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight }
         indicator: Icon { name: "chevron-down"; size: 16; x: box.width - width - 12; anchors.verticalCenter: parent.verticalCenter }
         background: Rectangle { radius: Theme.radius - 2; color: Theme.surface; border.width: box.activeFocus ? 2 : 1; border.color: box.activeFocus ? Theme.primary : Theme.border }
         delegate: ItemDelegate {

@@ -10,6 +10,8 @@ import QtQuick.Layouts
 //  * Доступно = остаток − резервы. Клиент показывает его как подсказку; окончательно количество проверяет
 //    сервер в транзакции (параллельная выдача коллегой будет отклонена, а не «уйдёт в минус»).
 //  * Проведённое движение не редактируется и не удаляется — ошибку исправляют сторно (встречным движением).
+//  * Перемещение между складами (A-28) — одна операция из двух записей журнала (расход и приход); перемещается только
+//    доступное; ошибочное перемещение исправляют обратным, а не сторно.
 //  * Склады и номенклатуру можно заводить и без связи (очередь), как заказчиков.
 Item {
     id: page
@@ -25,7 +27,7 @@ Item {
     readonly property var whOptions: (ov.warehouses || []).filter(w => w.active === true).map(w => ({ id: w.id, label: w.code + " · " + w.name }))
     readonly property var projectOptions: ov.projects || []
     readonly property bool canPost: ov.can_post === true
-    readonly property string offlineWhy: "Проводки, резервы и сторно выполняются только при связи с сервером: склад меняется другими пользователями, и количество проверяется в момент проводки."
+    readonly property string offlineWhy: "Проводки, перемещения, резервы и сторно выполняются только при связи с сервером: склад меняется другими пользователями, и количество проверяется в момент проводки."
 
     function indexOf(options, id) { for (var i = 0; i < options.length; i++) if (options[i].id === id) return i; return 0 }
 
@@ -137,6 +139,7 @@ Item {
                                 spacing: 8
                                 VButton { objectName: "btnReceive"; text: "Приход"; kind: "primary"; iconName: "package-plus"; enabled: page.canPost && page.sel !== null && page.sel.active === true; onClicked: receiveForm.openFor(page.sel) }
                                 VButton { objectName: "btnIssue"; text: "Выдать на проект"; iconName: "package-minus"; enabled: page.canPost && page.sel !== null; onClicked: issueForm.openFor(page.sel) }
+                                VButton { objectName: "btnTransfer"; text: "Переместить"; iconName: "arrow-left-right"; enabled: page.canPost && page.sel !== null && ov.can_transfer === true; onClicked: transferForm.openFor(page.sel) }
                                 VButton { objectName: "btnReserve"; text: "Зарезервировать"; kind: "soft"; iconName: "bookmark"; enabled: page.canPost && page.sel !== null && page.sel.active === true; onClicked: reserveForm.openFor(page.sel, "", "", "") }
                                 Text { visible: !page.canPost; text: "Только при связи с сервером"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs }
                             }
@@ -208,7 +211,7 @@ Item {
                 delegate: MovementRow { width: ListView.view.width; m: modelData; showItem: true; canPost: page.canPost && ov.is_warehouse === true
                     onReverseRequested: reverseForm.openFor(modelData) }
             }
-            EmptyState { anchors.centerIn: parent; visible: mvList.count === 0; iconName: "history"; title: "Журнал пуст"; text: "Здесь появятся приходы, выдачи и сторно. Проведённые записи не меняются и не удаляются." }
+            EmptyState { anchors.centerIn: parent; visible: mvList.count === 0; iconName: "history"; title: "Журнал пуст"; text: "Здесь появятся приходы, выдачи, перемещения и сторно. Проведённые записи не меняются и не удаляются." }
         }
 
         // ================================================================ Справочники
@@ -393,6 +396,31 @@ Item {
         VField { id: iReason; label: "Основание выдачи"; required: true; placeholder: "Монтаж, бригада …" }
     }
     Cmd { id: cIssue; dialog: issueForm }
+
+    // Перемещение между складами (A-28): откуда — только склады, где позиция доступна; куда — любой другой действующий.
+    FormDialog {
+        id: transferForm
+        objectName: "transferForm"
+        property var item: null
+        readonly property var fromOptions: item ? item.by_warehouse.filter(b => Number(b.available) > 0).map(b => ({ id: b.warehouse_id, label: b.warehouse_code + " — доступно " + b.available_label })) : []
+        readonly property var toOptions: page.whOptions.filter(w => w.id !== tFrom.currentValue)
+        title: "Перемещение: " + (item ? item.code : "")
+        subtitle: "Количество уйдёт со склада-отправителя и придёт на склад-получатель одной операцией. Перемещается только доступное: резервы остаются на своём складе."
+        confirmText: "Переместить"
+        canConfirm: tQty.text.trim() !== "" && tQty.error === "" && tReason.text.trim() !== "" && tFrom.currentValue !== "" && tTo.currentValue !== ""
+        function openFor(it) { item = it; tQty.text = ""; tReason.text = ""; tDoc.text = ""; tFrom.currentIndex = 0; tTo.currentIndex = 0; open() }
+        onConfirmed: cTransfer.run("stock.transfer", { id: backend.newId(), item_id: item.id, from_warehouse_id: tFrom.currentValue, to_warehouse_id: tTo.currentValue,
+                                                       qty: backend.normalizeQty(tQty.text), reason: tReason.text.trim(), source_doc: tDoc.text.trim() })
+        Banner { visible: transferForm.fromOptions.length === 0; tone: "warning"; text: "Свободного количества нет ни на одном складе (всё в резерве или нет остатка)." }
+        RowLayout { Layout.fillWidth: true; spacing: 12
+            VSelect { id: tFrom; objectName: "tFrom"; label: "Откуда"; model: transferForm.fromOptions }
+            Icon { name: "arrow-left-right"; size: 18; color: Theme.textMuted; Layout.alignment: Qt.AlignBottom; Layout.bottomMargin: 10 }
+            VSelect { id: tTo; objectName: "tTo"; label: "Куда"; model: transferForm.toOptions } }
+        VField { id: tQty; objectName: "tQty"; label: "Количество" + (transferForm.item ? ", " + transferForm.item.unit : ""); required: true; error: backend.qtyProblem(text) }
+        VField { id: tReason; objectName: "tReason"; label: "Зачем перемещаем"; required: true; placeholder: "На монтажный участок, бригада …" }
+        VField { id: tDoc; objectName: "tDoc"; label: "Накладная на перемещение (если есть)"; placeholder: "№ 3 от 17.11.2026" }
+    }
+    Cmd { id: cTransfer; dialog: transferForm }
 
     FormDialog {
         id: issueResForm

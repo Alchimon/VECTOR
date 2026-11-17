@@ -2,7 +2,7 @@
 
 Демо: i.belova (склад), s.morozov (закупка). Склады СК-1/СК-2; АРМ — 1 компл, весь в резерве; ШУ-1 — 2 шт, всё
 в резерве под потребность АТХ v1 (нужно 3 → 1 не покрыт, «Нужна закупка»); потребность ЭМ v1 ещё не сформирована
-(кандидат); приход НШВИ-1.5 10 000 шт сторнирован («лишний ноль»).
+(кандидат); приход НШВИ-1.5 10 000 шт сторнирован («лишний ноль»); 200 шт НШВИ-1.5 перемещены СК-1 → СК-2.
 """
 import pytest
 from PySide6.QtCore import QMetaObject, QObject, Q_ARG
@@ -293,3 +293,37 @@ def test_admin_publishes_company_setting(ui):
     item = next(x for x in _v(page, "sv")["items"] if x["key"] == "procurement.rematch_reserved_line")
     assert (item["value"], item["is_set"], item["version"]) == ("release_active", True, 1)
     assert item["reason"] == "Решение совещания склада и закупки"
+
+
+def test_transfer_through_form_moves_between_warehouses_without_storno(ui):
+    ui.login("i.belova")
+    page = _stock_page(ui)
+    nshvi = _item(ui, "НШВИ-1.5")
+    assert [(b["warehouse_code"], b["available_label"]) for b in nshvi["by_warehouse"]] == [("СК-1", "800 шт"), ("СК-2", "200 шт")]
+    demo_legs = [m for m in _v(page, "ov")["movements"] if m["is_transfer"]]
+    assert {m["transfer_label"] for m in demo_legs} == {"СК-1 → СК-2"} and len(demo_legs) == 2
+    dlg = _popup(ui, "transferForm")
+    _call(dlg, "openFor", nshvi)
+    ui.wait_idle()
+    # Откуда — только склады с доступным; куда — любой другой действующий склад.
+    assert [o["label"] for o in _v(dlg, "fromOptions")] == ["СК-1 — доступно 800 шт", "СК-2 — доступно 200 шт"]
+    assert [o["label"].split(" · ")[0] for o in _v(dlg, "toOptions")] == ["СК-2"]
+    _popup(ui, "tQty").setProperty("text", "50")
+    ui.wait_idle()
+    assert dlg.property("canConfirm") is False                   # без причины — нельзя
+    _popup(ui, "tReason").setProperty("text", "Бригаде Петрова")
+    ui.wait_idle()
+    assert dlg.property("canConfirm") is True
+    QMetaObject.invokeMethod(dlg, "confirmed")
+    ui.wait_idle()
+    assert not dlg.property("visible") and dlg.property("error") == ""
+    nshvi = _item(ui, "НШВИ-1.5")
+    assert [b["available_label"] for b in nshvi["by_warehouse"]] == ["750 шт", "250 шт"]
+    assert nshvi["available_label"] == "1 000 шт"                 # общий запас не изменился
+    mv = _v(page, "ov")["movements"]
+    assert (mv[0]["kind_label"], mv[1]["kind_label"]) == ("Приход по перемещению", "Расход по перемещению")
+    # Без связи перемещать нельзя (online_required).
+    ui.transport.online = False
+    ui.backend.syncNow()
+    ui.wait_idle()
+    assert _v(page, "ov")["can_transfer"] is False and ui.find("btnTransfer").property("enabled") is False

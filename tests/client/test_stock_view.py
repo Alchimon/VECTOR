@@ -88,6 +88,22 @@ def test_action_hints_by_role_and_connection():
     assert not any((gip["can_post"], gip["can_edit_refs"], gip["is_warehouse"]))
 
 
+def test_transfer_legs_show_route_and_transfer_needs_two_active_warehouses():
+    legs = [{**MV[0], "id": "t-out", "doc_no": 10, "kind": "issue", "qty": "4.0000", "transfer_id": "t1",
+             "transfer_direction": "out", "transfer_peer_warehouse_id": "w2"},
+            {**MV[0], "id": "t-in", "doc_no": 11, "kind": "receipt", "warehouse_id": "w2", "qty": "4.0000",
+             "transfer_id": "t1", "transfer_direction": "in", "transfer_peer_warehouse_id": "w1"}]
+    ov = sv.overview(WH, ITEMS, BAL, RES, MV + legs, PROJ, PEOPLE, PULL, True, ["warehouse"])
+    rows = {m["id"]: m for m in ov["movements"]}
+    assert (rows["t-out"]["transfer_label"], rows["t-in"]["transfer_label"]) == ("СК-1 → СК-2", "СК-1 → СК-2")
+    assert rows["t-out"]["is_transfer"] and rows["t-out"]["tone"] == "info" and rows["t-out"]["qty_label"] == "−4 м"
+    assert rows["m1"]["is_transfer"] is False and rows["m1"]["transfer_label"] == ""
+    assert ov["can_transfer"] is True and _ov(False)["can_transfer"] is False
+    assert _ov(True, ("procurement",))["can_transfer"] is False
+    one = sv.overview(WH[:1] + [{**WH[1], "active": False}], ITEMS, BAL, RES, MV, PROJ, PEOPLE, PULL, True, ["warehouse"])
+    assert one["can_transfer"] is False                                       # некуда перемещать
+
+
 def _need(lines):
     """Потребность-заготовка с заданными строками."""
     return {"id": "n1", "project_id": "p1", "project_code": "П-1", "kit_code": "АТХ", "calc_version_no": 1,

@@ -81,11 +81,17 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
     for m in sorted(movements, key=lambda m: -int(m.get("doc_no") or 0)):
         i = it.get(m["item_id"], {})
         sign = stock.MOVEMENT_SIGN.get(m["kind"], 0)
+        own = wh.get(m["warehouse_id"], {}).get("code", "?")
+        # Половина перемещения (A-28): подпись маршрута «СК-1 → СК-2» и запрет сторно (исправляют обратным перемещением).
+        tr_dir = m.get("transfer_direction")
+        peer = wh.get(m.get("transfer_peer_warehouse_id") or "", {}).get("code", "?") if tr_dir else ""
         mv_rows.append({**m, "item_code": i.get("code", "?"), "item_name": i.get("name", ""),
-                        "warehouse_code": wh.get(m["warehouse_id"], {}).get("code", "?"),
+                        "warehouse_code": own,
                         "project_code": proj_label(m.get("project_id")),
                         "qty_label": ("+" if sign > 0 else "−") + qty_label(m["qty"], i.get("unit", "")),
-                        "tone": "success" if sign > 0 else "warning",
+                        "tone": "info" if tr_dir else ("success" if sign > 0 else "warning"),
+                        "is_transfer": bool(tr_dir),
+                        "transfer_label": (f"{own} → {peer}" if tr_dir == "out" else f"{peer} → {own}") if tr_dir else "",
                         "is_storno": bool(m.get("reverses_id")), "reversed": bool(m.get("reversed_by")),
                         # Номер отменённого движения (если оно есть в снимке) — «Сторно прихода № 3».
                         "reverses_doc_no": doc_of.get(m.get("reverses_id")) if m.get("reverses_id") else None,
@@ -115,6 +121,7 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
                      "reservations": [r for r in res_rows if r["item_id"] == i["id"] and r["status"] == "active"],
                      "movements": [m for m in mv_rows if m["item_id"] == i["id"]][:30]})
     is_wh = "warehouse" in roles
+    active_wh = sum(1 for w in warehouses if w.get("active", True) and not w.get("_pending"))
     return {"as_of": as_of_label(last_pull), "online": online, "items": rows,
             "warehouses": [{**w, "pending": bool(w.get("_pending")),
                             "item_count": sum(1 for b in balances if b["warehouse_id"] == w["id"] and _d(b["on_hand"]) > 0)}
@@ -127,6 +134,8 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
                         "movements": len(mv_rows)},
             # Подсказки: проводки и резервы — склад и только при связи (online_required); справочники — офлайн тоже.
             "can_post": is_wh and online, "can_edit_refs": is_wh or "procurement" in roles,
+            # Перемещать есть куда, только если действующих (уже отправленных на сервер) складов не меньше двух.
+            "can_transfer": is_wh and online and active_wh >= 2,
             "can_edit_warehouses": is_wh, "is_warehouse": is_wh}
 
 

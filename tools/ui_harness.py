@@ -208,7 +208,7 @@ def _plain(v):
 
 
 def main():
-    """Снять скриншоты 01–20 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
+    """Снять скриншоты 01–21 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
     args = ap.parse_args()
@@ -270,6 +270,19 @@ def main():
         sp.setProperty("tab", "directory")
         h.wait_idle()
         h.shot(out / f"{theme}-19-stock-directory.png")
+        # Перемещение между складами (A-28): форма по позиции НШВИ-1.5 (на двух складах после демо-перемещения).
+        sp.setProperty("tab", "balances")
+        sp.setProperty("selectedId", h.ids["items"]["НШВИ-1.5"])
+        h.wait_idle()
+        tf = next(o for o in h.win.findChildren(QObject) if o.objectName() == "transferForm")
+        QMetaObject.invokeMethod(tf, "openFor", Q_ARG("QVariant", _plain(sp.property("sel"))))
+        h.wait_idle()
+        for name, text in (("tQty", "50"), ("tReason", "Бригаде Петрова, монтаж щитов")):
+            next(o for o in h.win.findChildren(QObject) if o.objectName() == name).setProperty("text", text)
+        h.wait_idle()
+        h.shot(out / f"{theme}-21-stock-transfer.png")
+        QMetaObject.invokeMethod(tf, "close")
+        h.wait_idle()
         h.backend.logout()
         h.wait_idle()
         h.login("s.morozov")
