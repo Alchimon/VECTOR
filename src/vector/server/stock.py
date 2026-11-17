@@ -49,6 +49,7 @@ PULL_MOVEMENTS_LIMIT = 1000
 
 
 def _qty(p: dict, key: str = "qty") -> Decimal:
+    """Количество из запроса (строго > 0, ≤ 4 знаков) или отказ с указанием поля."""
     try:
         return stock.parse_qty(p.get(key))
     except stock.StockError as e:
@@ -56,6 +57,7 @@ def _qty(p: dict, key: str = "qty") -> Decimal:
 
 
 def _code(p: dict, key: str = "code") -> str:
+    """Код склада/позиции из запроса (точный, без пробелов, A-20) или отказ с указанием поля."""
     try:
         return stock.check_code(p.get(key), "Код")
     except stock.StockError as e:
@@ -63,6 +65,7 @@ def _code(p: dict, key: str = "code") -> str:
 
 
 def _bool(p: dict, key: str) -> bool:
+    """Логическое поле запроса (true/false); строки «true»/«1» не принимаются."""
     v = p.get(key)
     if not isinstance(v, bool):
         raise Rejected("field_type", f"Поле «{key}» должно быть true или false.", {"field": key})
@@ -70,6 +73,7 @@ def _bool(p: dict, key: str) -> bool:
 
 
 def _stock_rejected(e: stock.StockError) -> Rejected:
+    """Нарушение складского правила из vector.core.stock → ответ-отказ с тем же кодом и подробностями."""
     return Rejected(e.code, e.message_ru, e.details)
 
 
@@ -79,22 +83,28 @@ class StockMixin:
     # ------------------------------------------------------------ представления
     @staticmethod
     def v_warehouse(o: dict) -> dict:
+        """Склад для клиента: код, название, примечание, действует ли, версия."""
         return {"id": o["id"], "code": o["code"], "name": o["name"], "note": o["note"], "active": bool(o["active"]),
                 "version": o["version"], "updated_at": iso(o["updated_at"])}
 
     @staticmethod
     def v_item(o: dict) -> dict:
+        """Позиция номенклатуры для клиента: код, название, единица, примечание, действует ли, версия."""
         return {"id": o["id"], "code": o["code"], "name": o["name"], "unit": o["unit"], "note": o["note"],
                 "active": bool(o["active"]), "version": o["version"], "updated_at": iso(o["updated_at"])}
 
     @staticmethod
     def v_balance(o: dict) -> dict:
+        """Остаток позиции на складе: остаток / резерв / доступно (строки с 4 знаками) и версия строки."""
         b = stock.Balance(o["on_hand"], o["reserved"])
         return {"warehouse_id": o["warehouse_id"], "item_id": o["item_id"], **b.to_json(), "version": o["version"],
                 "updated_at": iso(o["updated_at"])}
 
     @staticmethod
     def v_reservation(o: dict) -> dict:
+        """Резерв для клиента: количество, израсходовано, осталось (0, если резерв закрыт), статус с подписью, связь с
+        потребностью, причины.
+        """
         return {"id": o["id"], "warehouse_id": o["warehouse_id"], "item_id": o["item_id"], "project_id": o["project_id"],
                 "need_id": o["need_id"], "need_line_id": o["need_line_id"], "qty": money.to_json(o["qty"]),
                 "consumed": money.to_json(o["consumed"]),
@@ -105,6 +115,9 @@ class StockMixin:
 
     @staticmethod
     def v_movement(o: dict, reversed_by: Optional[str] = None) -> dict:
+        """Движение журнала для клиента: номер, вид и подпись («Приход», «Сторно прихода»), количество, проект/резерв,
+        ссылка на сторнируемое и сторнирующее, основание.
+        """
         return {"id": o["id"], "doc_no": o["doc_no"], "kind": o["kind"],
                 # Сторно имеет противоположный вид (сторно прихода — расход), поэтому подпись берём по исходному
                 # движению: «Сторно прихода», а не «Сторно: Выдача» — так понятнее, что именно отменено.
@@ -116,6 +129,7 @@ class StockMixin:
 
     # ------------------------------------------------------------ справочники
     def _warehouse_create(self, ctx, p, ev):
+        """warehouse.create {id, code, name, note?} — новый склад (A-20). Можно офлайн (очередь). Код уникален."""
         only_keys(p, {"id", "code", "name", "note"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "warehouse.create", ctx.now)
         wid, code = req_uuid(p, "id"), _code(p)
@@ -129,6 +143,9 @@ class StockMixin:
         return {"warehouse": self.v_warehouse(self._get(ctx.conn, warehouses, wid))}
 
     def _warehouse_update(self, ctx, p, ev):
+        """warehouse.update {id, name?, note?, active?} + версия — изменить или отключить склад (код не меняется). На
+        отключённый склад нельзя приходовать и резервировать.
+        """
         only_keys(p, {"id", "name", "note", "active"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "warehouse.update", ctx.now)
         o = self._require(ctx.conn, warehouses, req_uuid(p, "id"), "Склад")
@@ -149,6 +166,9 @@ class StockMixin:
         return {"warehouse": self.v_warehouse(n)}
 
     def _item_create(self, ctx, p, ev):
+        """item.create {id, code, name, unit, note?} — новая позиция номенклатуры (склад или закупка, A-20). Можно
+        офлайн.
+        """
         only_keys(p, {"id", "code", "name", "unit", "note"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "item.create", ctx.now)
         iid, code = req_uuid(p, "id"), _code(p)
@@ -163,6 +183,11 @@ class StockMixin:
         return {"stock_item": self.v_item(self._get(ctx.conn, stock_items, iid))}
 
     def _item_update(self, ctx, p, ev):
+        """item.update {id, name?, unit?, note?, active?} + версия — изменить позицию.
+
+        Единицу измерения нельзя менять, если по позиции уже были остатки или движения: прошлые количества молча
+        поменяли бы смысл. Поля, совпадающие с текущими значениями, не считаются изменением.
+        """
         only_keys(p, {"id", "name", "unit", "note", "active"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "item.update", ctx.now)
         o = self._require(ctx.conn, stock_items, req_uuid(p, "id"), "Номенклатура")
@@ -193,6 +218,9 @@ class StockMixin:
 
     # ------------------------------------------------------------ остаток (строка с версией)
     def _wh_item(self, ctx, p, for_new_stock: bool) -> tuple[dict, dict]:
+        """Склад и позиция из запроса; для операций, увеличивающих запас или резерв (приход, резерв), оба должны быть
+        действующими.
+        """
         w = self._require(ctx.conn, warehouses, req_uuid(p, "warehouse_id"), "Склад")
         it = self._require(ctx.conn, stock_items, req_uuid(p, "item_id"), "Номенклатура")
         if for_new_stock and not w["active"]:
@@ -202,6 +230,7 @@ class StockMixin:
         return w, it
 
     def _load_balance(self, conn, wid: str, iid: str) -> tuple[Optional[dict], stock.Balance]:
+        """Строка остатка (или None, если движений ещё не было) и значение Balance для правил ядра."""
         r = conn.execute(sa.select(stock_balances).where(stock_balances.c.warehouse_id == wid,
                                                          stock_balances.c.item_id == iid)).first()
         if r is None:
@@ -224,6 +253,9 @@ class StockMixin:
 
     def _post(self, ctx, auth, *, mid: str, kind: str, w: dict, it: dict, qty: Decimal, project_id=None,
               reservation_id=None, reverses_id=None, source_doc=None, reason=None, details=None) -> dict:
+        """Провести движение в журнал: следующий сквозной номер документа, запись (неизменяемая — триггер БД), журнал
+        аудита с кодами и единицей. Возвращает представление движения.
+        """
         no = (ctx.conn.execute(sa.select(sa.func.max(stock_movements.c.doc_no))).scalar() or 0) + 1
         ctx.conn.execute(stock_movements.insert().values(
             id=mid, doc_no=no, kind=kind, warehouse_id=w["id"], item_id=it["id"], qty=qty, project_id=project_id,
@@ -236,10 +268,17 @@ class StockMixin:
         return self.v_movement(self._get(ctx.conn, stock_movements, mid))
 
     def _project_ref(self, ctx, pid: str) -> dict:
+        """Проект по id для складской операции (выдача/резерв под проект) или отказ not_found."""
         return self._require(ctx.conn, projects, pid, "Проект")
 
     # ------------------------------------------------------------ проводки
     def _stock_receive(self, ctx, p, ev):
+        """stock.receive {id, warehouse_id, item_id, qty, source_doc, reason?} — приход на склад. Только онлайн, только
+        склад (A-21).
+
+        Основание (накладная, акт) обязательно (A-24). Остаток увеличивается в той же транзакции, что и запись
+        движения.
+        """
         only_keys(p, {"id", "warehouse_id", "item_id", "qty", "source_doc", "reason"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "stock.receive", ctx.now)
         mid = req_uuid(p, "id")
@@ -343,6 +382,13 @@ class StockMixin:
         return total
 
     def _stock_reserve(self, ctx, p, ev):
+        """stock.reserve {id, warehouse_id, item_id, project_id, qty, reason, need_id?, need_line_id?} —
+        зарезервировать количество за проектом (A-23).
+
+        Можно только из доступного (остаток − резервы). Если указана строка потребности: она того же проекта,
+        сопоставлена с этой позицией, и резерв не больше непокрытого по строке количества. Остаток не меняется —
+        растёт резерв.
+        """
         only_keys(p, {"id", "warehouse_id", "item_id", "project_id", "qty", "need_id", "need_line_id", "reason"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "stock.reserve", ctx.now)
         rid = req_uuid(p, "id")
@@ -390,6 +436,9 @@ class StockMixin:
                 "balance": {"warehouse_id": w["id"], "item_id": it["id"], **nb.to_json()}}
 
     def _stock_release(self, ctx, p, ev):
+        """stock.release {id, reason} + версия — снять действующий резерв: неизрасходованная часть возвращается в
+        доступное, резерв получает статус «Снят» с причиной.
+        """
         only_keys(p, {"id", "reason"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "stock.release", ctx.now)
         res = self._require(ctx.conn, stock_reservations, req_uuid(p, "id"), "Резерв")
@@ -483,6 +532,7 @@ class StockMixin:
                 "version": o["version"], "created_by": o["created_by"], "created_at": iso(o["created_at"]), "lines": lines}
 
     def _available_by_item(self, conn) -> dict:
+        """Доступно по каждой позиции суммарно по всем складам — для покрытия строк потребности."""
         out: dict[str, Decimal] = defaultdict(Decimal)
         for r in conn.execute(sa.select(stock_balances)):
             out[r.item_id] += r.on_hand - r.reserved
@@ -490,6 +540,13 @@ class StockMixin:
 
     # ------------------------------------------------------------ данные для pull
     def _pull_stock(self, conn, uid: str, now) -> dict:
+        """Складская часть pull.
+
+        Склады, номенклатура, остатки, резервы и последние PULL_MOVEMENTS_LIMIT движений — только с правом
+        stock.read (иначе пустые списки). Потребности — по need.read в их проекте; без stock.read доступное
+        количество в них «неизвестно» (None). Кандидаты для формирования потребности — только тем, кто может
+        need.generate.
+        """
         out: dict[str, Any] = {"warehouses": [], "stock_items": [], "stock_balances": [], "stock_reservations": [],
                                "stock_movements": [], "stock_movements_truncated": False, "needs": [], "stock_projects": [],
                                "need_candidates": []}

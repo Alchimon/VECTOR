@@ -49,6 +49,10 @@ def _check_sha256(v: object) -> str:
 
 
 def _check_file_name(p: dict) -> str:
+    """Имя файла версии документа: до 255 символов, без символов, запрещённых в Windows (\ / : * ? " < > |),
+    управляющих символов, «.»/«..» и точки/пробела в конце. Так файл безопасно сохраняется на любом ПК при
+    скачивании.
+    """
     name = req_str(p, "file_name", 255)
     if any(ch in _BAD_NAME_CHARS for ch in name) or name in (".", "..") or name.endswith((" ", ".")):
         raise Rejected("invalid_file_name", "Имя файла содержит недопустимые символы (\\ / : * ? \" < > | или управляющие).",
@@ -62,6 +66,8 @@ class WorkMixin:
     # ------------------------------------------------------------ представления (то, что видит клиент)
     @staticmethod
     def v_task(o: dict) -> dict:
+        """Задача для клиента: комплект, исполнитель, срок, ссылка на документ (замечание), статус с причиной, версия.
+        """
         return {"id": o["id"], "project_id": o["project_id"], "kit_id": o["kit_id"], "title": o["title"],
                 "description": o["description"], "assignee_user_id": o["assignee_user_id"],
                 "due_date": o["due_date"].isoformat() if o["due_date"] else None, "document_id": o["document_id"],
@@ -70,11 +76,13 @@ class WorkMixin:
 
     @staticmethod
     def v_document(o: dict) -> dict:
+        """Карточка документа для клиента: обозначение, название, номер текущей версии файла."""
         return {"id": o["id"], "project_id": o["project_id"], "kit_id": o["kit_id"], "code": o["code"], "title": o["title"],
                 "current_version_no": o["current_version_no"], "version": o["version"], "updated_at": iso(o["updated_at"])}
 
     @staticmethod
     def v_document_version(o: dict) -> dict:
+        """Метаданные версии файла (без содержимого): имя, SHA-256, размер, комментарий, кто и когда загрузил."""
         return {"id": o["id"], "document_id": o["document_id"], "version_no": o["version_no"], "file_name": o["file_name"],
                 "sha256": o["sha256"], "size_bytes": o["size_bytes"], "comment": o["comment"],
                 "created_by": o["created_by"], "created_at": iso(o["created_at"])}
@@ -88,6 +96,7 @@ class WorkMixin:
 
     @staticmethod
     def _project_must_be_active(pr: dict) -> None:
+        """Изменения задач и документов возможны только в проекте в работе («Разработка РКД»)."""
         if pr["status"] != "rkd_in_progress":
             raise Rejected("project_state", "Изменения возможны только в проекте в статусе «Разработка РКД».")
 
@@ -117,6 +126,12 @@ class WorkMixin:
 
     # ------------------------------------------------------------ задачи
     def _task_create(self, ctx, p, ev):
+        """task.create {id, kit_id, title, description?, assignee_user_id?, due_date?, document_id?} — задача в
+        комплекте (A-13).
+
+        Исполнитель — только участник проекта с действующим назначением; ссылка на документ — только того же
+        проекта. Можно офлайн (очередь): при отправке всё проверяется заново.
+        """
         only_keys(p, {"id", "kit_id", "title", "description", "assignee_user_id", "due_date", "document_id"})
         kit, pr = self._open_project_of_kit(ctx, req_uuid(p, "kit_id"))
         # Права проверяются ДО раскрытия подробностей о состоянии проекта (не подсказываем посторонним).
@@ -205,11 +220,15 @@ class WorkMixin:
 
     # ------------------------------------------------------------ документы
     def _document_code_free(self, ctx, project_id: str, code: str) -> None:
+        """Обозначение документа уникально в пределах проекта — иначе отказ document_code_taken."""
         if ctx.conn.execute(sa.select(documents.c.id).where(documents.c.project_id == project_id,
                                                             documents.c.code == code)).first():
             raise Rejected("document_code_taken", "Документ с таким обозначением уже есть в этом проекте.", {"field": "code"})
 
     def _document_create(self, ctx, p, ev):
+        """document.create {id, kit_id, code, title} — карточка документа в комплекте (пока без файла: версии
+        добавляются document.add_version). Обозначение уникально в проекте. Можно офлайн (очередь).
+        """
         only_keys(p, {"id", "kit_id", "code", "title"})
         kit, pr = self._open_project_of_kit(ctx, req_uuid(p, "kit_id"))
         auth = self.policy.check(ctx.conn, ctx.user_id, "document.create", ctx.now, project_id=pr["id"])
@@ -300,6 +319,7 @@ class WorkMixin:
     # повторяют целиком (Service._tx), и каждая попытка начинает чтение/запись с начала.
 
     def _file_limit_reply(self) -> dict:
+        """Стандартный отказ «файл больше допустимого размера» с текущим пределом из политики сервера."""
         return {"status": "rejected", "code": "file_too_large",
                 "message_ru": f"Файл больше допустимого размера ({self.sec.max_file_mb} МБ)."}
 
@@ -319,6 +339,9 @@ class WorkMixin:
             return {"status": "rejected", "code": e.code, "message_ru": e.message_ru}
 
         def tx(conn):
+            """Транзакция предварительной проверки: сеанс и право добавлять версии в документы проекта; отказ — в
+            журнал.
+            """
             now = self.now()
             user, device, _ = self._auth(conn, token, now)
             authority = self._authority_for(conn, user["id"], "document.add_version", now, pid) \
@@ -367,6 +390,9 @@ class WorkMixin:
         chunk_count = max(1, -(-size // FILE_CHUNK))   # пустой файл хранится одним пустым блоком
 
         def tx(conn):
+            """Транзакция записи файла: повторная проверка права, запись блоков (с дедупликацией по SHA-256), квитанция
+            загрузки, журнал.
+            """
             now = self.now()
             user, device, _ = self._auth(conn, token, now)
             authority = self._authority_for(conn, user["id"], "document.add_version", now, pid) \
@@ -427,6 +453,9 @@ class WorkMixin:
             return {"status": "rejected", "code": e.code, "message_ru": e.message_ru}
 
         def tx(conn):
+            """Транзакция скачивания: право чтения документа, сборка файла из блоков с проверкой SHA-256 и размера,
+            журнал.
+            """
             now = self.now()
             user, device, _ = self._auth(conn, token, now)
             d = self._get(conn, documents, did)
@@ -479,6 +508,7 @@ class WorkMixin:
         from vector.core.errors import Unauthenticated
 
         def wrapped(conn):
+            """Выполнить fn; ошибку входа вернуть обычным ответом, а не исключением."""
             try:
                 return fn(conn)
             except Unauthenticated as e:

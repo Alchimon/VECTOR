@@ -38,13 +38,20 @@ from vector import __version__
 
 from . import db
 
+# Сигнатура в начале каждого файла копии — по ней сразу видно «это не копия ВЕКТОР».
 MAGIC = b"VECTORBK"
+# Версия формата файла (не программы). Новая версия формата — только с сохранением чтения старых копий.
 FORMAT_VERSION = 1
+# Размер блока шифрования (1 МБ): память при создании/проверке копии не зависит от её размера.
 CHUNK = 1 << 20
+# Параметры scrypt для парольной фразы (~32 МБ памяти и доли секунды на вывод ключа — дорого для перебора).
 SCRYPT = {"n": 2 ** 15, "r": 8, "p": 1}
 
 
 class BackupError(Exception):
+    """Ошибка создания, проверки или восстановления копии. Текст — для администратора («не тот файл ключа», «файл
+    обрезан»); при этой ошибке готовая копия не создаётся, а БД не изменяется.
+    """
     pass
 
 
@@ -99,10 +106,18 @@ def read_key_file(path: Path) -> bytes:
 
 @dataclass(frozen=True)
 class KeySource:
+    """Откуда брать ключ шифрования копии: файл ключа (32 случайных байта) или парольная фраза (из неё ключ выводится
+    scrypt). Одно из двух обязательно — незашифрованных копий не бывает.
+    """
     key_file: Optional[Path] = None
     passphrase: Optional[str] = None
 
     def derive(self, kdf: dict) -> bytes:
+        """Получить ключ для расшифровки по описанию из заголовка копии.
+
+        Для файла ключа сверяется отпечаток (первые 16 символов SHA-256), чтобы сразу сказать «не тот файл», а не
+        «повреждена копия». Для парольной фразы ключ выводится scrypt с солью и параметрами из заголовка.
+        """
         if kdf["kdf"] == "keyfile":
             if not self.key_file:
                 raise BackupError("Копия зашифрована файлом ключа — укажите --key-file.")
@@ -119,6 +134,9 @@ class KeySource:
         raise BackupError(f"Неизвестный способ получения ключа: {kdf['kdf']}")
 
     def new_kdf(self) -> tuple[dict, bytes]:
+        """Описание способа получения ключа для НОВОЙ копии (кладётся в заголовок) и сам ключ. Парольная фраза — не
+        короче 16 символов; соль — случайная для каждой копии.
+        """
         if self.key_file:
             raw = read_key_file(Path(self.key_file))
             return {"kdf": "keyfile", "key_fingerprint": hashlib.sha256(raw).hexdigest()[:16]}, raw
@@ -131,6 +149,9 @@ class KeySource:
 
 
 def generate_key_file(path: Path) -> str:
+    """Создать файл ключа резервных копий: 32 случайных байта в base64, права 600, существующий файл не
+    перезаписывается. Возвращает отпечаток ключа.
+    """
     if path.exists():
         raise BackupError(f"Файл {path} уже существует — перезапись ключа запрещена.")
     raw = secrets.token_bytes(32)
@@ -142,6 +163,9 @@ def generate_key_file(path: Path) -> str:
 
 # ---------------------------------------------------------------- кодирование значений
 def _enc(v: Any) -> Any:
+    """Значение ячейки БД → JSON без потерь: Decimal строкой ({"$d"}), время в UTC ({"$ts"}), дата ({"$date"}),
+    двоичные данные base64 ({"$b64"}). Это делает копию независимой от СУБД.
+    """
     if v is None or isinstance(v, (str, bool, int)):
         return v
     if isinstance(v, Decimal):
@@ -156,6 +180,7 @@ def _enc(v: Any) -> Any:
 
 
 def _dec(v: Any) -> Any:
+    """Обратное преобразование _enc: JSON из копии → значение для вставки в БД."""
     if isinstance(v, dict):
         if "$d" in v:
             return Decimal(v["$d"])
@@ -169,6 +194,7 @@ def _dec(v: Any) -> Any:
 
 
 def _row_digest(values: list) -> str:
+    """SHA-256 одной строки в каноническом виде (через _enc) — одинаков для одной и той же строки в любой СУБД."""
     return hashlib.sha256(json.dumps([_enc(x) for x in values], ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
 
@@ -176,12 +202,15 @@ class TableDigest:
     """Хэш, не зависящий от порядка строк и от СУБД: SHA-256 отсортированных хэшей строк."""
 
     def __init__(self):
+        """Пустой набор хэшей строк."""
         self.rows: list[str] = []
 
     def add(self, values: list) -> None:
+        """Добавить хэш одной строки таблицы."""
         self.rows.append(_row_digest(values))
 
     def hexdigest(self) -> str:
+        """Итоговый хэш таблицы: SHA-256 от отсортированных хэшей строк (порядок выдачи строк СУБД не важен)."""
         h = hashlib.sha256()
         for r in sorted(self.rows):
             h.update(r.encode())
@@ -190,7 +219,13 @@ class TableDigest:
 
 # ---------------------------------------------------------------- поток шифрования
 class _Writer:
+    """Поток шифрования копии: пишет заголовок, затем данные блоками по CHUNK, каждый блок — AES-256-GCM со своим
+    номером в nonce и AAD.
+    """
     def __init__(self, out: IO[bytes], key: bytes, header: dict):
+        """Записать сигнатуру, версию формата и заголовок (JSON); запомнить SHA-256 заголовка — он входит в AAD каждого
+        блока, так что подмена заголовка обнаруживается.
+        """
         self.out, self.aes = out, AESGCM(key)
         self.prefix = os.urandom(8)
         header = {**header, "nonce_prefix": base64.b64encode(self.prefix).decode(), "chunk_size": CHUNK}
@@ -200,12 +235,16 @@ class _Writer:
         self.buf, self.counter = bytearray(), 0
 
     def write(self, data: bytes) -> None:
+        """Накопить данные и выпустить полные блоки по CHUNK байт."""
         self.buf += data
         while len(self.buf) > CHUNK:
             self._emit(bytes(self.buf[:CHUNK]), False)
             del self.buf[:CHUNK]
 
     def _emit(self, chunk: bytes, final: bool) -> None:
+        """Зашифровать и записать один блок: [длина][шифротекст+тег]. Признак «последний блок» входит в AAD — обрезка
+        файла обнаруживается.
+        """
         nonce = self.prefix + struct.pack(">I", self.counter)
         aad = self.hhash + struct.pack(">QB", self.counter, 1 if final else 0)
         ct = self.aes.encrypt(nonce, chunk, aad)
@@ -215,11 +254,15 @@ class _Writer:
             raise BackupError("Слишком большая резервная копия для одного файла.")
 
     def close(self) -> None:
+        """Записать последний (возможно, короткий) блок с признаком «последний»."""
         self._emit(bytes(self.buf), True)
         self.buf.clear()
 
 
 def read_header(f: IO[bytes]) -> tuple[dict, bytes]:
+    """Прочитать и проверить начало файла копии: сигнатура VECTORBK, поддерживаемая версия формата, разумный размер
+    заголовка.
+    """
     if f.read(8) != MAGIC:
         raise BackupError("Это не файл резервной копии ВЕКТОР.")
     ver, hlen = struct.unpack(">HI", f.read(6))
@@ -246,6 +289,7 @@ def _open_decrypted(f: IO[bytes], keys: KeySource) -> tuple[dict, Iterator[bytes
     aes, prefix, hhash = AESGCM(key), base64.b64decode(header["nonce_prefix"]), hashlib.sha256(hb).digest()
 
     def blocks() -> Iterator[bytes]:
+        """Генератор расшифрованных блоков с проверкой порядка, длины и признака «последний»."""
         counter, final_seen = 0, False
         while True:
             lb = f.read(4)
@@ -281,12 +325,15 @@ class _BlockReader(io.RawIOBase):
     """Файлоподобная обёртка над генератором блоков — чтобы gzip распаковывал поток по частям."""
 
     def __init__(self, blocks: Iterator[bytes]):
+        """Обернуть генератор блоков."""
         self._it, self._buf = blocks, b""
 
     def readable(self) -> bool:
+        """Поток можно читать."""
         return True
 
     def readinto(self, b) -> int:
+        """Заполнить буфер b байтами из очередных блоков; 0 — конец потока."""
         while not self._buf:
             try:
                 self._buf = next(self._it)
@@ -301,6 +348,7 @@ class _BlockReader(io.RawIOBase):
 # ---------------------------------------------------------------- резервное копирование
 @dataclass
 class BackupReport:
+    """Итог создания копии: путь, число строк и хэш по каждой таблице, размер файла, заголовок."""
     path: Path
     counts: dict[str, int]
     hashes: dict[str, str]
@@ -309,6 +357,9 @@ class BackupReport:
 
 
 def _snapshot_conn(engine: sa.Engine):
+    """Соединение для согласованного снимка: в PostgreSQL — REPEATABLE READ только для чтения (запись не блокируется);
+    в MS SQL и SQLite — уровень изоляции движка (см. комментарий внутри).
+    """
     name = engine.dialect.name
     if name == "postgresql":
         return engine.connect().execution_options(isolation_level="REPEATABLE READ", postgresql_readonly=True)
@@ -373,22 +424,30 @@ def create_backup(engine: sa.Engine, out_path: Path, keys: KeySource,
 
 
 class _Sink(io.RawIOBase):
+    """Файлоподобный приёмник для gzip, передающий сжатые байты в поток шифрования."""
     def __init__(self, w: _Writer):
+        """Запомнить поток шифрования."""
         self.w = w
 
     def writable(self):
+        """В поток можно писать."""
         return True
 
     def write(self, b):
+        """Передать байты в шифрование; возвращает их число (как требует io)."""
         self.w.write(bytes(b))
         return len(b)
 
 
 def _line(obj: dict) -> bytes:
+    """Одна запись копии — строка JSON с переводом строки (формат JSON Lines внутри gzip)."""
     return (json.dumps(obj, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
 
 
 def _fsync_dir(d: Path) -> None:
+    """Сбросить на диск запись каталога после переименования файла копии (Linux) — иначе при сбое питания файл мог бы
+    «исчезнуть». В Windows не требуется и не поддерживается.
+    """
     try:
         fd = os.open(d, os.O_RDONLY)
     except OSError:
@@ -414,6 +473,7 @@ def _records(path: Path, keys: KeySource) -> tuple[dict, Iterator[dict]]:
         raise
 
     def it() -> Iterator[dict]:
+        """Поток записей: распаковка gzip поверх расшифрованных блоков, по одной JSON-строке."""
         try:
             with gzip.GzipFile(fileobj=io.BufferedReader(_BlockReader(blocks), buffer_size=CHUNK), mode="rb") as gz:
                 for line in gz:
@@ -430,6 +490,7 @@ def _records(path: Path, keys: KeySource) -> tuple[dict, Iterator[dict]]:
 
 @dataclass
 class VerifyReport:
+    """Итог проверки копии: заголовок, число строк по таблицам, ok и список проблем."""
     header: dict
     counts: dict[str, int]
     ok: bool
@@ -437,6 +498,9 @@ class VerifyReport:
 
 
 def verify_backup(path: Path, keys: KeySource) -> VerifyReport:
+    """Полная проверка копии без восстановления: расшифровка всех блоков (подлинность), пересчёт числа строк и хэшей по
+    каждой таблице и сверка с итоговой записью манифеста.
+    """
     header, recs = _records(path, keys)
     problems: list[str] = []
     current, dg, counts, hashes, end = None, None, {}, {}, None
@@ -466,6 +530,7 @@ def verify_backup(path: Path, keys: KeySource) -> VerifyReport:
 # ---------------------------------------------------------------- восстановление
 @dataclass
 class RestoreReport:
+    """Итог восстановления: число строк по таблицам, прошла ли сверка, список проблем."""
     counts: dict[str, int]
     verified: bool
     problems: list[str]
@@ -499,6 +564,9 @@ def restore_backup(path: Path, keys: KeySource, target: sa.Engine, batch: int = 
     buf_bytes = 0   # объём двоичных значений в текущей пачке (строки/числа не считаем — они малы)
 
     def flush(conn):
+        """Вставить накопленную пачку строк текущей таблицы (в MS SQL — с временным разрешением явных значений
+        IDENTITY).
+        """
         nonlocal buf_bytes
         if buf:
             t = db.metadata.tables[current]
@@ -557,6 +625,9 @@ def restore_backup(path: Path, keys: KeySource, target: sa.Engine, batch: int = 
 
 
 def _reset_sequences(conn) -> None:
+    """После восстановления в PostgreSQL сдвинуть последовательности автоинкремента за максимальный id — иначе
+    следующая вставка столкнулась бы с восстановленной строкой.
+    """
     if conn.dialect.name != "postgresql":
         return  # SQLite — по max(rowid); MS SQL — IDENTITY сдвигается при явной вставке большего значения
     for t in db.metadata.sorted_tables:

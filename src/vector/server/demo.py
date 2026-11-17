@@ -58,13 +58,23 @@ def seed_demo(svc, admin_login: str, admin_password: str, demo_password: str) ->
 
 
 def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dict:
+    """Наполнить базу демо-сценарием (без проверки пустоты — её делает seed_demo).
+
+    Порядок повторяет реальную работу: администратор заводит людей и роли → РП заводит заказчиков и тендеры → по
+    выигранному тендеру начинается РКД (проект) → комплекты, документы с версиями файлов, задачи → расчёты и их
+    фиксация (С3) → склады, номенклатура, приходы, сторно, потребность и резерв (С4). Любой отказ команды прерывает
+    наполнение с понятным текстом.
+    """
     def login(lg, pwd=None):
+        """Войти демо-пользователем (по умолчанию с общим демо-паролем) и вернуть токен сеанса."""
         r = svc.handle({"type": "login", "login": lg, "password": pwd or demo_password, "device_id": DEVICE}, DEVICE)
         if r["status"] != "accepted":
             raise DemoError(f"Вход «{lg}» не выполнен: {r.get('message_ru') or r.get('status')}")
         return r["token"]
 
     def cmd(tok, c, p, ev=None):
+        """Выполнить команду от имени пользователя с новым operation_id; отказ → DemoError. Возвращает result команды.
+        """
         r = svc.handle({"type": "command", "token": tok, "operation_id": str(uuid.uuid4()), "command": c, "payload": p, "expected_version": ev}, DEVICE)
         if r["status"] != "accepted":
             raise DemoError(f"{c}: {r.get('message_ru') or r.get('code') or r.get('status')}")
@@ -92,6 +102,7 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
         custs[name] = cid
 
     def tender(cust, title, deadline, path):
+        """Создать тендер и провести его по цепочке статусов path (для отмены/проигрыша — с причиной)."""
         tid = str(uuid.uuid4())
         cmd(rp, "tender.create", {"id": tid, "customer_id": custs[cust], "title": title, "submission_deadline": deadline})
         v = 1
@@ -135,6 +146,9 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     docs = {}
 
     def doc(tok, code, title, versions):
+        """Создать документ в комплекте АТХ и загрузить его версии (содержимое файлов — повторяющийся текст нужного
+        размера, не настоящие PDF).
+        """
         did = str(uuid.uuid4())
         cmd(tok, "document.create", {"id": did, "kit_id": kits["АТХ"], "code": code, "title": title})
         for n, (fname, size, comment) in enumerate(versions, start=1):
@@ -155,6 +169,7 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     doc(rp, "АТХ-003", "Пояснительная записка", [])
 
     def task(title, who, status_path, due=None, document=None, desc=None):
+        """Создать задачу в комплекте АТХ и провести её по статусам status_path."""
         tid = str(uuid.uuid4())
         cmd(rp, "task.create", {"id": tid, "kit_id": kits["АТХ"], "title": title, **({"assignee_user_id": people[who]} if who else {}),
                                 **({"due_date": due} if due else {}), **({"document_id": docs[document]} if document else {}),
@@ -173,6 +188,7 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     # АТХ: черновик → фиксация ГИП (v1) → новые правки инженера (видно сравнение с v1, одна цена неизвестна).
     # ЭМ: черновик РП → фиксация (v1). Итог проекта = последняя ревизия из v1 обоих комплектов.
     def ln(code, name, unit, qty, price, note=None):
+        """Позиция расчёта комплекта (числа строками, как в настоящем запросе; цена None — «неизвестна»)."""
         return {"line_id": str(uuid.uuid4()), "code": code, "name": name, "unit": unit, "qty": qty, "unit_price": price,
                 **({"note": note} if note else {})}
     atx = [ln("ШУ-1", "Шкаф управления котлом (ПЛК, панель оператора)", "шт", "3", "485000"),
@@ -214,6 +230,7 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
         cmd(by, "item.create", {"id": items[code], "code": code, "name": name, "unit": unit})
 
     def receipt(w, item, qty, src):
+        """Приход на склад от имени кладовщика с основанием src; возвращает созданное движение."""
         return cmd(wh, "stock.receive", {"id": str(uuid.uuid4()), "warehouse_id": whs[w], "item_id": items[item],
                                          "qty": qty, "source_doc": src})["movement"]
     receipt("СК-1", "ШУ-1", "2", "ТН № 412 от ООО «Шкафы-Про»")

@@ -37,12 +37,14 @@ from .db import (calc_draft_lines, calc_drafts, calc_version_lines, calc_version
 from .validation import iso, only_keys, opt_str, req_str, req_uuid
 
 def _line_json(r: dict) -> dict:
+    """Строка расчёта из БД → JSON для клиента: числа строками с 4 знаками, неизвестная цена — null (не 0)."""
     return {"line_id": r["line_id"], "code": r["code"], "name": r["name"], "unit": r["unit"],
             "qty": money.to_json(r["qty"]), "unit_price": money.to_json(r["unit_price"]),
             "amount": money.to_json(r["amount"]), "note": r["note"]}
 
 
 def _line_row(ln: calc.Line, pos: int) -> dict:
+    """Проверенная позиция расчёта (calc.Line) → строка для вставки в БД с порядковым номером pos."""
     return {"pos": pos, "line_id": ln.line_id, "code": ln.code, "name": ln.name, "unit": ln.unit, "qty": ln.qty,
             "unit_price": ln.unit_price, "amount": ln.amount, "note": ln.note}
 
@@ -52,6 +54,7 @@ class CalcMixin:
 
     # ------------------------------------------------------------ чтение
     def _draft_lines(self, conn, kit_id: str) -> list[dict]:
+        """Позиции черновика расчёта комплекта в порядке редактора."""
         return [_line_json(dict(r._mapping)) for r in conn.execute(
             sa.select(calc_draft_lines).where(calc_draft_lines.c.kit_id == kit_id).order_by(calc_draft_lines.c.pos))]
 
@@ -64,6 +67,9 @@ class CalcMixin:
                 "updated_by": o["updated_by"], "updated_at": iso(o["updated_at"]), **t}
 
     def v_calc_version(self, conn, o: dict) -> dict:
+        """Зафиксированная версия расчёта для клиента: номер, итог, число позиций без цены, SHA-256 содержимого,
+        причина, кто и когда зафиксировал, позиции.
+        """
         lines = [_line_json(dict(r._mapping)) for r in conn.execute(
             sa.select(calc_version_lines).where(calc_version_lines.c.version_id == o["id"]).order_by(calc_version_lines.c.pos))]
         return {"id": o["id"], "kit_id": o["kit_id"], "project_id": o["project_id"], "version_no": o["version_no"],
@@ -105,12 +111,16 @@ class CalcMixin:
                 "complete": all(t["complete"] for t in totals)}
 
     def _latest_version(self, conn, kit_id: str) -> Optional[dict]:
+        """Последняя зафиксированная версия расчёта комплекта или None."""
         r = conn.execute(sa.select(calc_versions).where(calc_versions.c.kit_id == kit_id)
                          .order_by(calc_versions.c.version_no.desc()).limit(1)).first()
         return dict(r._mapping) if r else None
 
     @staticmethod
     def _calc_problems(e: calc.CalcError) -> Rejected:
+        """Ошибка проверки расчёта → отказ calc_invalid со списком замечаний по позициям (не больше 100, плюс общее
+        число).
+        """
         # Все замечания с номерами позиций — клиент подсветит их в таблице (первые 100: ответ не раздувается).
         return Rejected("calc_invalid", e.message_ru, {"problems": e.problems[:100], "problem_count": len(e.problems)})
 

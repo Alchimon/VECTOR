@@ -27,20 +27,33 @@ from vector.core import money
 #        Переход v3 → v4 только добавляет таблицы: `vector-server migrate` (migrate.py).
 SCHEMA_VERSION = 5
 
+# Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
+# сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
 ID = sa.String(36)
+# Автоинкрементный номер (журналы). В SQLite автоинкремент работает только у INTEGER PRIMARY KEY.
 BIGID = sa.BigInteger().with_variant(sa.Integer(), "sqlite")
 
 
 class Money(TypeDecorator):
+    """Тип столбца для денег и количеств (Decimal, 4 знака после запятой).
+
+    В PostgreSQL/MS SQL — NUMERIC(18,4); в SQLite, где нет точного десятичного типа, — целое число десятитысячных
+    (BIGINT), чтобы не было ошибок округления float. Принимает только Decimal; масштаб и диапазон проверяются ещё
+    раз на границе с БД.
+    """
     impl = sa.Numeric(18, 4)
     cache_ok = True
 
     def load_dialect_impl(self, dialect):
+        """Фактический тип столбца для конкретной СУБД (BIGINT для SQLite, NUMERIC(18,4) для остальных)."""
         if dialect.name == "sqlite":
             return dialect.type_descriptor(sa.BigInteger())
         return dialect.type_descriptor(sa.Numeric(18, 4, asdecimal=True))
 
     def process_bind_param(self, value: Any, dialect):
+        """Python → БД: только Decimal (float и int — ошибка программы), проверка 4 знаков и диапазона; для SQLite —
+        перевод в десятитысячные.
+        """
         if value is None:
             return None
         if not isinstance(value, Decimal):
@@ -49,6 +62,7 @@ class Money(TypeDecorator):
         return money.to_minor(value) if dialect.name == "sqlite" else value
 
     def process_result_value(self, value: Any, dialect):
+        """БД → Python: всегда Decimal ровно с 4 знаками после запятой, независимо от СУБД."""
         if value is None:
             return None
         if dialect.name == "sqlite":
@@ -57,10 +71,14 @@ class Money(TypeDecorator):
 
 
 class UtcDateTime(TypeDecorator):
+    """Тип столбца «момент времени в UTC». Время без часового пояса не принимается (ошибка программы). PostgreSQL —
+    timestamptz, MS SQL — DATETIMEOFFSET(6), SQLite — строка ISO с суффиксом Z (сортируется как время).
+    """
     impl = sa.DateTime(timezone=True)
     cache_ok = True
 
     def load_dialect_impl(self, dialect):
+        """Фактический тип столбца для конкретной СУБД."""
         if dialect.name == "mssql":
             from sqlalchemy.dialects.mssql import DATETIMEOFFSET
             return dialect.type_descriptor(DATETIMEOFFSET(precision=6))
@@ -69,6 +87,7 @@ class UtcDateTime(TypeDecorator):
         return dialect.type_descriptor(sa.DateTime(timezone=True))
 
     def process_bind_param(self, value, dialect):
+        """Python → БД: перевод в UTC; для SQLite — строка фиксированного формата."""
         if value is None:
             return None
         if value.tzinfo is None:
@@ -79,6 +98,7 @@ class UtcDateTime(TypeDecorator):
         return value
 
     def process_result_value(self, value, dialect):
+        """БД → Python: datetime с часовым поясом UTC во всех СУБД."""
         if value is None:
             return None
         if isinstance(value, str):
@@ -597,10 +617,17 @@ for ddl in (_LITE_U, _LITE_D):
 
 
 # ---------------------------------------------------------------- engine
+# Поддерживаемые СУБД. Рабочие: PostgreSQL и MS SQL (решение владельца); SQLite — только тесты и пилот на одном ПК.
 SUPPORTED = ("postgresql", "mssql", "sqlite")
 
 
 def make_engine(url: str, **kw) -> Engine:
+    """Создать подключение SQLAlchemy к поддерживаемой СУБД.
+
+    PostgreSQL и MS SQL — уровень изоляции SERIALIZABLE (конфликты повторяются в Service._tx) и проверка соединения
+    перед использованием. SQLite (тесты и пилот) — внешние ключи, WAL, ожидание блокировки 30 с и BEGIN IMMEDIATE,
+    чтобы записи не перемежались.
+    """
     u = sa.engine.make_url(url)
     backend = u.get_backend_name()
     if backend not in SUPPORTED:
@@ -610,6 +637,7 @@ def make_engine(url: str, **kw) -> Engine:
 
         @event.listens_for(eng, "connect")
         def _on_connect(dbapi_conn, _rec):
+            """Настройки каждого нового соединения SQLite (PRAGMA)."""
             dbapi_conn.isolation_level = None  # управляем транзакциями сами
             cur = dbapi_conn.cursor()
             cur.execute("PRAGMA foreign_keys=ON")
@@ -619,6 +647,7 @@ def make_engine(url: str, **kw) -> Engine:
 
         @event.listens_for(eng, "begin")
         def _on_begin(conn):
+            """Каждая транзакция SQLite сразу берёт блокировку записи — так поведение ближе к SERIALIZABLE."""
             conn.exec_driver_sql("BEGIN IMMEDIATE")
         return eng
     return sa.create_engine(url, isolation_level="SERIALIZABLE", pool_pre_ping=True, **kw)
@@ -635,6 +664,9 @@ def is_retryable(exc: BaseException) -> bool:
 
 
 def create_schema(engine: Engine, installation_id: str, now: datetime) -> None:
+    """Создать схему в ПУСТОЙ БД и записать версию схемы, идентификатор установки и время создания. Непустая БД — отказ
+    (защита от перезаписи данных).
+    """
     with engine.begin() as conn:
         existing = sa.inspect(conn).get_table_names()
         if existing:
@@ -648,6 +680,9 @@ def create_schema(engine: Engine, installation_id: str, now: datetime) -> None:
 
 
 def check_schema(engine: Engine) -> int:
+    """Проверить БД перед запуском сервера: схема есть, восстановление не прервано, версия схемы совпадает с
+    программой. Иначе — отказ запуска (fail-closed) с подсказкой, что делать.
+    """
     with engine.connect() as conn:
         if "schema_meta" not in sa.inspect(conn).get_table_names():
             raise RuntimeError("Схема ВЕКТОР не найдена. Выполните «vector-server init».")
