@@ -2,6 +2,8 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
+// Пункт левого меню: text, iconName, active — выбранный раздел; badge > 0 — счётчик (например, ожидающие
+// операции), badgeTone — его цвет. Доступен с клавиатуры (Tab, Пробел/Enter).
 AbstractButton {
     id: n
     property string iconName: ""

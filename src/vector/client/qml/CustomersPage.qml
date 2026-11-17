@@ -2,6 +2,8 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
+// Раздел «Заказчики»: список (поиск по названию и ИНН) и карточка: реквизиты, примечание, тендеры заказчика.
+// Создание и правка работают и без связи (команда ставится в очередь, объект помечается «Не отправлено»).
 MasterDetail {
     id: page
     property var shell

@@ -1,6 +1,8 @@
 import QtQuick
 import QtQuick.Layouts
 
+// Пустое состояние списка или карточки: иконка, title, пояснение text и необязательная кнопка
+// (actionText → сигнал action()). Отличает «ещё ничего нет» от ошибки и от «нет доступа».
 ColumnLayout {
     id: e
     property string iconName: "inbox"

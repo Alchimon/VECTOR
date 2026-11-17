@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 
+// Заголовок секции внутри карточки: иконка + текст заглавными (text, iconName).
 RowLayout {
     property string text: ""
     property string iconName: ""

@@ -1,5 +1,7 @@
 import QtQuick
 
+// Компактная метка статуса («Черновик», «Выигран», «Не отправлено»): text, tone (цвет из Theme.tone), iconName.
+// maxWidth > 0 — длинный текст сокращается многоточием.
 Rectangle {
     id: c
     property string text: ""

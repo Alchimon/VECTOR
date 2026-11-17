@@ -2,6 +2,9 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
+// Поле ввода с подписью: label, placeholder, hint (подсказка), error (текст ошибки — поле подсвечивается),
+// required — звёздочка у подписи, password — скрытый ввод с кнопкой «показать», readOnly.
+// text и input — доступ к введённому тексту и самому TextField; accepted() — нажат Enter.
 ColumnLayout {
     id: f
     property alias text: input.text

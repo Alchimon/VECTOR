@@ -2,6 +2,9 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
+// Экран входа: адрес сервера, логин, пароль; в «Дополнительно» — файл корневого сертификата (свой УЦ компании).
+// submit() вызывает backend.login. Без связи вход открывает офлайн-профиль (если пользователь уже входил на этом ПК).
+// Ошибка входа показывается из backend.loginError. Пароль нигде не сохраняется.
 Item {
     id: page
     property bool advanced: backend.savedCa !== ""

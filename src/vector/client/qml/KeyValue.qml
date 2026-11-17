@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 
+// Строка «подпись — значение» в карточке объекта (k, v); muted — приглушённое значение (например, «не указано»).
 RowLayout {
     property string k: ""
     property string v: ""

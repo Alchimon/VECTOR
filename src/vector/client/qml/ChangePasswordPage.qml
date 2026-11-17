@@ -2,6 +2,8 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
+// Обязательная смена пароля (первый вход или после сброса администратором): текущий пароль, новый (не короче 12
+// символов) и повтор. При успехе другие сеансы пользователя завершаются, ключ офлайн-профиля перешифровывается.
 Item {
     id: page
     readonly property string mismatch: rep.text !== "" && rep.text !== nw.text ? "Пароли не совпадают." : ""

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 
+// Заголовок страницы: title и необязательный subtitle (пояснение под заголовком).
 RowLayout {
     id: h
     property string title: ""

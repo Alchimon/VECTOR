@@ -2,6 +2,8 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
+// Выпадающий список с подписью: model — массив объектов, textRole/valueRole — их поля для текста и значения,
+// currentValue — выбранное значение (пустая строка, если не выбрано), hint — подсказка под полем.
 ColumnLayout {
     id: s
     property string label: ""

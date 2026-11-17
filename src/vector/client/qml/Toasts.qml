@@ -1,6 +1,8 @@
 import QtQuick
 import QtQuick.Layouts
 
+// Всплывающие уведомления в правом нижнем углу по сигналу backend.toast(kind, text):
+// kind — success | info | warning | error. Исчезают сами; при выходе из рабочей оболочки очищаются.
 Item {
     id: host
     anchors.fill: parent

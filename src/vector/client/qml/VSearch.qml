@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 
+// Поле поиска в списке (иконка лупы, тема из Theme). Фильтрация выполняется на странице по тексту поля.
 TextField {
     id: s
     implicitHeight: 36

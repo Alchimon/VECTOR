@@ -2,6 +2,9 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Window
 
+// Главное окно программы. Показывает один из экранов по backend.screen:
+// «login» — LoginPage, «change_password» — ChangePasswordPage, «main» — Shell (рабочая оболочка).
+// Тонкая полоска вверху — индикатор фоновой работы (backend.busy); Toasts — всплывающие уведомления.
 ApplicationWindow {
     id: win
     width: 1360; height: 860

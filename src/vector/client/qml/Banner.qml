@@ -1,6 +1,8 @@
 import QtQuick
 import QtQuick.Layouts
 
+// Плашка-сообщение на всю ширину: tone — info | success | warning | danger (цвет и иконка из Theme.tone),
+// text — текст. Используется для состояний «офлайн», «нет доступа», «данные на момент…».
 Rectangle {
     id: bn
     property string tone: "info"
