@@ -53,7 +53,8 @@ from vector.core.errors import Conflict, Denied, Rejected
 from .db import (calc_version_lines, calc_versions, item_aliases, kits, procurement_need_line_match_units,
                  procurement_need_line_matches, procurement_need_lines, procurement_needs, projects, unit_conversions,
                  signatures, stock_balances, stock_items, stock_movements, stock_reservations, stock_shipment_losses,
-                 stock_shipment_terms, stock_shipments, stock_transfer_acts, stock_transfers, users, warehouses)
+                 stock_shipment_terms, stock_shipments, stock_transfer_acts, stock_transfers, users, warehouses,
+                 work_order_issues)
 from . import security
 from .validation import canon, iso, only_keys, opt_date, opt_str, req_str, req_uuid
 
@@ -654,7 +655,7 @@ class StockMixin:
 
     def _stock_issue(self, ctx, p, ev):
         """Выдача на проект: из доступного или по резерву (тогда проект берётся из резерва)."""
-        only_keys(p, {"id", "warehouse_id", "item_id", "qty", "project_id", "reservation_id", "reason"})
+        only_keys(p, {"id", "warehouse_id", "item_id", "qty", "project_id", "reservation_id", "reason", "work_order_id"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "stock.issue", ctx.now)
         mid = req_uuid(p, "id")
         self._ensure_new(ctx.conn, stock_movements, mid)
@@ -675,6 +676,8 @@ class StockMixin:
         else:
             pid = req_uuid(p, "project_id")
         pr = self._project_ref(ctx, pid)
+        # Выдача на наряд (D-36): наряд того же проекта и открытый; связь — неизменяемая строка work_order_issues.
+        wo = self._wo_for_issue(ctx, p.get("work_order_id"), pid)
         row, b = self._load_balance(ctx.conn, w["id"], it["id"])
         try:
             if res is None:
@@ -697,9 +700,14 @@ class StockMixin:
             res_view = self.v_reservation(n)
         mv = self._post(ctx, auth, mid=mid, kind="issue", w=w, it=it, qty=qty, project_id=pid,
                         reservation_id=res["id"] if res else None, reason=reason,
-                        details={"project_code": pr["code"], "balance_after": nb.to_json()})
-        return {"movement": mv, "reservation": res_view,
-                "balance": {"warehouse_id": w["id"], "item_id": it["id"], **nb.to_json()}}
+                        details={"project_code": pr["code"], "balance_after": nb.to_json(),
+                                 **({"work_order_id": wo["id"], "work_order_no": wo["doc_no"]} if wo else {})})
+        out = {"movement": mv, "reservation": res_view,
+               "balance": {"warehouse_id": w["id"], "item_id": it["id"], **nb.to_json()}}
+        if wo is not None:
+            ctx.conn.execute(work_order_issues.insert().values(movement_id=mid, work_order_id=wo["id"]))
+            out["work_order"] = self.v_work_order(ctx.conn, wo)
+        return out
 
     def _stock_reverse(self, ctx, p, ev):
         """Сторно: встречное движение. Резерв, израсходованный выдачей, НЕ восстанавливается (товар — в доступное)."""

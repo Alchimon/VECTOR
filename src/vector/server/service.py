@@ -32,6 +32,7 @@ from .calc import CalcMixin
 from .config_store import ConfigMixin
 from .delegation import DelegationMixin
 from .notify import NotificationMixin
+from .production import ProductionMixin
 from .purchasing import PurchasingMixin
 from .stock import StockMixin
 from .work import WorkMixin
@@ -84,11 +85,13 @@ class Ctx:
                                version_before=before, version_after=after, details=details or {}))
 
 
-class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin, NotificationMixin):
+class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin, NotificationMixin,
+              ProductionMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
     склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py);
     замещение и основания решений — DelegationMixin (delegation.py, D-34/D-35); уведомления — NotificationMixin
-    (notify.py, D-35).
+    (notify.py, D-35); технология и производство (ТП, наряды, снимок, исполнение операций) — ProductionMixin
+    (production.py, D-36).
 
     Как устроен обработчик команды (все _xxx_yyy(ctx, p, ev) следуют одной схеме — так их легко проверять):
 
@@ -168,6 +171,10 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "delegation.create": self._delegation_create, "delegation.revoke": self._delegation_revoke,
             # Уведомления в программе (notify.py, D-35).
             "notification.read": self._notification_read,
+            # Технология и производство (production.py, D-36).
+            "tp.create": self._tp_create, "tp.update": self._tp_update, "tp.approve": self._tp_approve,
+            "wo.release": self._wo_release, "wo.assign": self._wo_assign, "wo.op_event": self._wo_op_event,
+            "wo.substitute": self._wo_substitute, "wo.close": self._wo_close, "wo.cancel": self._wo_cancel,
         }
         diff = set(self.contracts.catalog["commands"]) ^ set(self.handlers)
         if diff:
@@ -1123,10 +1130,12 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         out.update(self._pull_delegations(conn, uid, now, readable))
         # Свои уведомления и число непрочитанных (D-35).
         out.update(self._pull_notifications(conn, uid, now))
+        # ТП и состав изделий (без цен), наряды и операции (D-36).
+        out.update(self._pull_production(conn, uid, now))
         me_roles = self._me_roles(conn, uid, now)
         # Справочник людей нужен и для выбора замещающего — поэтому он приходит всем, у кого есть хоть одна роль.
         if (out["tenders"] or out["projects"] or out["calc_revisions"] or out["warehouses"] or out["needs"]
-                or out["purchase_orders"] or me_roles["roles"] or out["delegations"]):
+                or out["purchase_orders"] or me_roles["roles"] or out["delegations"] or out["work_orders"]):
             # Минимальный справочник людей (имя для отображения ответственного) — без логинов и контактов.
             out["people"] = [{"id": r["id"], "display_name": r["display_name"]} for r in
                              self._rows(conn, sa.select(users.c.id, users.c.display_name).where(users.c.active == sa.true()))]
@@ -1161,13 +1170,24 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
                   "warehouse": "stock.read", "stock_item": "stock.read", "stock_movement": "stock.read",
                   "stock_transfer": "stock.read", "stock_reservation": "stock.read", "procurement_need": "need.read",
                   "item_alias": "stock.read", "unit_conversion": "stock.read", "config": "config.publish",
-                  "supplier": "supplier.read", "supplier_contract": "supplier.read", "purchase_order": "po.read"}.get(otype)
+                  "supplier": "supplier.read", "supplier_contract": "supplier.read", "purchase_order": "po.read",
+                  "tech_process": "tp.read", "work_order": "wo.read", "wo_operation": "wo.read"}.get(otype)
         if not action or not isinstance(oid, str):
             return {"status": "rejected", "code": "bad_history_request", "message_ru": "Укажите тип и id объекта."}
         pid = oid if otype in ("project", "project_calc") else None
         if otype == "procurement_need":
             n = self._get(conn, db.procurement_needs, oid)
             pid = n["project_id"] if n else None
+        if otype in ("tech_process", "work_order"):
+            t = self._get(conn, db.tech_processes if otype == "tech_process" else db.work_orders, oid)
+            pid = t["project_id"] if t else None
+        if otype == "wo_operation":
+            op = self._get(conn, db.wo_operations, oid)
+            wo = self._get(conn, db.work_orders, op["work_order_id"]) if op else None
+            pid = wo["project_id"] if wo else None
+            # Исполнитель видит историю своей операции, даже без права читать наряды проекта.
+            if op and op["assignee_id"] == uid:
+                action = "wo.op_event"
         if otype in ("kit", "task", "document", "calc_draft"):
             # Объекты внутри проекта: право чтения определяется ролью в их проекте.
             # Черновик расчёта идентифицируется id комплекта (один черновик на комплект).
