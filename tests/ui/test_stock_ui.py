@@ -216,3 +216,80 @@ def test_procurement_matches_uncoded_line_by_hand(ui):
     ui.backend.syncNow()
     ui.wait_idle()
     assert _v(pp, "nv")["can_match"] is False
+
+
+def test_directory_tab_and_match_with_unit_conversion(ui):
+    """Закупка заводит позицию «в бухтах» и пересчёт «м → бухта», затем сопоставляет кабель с пересчётом (A-27)."""
+    ui.login("s.morozov")
+    ui.go("stock")
+    page = _stock_page(ui)
+    page.setProperty("tab", "directory")
+    ui.wait_idle()
+    dv = _v(page, "dv")
+    assert dv["can_edit"] is True
+    assert [c["rule_label"] for c in dv["conversions"]] == ["1 км = 1 000 м"]           # из демо-данных
+    assert [a["alias"] for a in dv["aliases"]] == ["ХС-200"]
+    ui.backend.execute("t-item", "item.create", {"id": ui.backend.newId(), "code": "КВВГнг-7x1.5-Б",
+                                                 "name": "Кабель КВВГнг 7×1,5 (бухта 100 м)", "unit": "бухта"}, 0)
+    ui.wait_idle()
+    dlg = _popup(ui, "convForm")
+    _call(dlg, "openFor", None)
+    ui.wait_idle()
+    for name, text in (("cvFrom", "м"), ("cvTo", "бухта"), ("cvFactor", "0,01")):
+        _popup(ui, name).setProperty("text", text)
+    ui.wait_idle()
+    assert dlg.property("canConfirm") is True
+    QMetaObject.invokeMethod(dlg, "confirmed")
+    ui.wait_idle()
+    assert dlg.property("error") == "" and not dlg.property("visible")
+    assert "1 м = 0,01 бухта" in [c["rule_label"] for c in _v(page, "dv")["conversions"]]
+    # Закупка: у кабеля (1850 м) теперь два кандидата — та же единица и «бухта» с пересчётом 18,5 бухты.
+    ui.go("procurement")
+    pp = next(i for i in ui.items("nv") if i.isVisible())
+    atx = next(n for n in _v(pp, "nv")["needs"] if n["kit_code"] == "АТХ")
+    cable = next(ln for ln in atx["lines"] if ln["name"].startswith("Кабель контрольный"))
+    pp.setProperty("selectedId", atx["id"])
+    ui.wait_idle()
+    m = _popup(ui, "lineMatch")
+    _call(m, "openFor", cable)
+    ui.wait_idle()
+    cands = _v(m, "candidates")
+    idx = next(i for i, c in enumerate(cands) if c["conversion_id"])
+    assert cands[idx]["item_qty_label"] == "18,5 бухта" and cands[idx]["problem"] == ""
+    _popup(ui, "lmItem").setProperty("currentIndex", idx)
+    _popup(ui, "lmReason").setProperty("text", "Поставляется бухтами по 100 м")
+    ui.wait_idle()
+    assert "18,5 бухта" in _popup(ui, "lmConversion").property("text")
+    assert m.property("confirmText") == "Сопоставить с пересчётом"
+    QMetaObject.invokeMethod(m, "confirmed")
+    ui.wait_idle()
+    assert m.property("error") == "" and not m.property("visible")
+    atx = next(n for n in _v(pp, "nv")["needs"] if n["kit_code"] == "АТХ")
+    cable = next(ln for ln in atx["lines"] if ln["name"].startswith("Кабель контрольный"))
+    assert cable["item_qty_label"] == "18,5 бухта" and cable["open_label"] == "18,5 бухта"
+    assert "пересчёт 1 м = 0,01 бухта" in cable["match_label"]
+
+
+def test_admin_publishes_company_setting(ui):
+    """Администратор: вкладка «Настройки компании», публикация «Пересопоставление при резервах» (D-26, A-26)."""
+    ui.login("admin")
+    ui.go("admin")
+    page = next(i for i in ui.items("sv") if i.isVisible())
+    page.setProperty("tab", "settings")
+    ui.wait_idle()
+    sv = _v(page, "sv")
+    item = next(x for x in sv["items"] if x["key"] == "procurement.rematch_reserved_line")
+    assert sv["can_publish"] is True and item["is_set"] is False and item["value"] == "forbid"
+    dlg = _popup(ui, "publishForm")
+    _call(dlg, "openFor", item)
+    ui.wait_idle()
+    _popup(ui, "pValue").setProperty("currentIndex", [o["id"] for o in item["options"]].index("release_active"))
+    _popup(ui, "pReason").setProperty("text", "Решение совещания склада и закупки")
+    ui.wait_idle()
+    assert dlg.property("canConfirm") is True
+    QMetaObject.invokeMethod(dlg, "confirmed")
+    ui.wait_idle()
+    assert dlg.property("error") == "" and not dlg.property("visible")
+    item = next(x for x in _v(page, "sv")["items"] if x["key"] == "procurement.rematch_reserved_line")
+    assert (item["value"], item["is_set"], item["version"]) == ("release_active", True, 1)
+    assert item["reason"] == "Решение совещания склада и закупки"

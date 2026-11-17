@@ -77,9 +77,11 @@ OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp")
 # снимок «на момент последнего обновления», офлайн он только читается.
 META_LISTS = (("calc_version", "calc_versions"), ("calc_revision", "calc_revisions"),
               ("movement", "stock_movements"), ("reservation", "stock_reservations"), ("need", "needs"))
-# Складские данные из pull, которые хранятся в meta как есть (снимок; время снимка — last_pull).
+# Данные из pull, которые хранятся в meta как есть (снимок; время снимка — last_pull): склад, потребности,
+# справочник аналогов/пересчёта (D-25, A-27) и настройки компании (config, D-26). Всё это меняется только
+# онлайн-командами, офлайн — только читается.
 STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_movements_truncated", "needs",
-              "stock_projects", "need_candidates")
+              "stock_projects", "need_candidates", "item_aliases", "unit_conversions", "config")
 
 
 def _calc_same(local: dict, payload: dict) -> bool:

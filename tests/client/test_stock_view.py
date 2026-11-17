@@ -142,3 +142,73 @@ def test_manual_match_labels_and_rematch_hint():
     assert v["can_match"] is True
     assert sv.needs_view([], [], [], PULL, False, ["procurement"])["can_match"] is False
     assert sv.needs_view([], [], [], PULL, True, ["warehouse"])["can_match"] is False
+
+
+# ------------------------------------------------------------------ аналоги, пересчёт, настройки (D-24..D-26, A-27)
+def _conv_line(**kw):
+    """Строка потребности в форме сервера (v_need) для проверок кандидатов и подписей."""
+    base = {"pos": 1, "line_id": "L1", "code": "К-1", "name": "Кабель", "unit": "км", "qty": "1.8500", "item_id": None,
+            "match_source": None, "match_note": "Единица не совпала", "auto_match_note": None, "match_count": 0,
+            "item_unit": "км", "item_qty": "1.8500", "factor": None,
+            "coverage": {"required": "1.8500", "reserved": "0.0000", "open": "1.8500", "available": None, "can_cover": None}}
+    return {**base, **kw}
+
+
+def test_match_candidates_same_unit_and_conversion_exact_or_flagged():
+    from vector.client.stock_view import match_candidates
+    items = [{"id": "m", "code": "КВВГ", "name": "Кабель", "unit": "м", "active": True},
+             {"id": "k", "code": "КВВГ-км", "name": "Кабель в км", "unit": "км", "active": True},
+             {"id": "u", "code": "УП", "name": "Упаковка", "unit": "упак", "active": True},
+             {"id": "x", "code": "OFF", "name": "Отключена", "unit": "км", "active": False},
+             {"id": "t", "code": "Т", "name": "Без пересчёта", "unit": "т", "active": True}]
+    convs = [{"id": "g", "item_id": None, "from_unit": "км", "to_unit": "м", "factor": "1000.0000", "active": True},
+             {"id": "s", "item_id": "m", "from_unit": "км", "to_unit": "м", "factor": "1001.0000", "active": True},
+             {"id": "p", "item_id": None, "from_unit": "км", "to_unit": "упак", "factor": "0.0001", "active": True}]
+    c = {x["id"]: x for x in match_candidates(_conv_line(), items, convs)}
+    assert set(c) == {"m", "k", "u"}                                    # отключённая и без пересчёта — не предлагаются
+    assert c["k"]["conversion_id"] == "" and c["k"]["problem"] == ""     # та же единица — без пересчёта
+    assert (c["m"]["conversion_id"], c["m"]["factor"]) == ("s", "1001.0000")   # для позиции важнее общего
+    assert c["m"]["item_qty_label"] == "1 851,85 м" and "1 км = 1 001 м" in c["m"]["label"]
+    assert c["u"]["problem"] and "4 знаков" in c["u"]["problem"]         # 1,85 × 0,0001 — неточно, не округляем
+
+
+def test_needs_view_labels_coverage_in_item_units_and_rematch_by_setting():
+    from vector.client.stock_view import needs_view
+    ln = _conv_line(item_id="m", match_source="manual", match_count=1, match_reason="В метрах", factor="1000.0000",
+               item_unit="м", item_qty="1850.0000", match_note=None,
+               coverage={"required": "1850.0000", "reserved": "100.0000", "open": "1750.0000", "available": "5000.0000",
+                         "can_cover": True})
+    need = {"id": "N", "lines": [ln], "calc_version_no": 1, "project_code": "П", "kit_code": "К"}
+    items = [{"id": "m", "code": "КВВГ", "name": "Кабель", "unit": "м", "active": True}]
+    v = needs_view([need], [], items, "", True, ["procurement"])
+    out = v["needs"][0]["lines"][0]
+    assert out["reserved_label"] == "100 м" and out["open_label"] == "1 750 м" and out["qty_label"] == "1,85 км"
+    assert out["item_qty_label"] == "1 850 м"
+    assert out["match_label"] == "Сопоставлена вручную; пересчёт 1 км = 1 000 м: В метрах"
+    assert out["can_rematch"] is False                                   # не задано → самое строгое (запрет)
+    cfg = [{"key": "procurement.rematch_reserved_line", "value": "release_active"}]
+    out = needs_view([need], [], items, "", True, ["procurement"], [], cfg)["needs"][0]["lines"][0]
+    assert out["can_rematch"] is True and "будут сняты" in out["rematch_warning"]
+
+
+def test_alias_label_and_directory_and_settings_views():
+    from vector.client.stock_view import _match_label, directory_view, settings_view
+    assert _match_label({"match_source": "alias", "auto_match_note": "По другому обозначению «ШК-1» → позиция «ШК-1-И»."}) \
+        == "Сопоставлена автоматически. По другому обозначению «ШК-1» → позиция «ШК-1-И»."
+    items = [{"id": "m", "code": "КВВГ", "name": "Кабель", "unit": "м", "active": True}]
+    d = directory_view([{"id": "a", "item_id": "m", "alias": "K-1", "note": None, "active": False, "version": 2}],
+                       [{"id": "g", "item_id": None, "from_unit": "км", "to_unit": "м", "factor": "1000.0000", "note": None,
+                         "active": True, "version": 1}], items, ["warehouse"], True)
+    assert d["can_edit"] is True and d["aliases"][0]["item_label"] == "КВВГ · Кабель"
+    assert d["aliases"][0]["state_label"] == "Отключено"
+    assert d["conversions"][0]["rule_label"] == "1 км = 1 000 м" and d["conversions"][0]["scope_label"].startswith("Общий")
+    assert directory_view([], [], items, ["warehouse"], False)["can_edit"] is False      # только при связи
+    assert directory_view([], [], items, ["gip"], True)["can_edit"] is False
+    cfg = [{"key": "k", "label_ru": "Настройка", "value": "forbid", "is_set": False, "version": 0,
+            "values": [{"value": "forbid", "label_ru": "Запрещено"}, {"value": "release_active", "label_ru": "Снимать"}]}]
+    s = settings_view(cfg, ["admin"], True)
+    assert s["can_publish"] is True and s["items"][0]["value_label"] == "Запрещено"
+    assert s["items"][0]["state_label"].startswith("Не задано")
+    assert [o["id"] for o in s["items"][0]["options"]] == ["forbid", "release_active"]
+    assert settings_view(cfg, ["warehouse"], True)["can_publish"] is False
+    assert settings_view(cfg, ["admin"], False)["can_publish"] is False

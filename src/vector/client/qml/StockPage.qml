@@ -18,6 +18,8 @@ Item {
     property string selectedId: ""
     property string search: ""
     readonly property var ov: backend.stockOverview
+    // Справочник аналогов и пересчёта единиц (D-25, A-27): ведут склад и закупка, только при связи.
+    readonly property var dv: backend.directoryOverview
     readonly property var items: (ov.items || []).filter(i => search === "" || (i.code + " " + i.name).toLowerCase().indexOf(search.toLowerCase()) >= 0)
     readonly property var sel: (ov.items || []).find(i => i.id === selectedId) || null
     readonly property var whOptions: (ov.warehouses || []).filter(w => w.active === true).map(w => ({ id: w.id, label: w.code + " · " + w.name }))
@@ -47,7 +49,8 @@ Item {
             model: [{ id: "balances", label: "Остатки", icon: "boxes" },
                     { id: "reservations", label: "Резервы (" + (ov.summary ? ov.summary.active_reservations : 0) + ")", icon: "bookmark" },
                     { id: "journal", label: "Журнал движений", icon: "history" },
-                    { id: "refs", label: "Справочники", icon: "settings" }]
+                    { id: "refs", label: "Справочники", icon: "settings" },
+                    { id: "directory", label: "Аналоги и пересчёт", icon: "arrow-left-right" }]
         }
 
         // ================================================================ Остатки
@@ -237,7 +240,7 @@ Item {
                     RowLayout { Layout.fillWidth: true
                         SectionTitle { text: "Номенклатура (" + (ov.items || []).length + ")"; iconName: "package" }
                         VButton { objectName: "btnNewItem"; text: "Новая позиция"; kind: "soft"; compact: true; iconName: "plus"; visible: ov.can_edit_refs === true; onClicked: itemForm.openFor(null) } }
-                    Text { text: "Код сравнивается точно: по нему строки потребности сопоставляются с номенклатурой. Единицу нельзя менять после первых движений — пересчёта единиц нет."
+                    Text { text: "Код сравнивается точно: по нему (и по другим обозначениям на вкладке «Аналоги и пересчёт») строки потребности сопоставляются с номенклатурой. Единицу нельзя менять после первых движений."
                            color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs; wrapMode: Text.Wrap; Layout.fillWidth: true }
                     ListView {
                         Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 2
@@ -250,7 +253,108 @@ Item {
                 }
             }
         }
+
+        // ================================================================ Аналоги и пересчёт (D-25, A-27)
+        Banner { visible: page.tab === "directory" && page.dv.online !== true; tone: "warning"
+                 text: "Справочник меняется только при связи с сервером: обозначения и коэффициенты проверяются на уникальность и точность в момент изменения." }
+        RowLayout {
+            visible: page.tab === "directory"
+            Layout.fillWidth: true; Layout.fillHeight: true; spacing: 20
+            VCard {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                ColumnLayout {
+                    anchors.fill: parent; anchors.margins: 16; spacing: 10
+                    RowLayout { Layout.fillWidth: true
+                        SectionTitle { text: "Другие обозначения (" + (page.dv.aliases || []).length + ")"; iconName: "link" }
+                        VButton { objectName: "btnNewAlias"; text: "Добавить"; kind: "soft"; compact: true; iconName: "plus"; visible: page.dv.can_edit === true; onClicked: aliasForm.openFor(null) } }
+                    Text { text: "Аналоги и написания из расчётов/ТКП. Строка потребности с таким обозначением сопоставится автоматически, если единица совпадает с единицей позиции."
+                           color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    ListView {
+                        id: aliasList; objectName: "aliasList"
+                        Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 2
+                        model: page.tab === "directory" ? (page.dv.aliases || []) : []
+                        ScrollBar.vertical: ScrollBar {}
+                        delegate: ListRow { title: modelData.alias + "  →  " + modelData.item_label; subtitle: modelData.note || ""
+                            iconName: "link"; chipText: modelData.active === true ? "" : modelData.state_label
+                            onClicked: if (page.dv.can_edit === true) aliasForm.openFor(modelData) }
+                    }
+                    EmptyState { visible: aliasList.count === 0; Layout.alignment: Qt.AlignHCenter; iconName: "link"; title: "Обозначений нет"
+                                 text: "Добавьте, если в расчётах позицию называют иначе, чем в номенклатуре." }
+                }
+            }
+            VCard {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                ColumnLayout {
+                    anchors.fill: parent; anchors.margins: 16; spacing: 10
+                    RowLayout { Layout.fillWidth: true
+                        SectionTitle { text: "Пересчёт единиц (" + (page.dv.conversions || []).length + ")"; iconName: "arrow-left-right" }
+                        VButton { objectName: "btnNewConv"; text: "Добавить"; kind: "soft"; compact: true; iconName: "plus"; visible: page.dv.can_edit === true; onClicked: convForm.openFor(null) } }
+                    Text { text: "Используется только при ручном сопоставлении: закупка видит и подтверждает коэффициент, он фиксируется в решении. Количество не округляется — неточный пересчёт отклоняется."
+                           color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    ListView {
+                        id: convList; objectName: "convList"
+                        Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 2
+                        model: page.tab === "directory" ? (page.dv.conversions || []) : []
+                        ScrollBar.vertical: ScrollBar {}
+                        delegate: ListRow { title: modelData.rule_label; subtitle: modelData.scope_label + (modelData.note ? "  ·  " + modelData.note : "")
+                            iconName: "arrow-left-right"; chipText: modelData.active === true ? "" : modelData.state_label
+                            onClicked: if (page.dv.can_edit === true) convForm.openFor(modelData) }
+                    }
+                    EmptyState { visible: convList.count === 0; Layout.alignment: Qt.AlignHCenter; iconName: "arrow-left-right"; title: "Пересчётов нет"
+                                 text: "Например, «1 км = 1000 м» — общий, или «1 бухта = 100 м» — для конкретного кабеля." }
+                }
+            }
+        }
     }
+
+    // ================================================================ формы справочника аналогов и пересчёта (только онлайн)
+    FormDialog {
+        id: aliasForm
+        objectName: "aliasForm"
+        property var obj: null
+        title: obj ? "Обозначение «" + obj.alias + "»" : "Другое обозначение позиции"
+        subtitle: "Как позицию называют в расчётах и ТКП. Строка потребности с таким обозначением и той же единицей сопоставится с позицией автоматически."
+        canConfirm: alAlias.text.trim() !== "" && (obj !== null || (alItem.currentValue !== "" && alItem.currentValue !== undefined))
+        function openFor(o) { obj = o; alAlias.text = o ? o.alias : ""; alNote.text = o ? (o.note || "") : ""; alActive.checked = o ? o.active === true : true
+                              alItem.currentIndex = o ? page.indexOf(page.dv.items || [], o.item_id) : 0; open() }
+        onConfirmed: obj ? cAlias.run("item_alias.update", Object.assign({ id: obj.id, note: alNote.text.trim() || null, active: alActive.checked },
+                                                                        alAlias.text.trim() !== obj.alias ? { alias: alAlias.text.trim() } : {}), obj.version)
+                         : cAlias.run("item_alias.create", { id: backend.newId(), item_id: alItem.currentValue, alias: alAlias.text.trim(), note: alNote.text.trim() })
+        VSelect { id: alItem; objectName: "alItem"; label: "Позиция номенклатуры"; model: page.dv.items || []; enabled: aliasForm.obj === null
+                  hint: aliasForm.obj ? "Позицию у обозначения не меняют — заведите новое обозначение, чтобы история не потерялась." : "" }
+        VField { id: alAlias; objectName: "alAlias"; label: "Другое обозначение"; required: true; placeholder: "КВВГ 4х1,5" }
+        VField { id: alNote; label: "Примечание"; placeholder: "Так пишут в ТКП поставщика" }
+        CheckBox { id: alActive; visible: aliasForm.obj !== null; text: "Обозначение действует (отключённое не используется автоматом)" }
+    }
+    Cmd { id: cAlias; dialog: aliasForm }
+
+    FormDialog {
+        id: convForm
+        objectName: "convForm"
+        property var obj: null
+        readonly property var scopes: [{ id: "", label: "Общий — для любой позиции в этой единице" }].concat(page.dv.items || [])
+        readonly property var scopeItem: (page.dv.items || []).find(i => i.id === cvScope.currentValue) || null
+        title: obj ? "Пересчёт " + obj.rule_label : "Новый пересчёт единиц"
+        subtitle: "«1 [из] = [коэффициент] [в]». Используется только при ручном сопоставлении строки потребности — закупка подтверждает коэффициент. Обратный пересчёт не создаётся сам."
+        canConfirm: cvFactor.text.trim() !== "" && cvFactor.error === "" && (obj !== null || (cvFrom.text.trim() !== "" && cvTo.text.trim() !== ""))
+        function openFor(o) { obj = o; cvFrom.text = o ? o.from_unit : ""; cvTo.text = o ? o.to_unit : ""; cvFactor.text = o ? backend.normalizeQty(o.factor).replace(/\.?0+$/, "") : ""
+                              cvNote.text = o ? (o.note || "") : ""; cvActive.checked = o ? o.active === true : true
+                              cvScope.currentIndex = o && o.item_id ? page.indexOf(scopes, o.item_id) : 0; open() }
+        onConfirmed: obj ? cConv.run("unit_conversion.update", { id: obj.id, factor: backend.normalizeQty(cvFactor.text), note: cvNote.text.trim() || null, active: cvActive.checked }, obj.version)
+                         : cConv.run("unit_conversion.create", { id: backend.newId(), from_unit: cvFrom.text.trim(), to_unit: cvTo.text.trim(),
+                                                                factor: backend.normalizeQty(cvFactor.text), item_id: cvScope.currentValue, note: cvNote.text.trim() })
+        VSelect { id: cvScope; label: "Для какой позиции"; model: convForm.scopes; enabled: convForm.obj === null
+                  onCurrentValueChanged: if (convForm.scopeItem && convForm.obj === null) cvTo.text = convForm.scopeItem.unit }
+        RowLayout { Layout.fillWidth: true; spacing: 12
+            VField { id: cvFrom; objectName: "cvFrom"; Layout.fillWidth: true; label: "Из единицы"; required: true; readOnly: convForm.obj !== null; placeholder: "км" }
+            VField { id: cvTo; objectName: "cvTo"; Layout.fillWidth: true; label: "В единицу"; required: true; readOnly: convForm.obj !== null || convForm.scopeItem !== null; placeholder: "м"
+                     hint: convForm.scopeItem ? "Единица позиции." : "" } }
+        VField { id: cvFactor; objectName: "cvFactor"; label: "Коэффициент"; required: true; placeholder: "1000"; error: backend.qtyProblem(text)
+                 hint: "Больше нуля, не больше 4 знаков после запятой. Изменение не затрагивает уже принятые решения." }
+        VField { id: cvNote; label: "Примечание" }
+        CheckBox { id: cvActive; visible: convForm.obj !== null; text: "Пересчёт действует" }
+    }
+    Cmd { id: cConv; dialog: convForm }
 
     // ================================================================ формы проводок (только онлайн)
     FormDialog {

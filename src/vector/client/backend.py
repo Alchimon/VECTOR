@@ -45,7 +45,7 @@ PROJECT_ROLE_LABELS = {"gip": "ГИП проекта", "rp": "РП проект�
 
 
 def default_data_dir() -> Path:
-    """Каталог профилей клиента: в Windows — %LOCALAPPDATA%\VECTOR\profiles (локально для пользователя, не в
+    r"""Каталог профилей клиента: в Windows — %LOCALAPPDATA%\VECTOR\profiles (локально для пользователя, не в
     перемещаемом профиле), в Linux — ~/.local/share/vector/profiles.
     """
     if platform.system() == "Windows":
@@ -259,6 +259,7 @@ class Backend(QObject):
 
     @theme.setter
     def theme(self, v):
+        """Сменить тему (light/dark): сохраняется в настройках клиента, интерфейс перекрашивается сразу."""
         if v in ("light", "dark") and v != self._theme:
             self._theme = v
             self._settings.setValue("ui/theme", v)
@@ -478,7 +479,22 @@ class Backend(QObject):
         st = self._stock
         return qml_safe(stock_view.needs_view(
             st.get("needs") or [], st.get("need_candidates") or [], self._decorate("stock_item"), self._last_pull,
-            self._online and self._session_mode == "online", self._me.get("roles", [])))
+            self._online and self._session_mode == "online", self._me.get("roles", []),
+            st.get("unit_conversions") or [], st.get("config") or []))
+
+    @Property("QVariantMap", notify=dataChanged)
+    def directoryOverview(self):
+        """Вкладка «Справочник» раздела «Склад»: другие обозначения позиций и пересчёт единиц (D-25, A-27)."""
+        st = self._stock
+        return qml_safe(stock_view.directory_view(
+            st.get("item_aliases") or [], st.get("unit_conversions") or [], self._decorate("stock_item"),
+            self._me.get("roles", []), self._online and self._session_mode == "online"))
+
+    @Property("QVariantMap", notify=dataChanged)
+    def settingsOverview(self):
+        """Настройки компании для раздела «Администрирование» (D-26, A-26): значение, кто/когда/почему задал."""
+        return qml_safe(stock_view.settings_view(self._stock.get("config") or [], self._me.get("roles", []),
+                                                 self._online and self._session_mode == "online"))
 
     @Slot(str, result=str)
     def qtyProblem(self, text: str) -> str:
@@ -761,7 +777,23 @@ class Backend(QObject):
         self._run(job, lambda res: self._finish_command(tag, command, res))
 
     # Команды, после которых обновляется складской снимок (см. execute).
-    _STOCK_PREFIXES = frozenset({"stock", "need"})
+    @Slot(str, str, str, str, int)
+    def publishSetting(self, tag: str, key: str, value: str, reason: str, version: int):
+        """Опубликовать настройку компании (config.publish, только admin и при связи; A-26).
+
+        Отдельный слот, потому что у ещё не заданной настройки ожидаемая версия = 0, а общий execute трактует
+        0 как «версии нет». version — номер действующей версии, которую видел администратор.
+        """
+        def job():
+            """Публикация в рабочем потоке и сразу pull: настройки приходят только снимком."""
+            r = self.client.execute("config.publish", {"key": key, "value": value, "reason": reason}, int(version))
+            if r.status == "accepted":
+                self.client.pull()
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "config.publish", res))
+
+    # Справочник и настройки тоже приходят только с pull — после их команд снимок перечитывается.
+    _STOCK_PREFIXES = frozenset({"stock", "need", "item_alias", "unit_conversion", "config"})
 
     def _finish_command(self, tag: str, command: str, res: dict):
         """Общий разбор результата команды: снимок данных, уведомление, сигнал commandDone для формы."""

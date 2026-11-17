@@ -232,6 +232,13 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
         items[code] = str(uuid.uuid4())
         cmd(by, "item.create", {"id": items[code], "code": code, "name": name, "unit": unit})
 
+    # Справочник аналогов и пересчёта (D-25, A-27): общий пересчёт «км → м» и другое обозначение хомута из ТКП
+    # поставщика. На демо-потребности они не влияют (в АТХ v1 таких обозначений и единиц нет) — это пример.
+    cmd(buyer, "unit_conversion.create", {"id": str(uuid.uuid4()), "from_unit": "км", "to_unit": "м", "factor": "1000",
+                                          "note": "Метрическая система"})
+    cmd(wh, "item_alias.create", {"id": str(uuid.uuid4()), "item_id": items["ХМТ-200"], "alias": "ХС-200",
+                                  "note": "Так пишет поставщик в ТКП"})
+
     def receipt(w, item, qty, src):
         """Приход на склад от имени кладовщика с основанием src; возвращает созданное движение."""
         return cmd(wh, "stock.receive", {"id": str(uuid.uuid4()), "warehouse_id": whs[w], "item_id": items[item],

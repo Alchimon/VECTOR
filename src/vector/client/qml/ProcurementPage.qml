@@ -89,12 +89,14 @@ MasterDetail {
                     VButton { visible: nv.can_reserve === true && !!modelData.item_id && Number(modelData.coverage.open) > 0
                               text: "Зарезервировать"; compact: true; kind: "soft"; iconName: "bookmark"
                               onClicked: lineReserve.openFor(modelData) }
-                    // Ручное сопоставление — закупка, при связи и пока под строку ничего не зарезервировано.
+                    // Ручное сопоставление — закупка, при связи; при резервах — по настройке компании (D-26).
                     VButton { objectName: "btnMatch"; visible: nv.can_match === true && modelData.can_rematch === true
                               text: modelData.item_id ? "Изменить" : "Сопоставить"; compact: true
                               kind: modelData.item_id ? "ghost" : "soft"; iconName: "link"
                               onClicked: lineMatch.openFor(modelData) }
                 }
+                Text { visible: (modelData.item_qty_label || "") !== ""; text: "В единицах позиции: " + modelData.item_qty_label
+                       color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; Layout.fillWidth: true; Layout.leftMargin: 32 }
                 Text { visible: modelData.item_id !== null && modelData.item_id !== undefined
                        text: "Зарезервировано " + modelData.reserved_label + "  ·  не покрыто " + modelData.open_label + "  ·  доступно на складах " + modelData.available_label
                        color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; Layout.fillWidth: true; Layout.leftMargin: 32; wrapMode: Text.Wrap }
@@ -142,27 +144,40 @@ MasterDetail {
     }
     Cmd { id: cLine; dialog: lineReserve }
 
-    // ---------- ручное сопоставление строки с номенклатурой (A-25)
+    // ---------- ручное сопоставление строки с номенклатурой (A-25, D-24..D-26, A-27)
     FormDialog {
         id: lineMatch
         objectName: "lineMatch"
         property var line: null
-        // Кандидаты: действующие позиции с ТОЙ ЖЕ единицей, кроме текущей (пересчёт единиц не выполняется).
-        readonly property var candidates: line ? (sov.items || []).filter(i => i.active !== false && i.unit === line.unit && i.id !== line.item_id)
-                                                     .map(i => ({ id: i.id, label: i.code + " · " + i.name })) : []
+        // Кандидаты считает stock_view.match_candidates: действующие позиции с той же единицей или с пересчётом из
+        // справочника. Для пересчёта — коэффициент и количество в единицах позиции; неточный пересчёт помечен problem.
+        readonly property var candidates: line ? (line.match_candidates || []) : []
+        readonly property var picked: candidates.find(c => c.id === lmItem.currentValue) || null
         title: line ? (line.item_id ? "Изменить сопоставление: " : "Сопоставить строку: ") + (line.code || line.name) : ""
-        subtitle: line ? "«" + line.name + "», " + line.qty_label + ". Выберите позицию номенклатуры с единицей «" + line.unit
-                         + "» и укажите, почему она подходит. Решение сохранится в истории потребности." : ""
-        confirmText: "Сопоставить"
-        canConfirm: lmItem.currentValue !== "" && lmItem.currentValue !== undefined && lmReason.text.trim() !== ""
+        subtitle: line ? "«" + line.name + "», " + line.qty_label + ". Выберите позицию номенклатуры и укажите, почему она подходит. "
+                         + "Решение сохранится в истории потребности." : ""
+        confirmText: picked && picked.conversion_id ? "Сопоставить с пересчётом" : "Сопоставить"
+        canConfirm: picked !== null && picked.problem === "" && lmReason.text.trim() !== ""
         function openFor(l) { line = l; lmReason.text = ""; lmItem.currentIndex = 0; open() }
-        onConfirmed: cMatch.run("need.match_line", { id: backend.newId(), need_id: page.sel.id, line_id: line.line_id,
-                                                     item_id: lmItem.currentValue, reason: lmReason.text.trim() }, page.sel.version)
+        // Коэффициент передаётся ровно тот, что показан: если в справочнике его успели изменить, сервер откажет
+        // (conversion_changed), и человек увидит новое число после обновления.
+        onConfirmed: cMatch.run("need.match_line", Object.assign({ id: backend.newId(), need_id: page.sel.id, line_id: line.line_id,
+                                                                   item_id: picked.id, reason: lmReason.text.trim() },
+                                                                 picked.conversion_id ? { conversion_id: picked.conversion_id, factor: picked.factor } : {}), page.sel.version)
         Banner { visible: lineMatch.line !== null && (lineMatch.line.match_note || "") !== ""; tone: "info"
                  text: lineMatch.line ? "Почему не сопоставилось автоматически: " + (lineMatch.line.match_note || "") : "" }
+        Banner { visible: lineMatch.line !== null && (lineMatch.line.rematch_warning || "") !== ""; tone: "warning"
+                 text: lineMatch.line ? (lineMatch.line.rematch_warning || "") : "" }
         Banner { visible: lineMatch.candidates.length === 0; tone: "warning"
-                 text: lineMatch.line ? "Нет действующих позиций с единицей «" + lineMatch.line.unit + "». Заведите позицию в разделе «Склад» → «Номенклатура»." : "" }
+                 text: lineMatch.line ? "Нет действующих позиций с единицей «" + lineMatch.line.unit + "» и нет пересчёта из «" + lineMatch.line.unit
+                                        + "». Заведите позицию («Склад» → «Справочники») или пересчёт («Склад» → «Аналоги и пересчёт»)." : "" }
         VSelect { id: lmItem; objectName: "lmItem"; label: "Позиция номенклатуры"; model: lineMatch.candidates }
+        Banner { objectName: "lmConversion"; visible: lineMatch.picked !== null && lineMatch.picked.conversion_id !== ""
+                 tone: lineMatch.picked && lineMatch.picked.problem !== "" ? "danger" : "info"
+                 text: !lineMatch.picked || !lineMatch.picked.conversion_id ? ""
+                       : lineMatch.picked.problem !== "" ? lineMatch.picked.problem
+                       : "Пересчёт " + lineMatch.picked.rule + ": " + lineMatch.line.qty_label + " = " + lineMatch.picked.item_qty_label
+                         + ". Коэффициент зафиксируется в решении; резерв и покрытие — в единицах позиции." }
         VField { id: lmReason; objectName: "lmReason"; label: "Почему эта позиция"; required: true; placeholder: "Аналог по паспорту, исполнение 2 …" }
     }
     Cmd { id: cMatch; dialog: lineMatch }

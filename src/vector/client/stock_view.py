@@ -15,7 +15,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Optional
 
-from vector.core import stock
+from vector.core import money, stock
 
 from .calc_view import fmt_decimal
 
@@ -137,16 +137,71 @@ def _match_label(ln: dict) -> str:
     src = ln.get("match_source")
     if src == "auto":
         return "Сопоставлена автоматически (код и единица совпали)"
+    if src == "alias":
+        # Примечание автомата уже содержит «по другому обозначению X → позиция Y» (D-25).
+        return "Сопоставлена автоматически. " + (ln.get("auto_match_note") or "По другому обозначению.")
     if src == "manual":
         n = ln.get("match_count") or 1
         head = "Сопоставлена вручную" + (f" (решение №{n})" if n > 1 else "")
+        if ln.get("factor"):
+            head += f"; пересчёт 1 {ln['unit']} = {fmt_decimal(ln['factor'])} {ln.get('item_unit') or ''}".rstrip()
         return head + (": " + ln["match_reason"] if ln.get("match_reason") else "")
     return ""
 
 
-def needs_view(needs: list, candidates: list, items: list, last_pull: str, online: bool, roles: list) -> dict:
-    """Экран «Закупка»: потребности со строками и покрытием, кандидаты для формирования."""
+def conversion_for(item: dict, line_unit: str, conversions: list) -> Optional[dict]:
+    """Действующий пересчёт «line_unit → единица позиции»: сначала для самой позиции, затем общий.
+
+    Те же правила, что у сервера (_find_conversion). Это подсказка для формы; сервер всё равно сверит
+    коэффициент со справочником в момент решения и откажет, если его успели изменить (conversion_changed).
+    """
+    for want in (item["id"], None):
+        for c in conversions:
+            if (c.get("active") and c.get("item_id") == want and c.get("from_unit") == line_unit
+                    and c.get("to_unit") == item.get("unit")):
+                return c
+    return None
+
+
+def match_candidates(line: dict, items: list, conversions: list) -> list:
+    """Позиции, с которыми можно сопоставить строку: с той же единицей или с пересчётом из справочника (A-27).
+
+    Для позиции с пересчётом сразу считаем количество в её единицах — точно, как сервер (convert_qty). Неточный
+    пересчёт (больше 4 знаков) не скрываем, а помечаем problem: человек увидит, почему выбрать нельзя.
+    """
+    out = []
+    for i in items:
+        if i.get("active") is False or i["id"] == line.get("item_id"):
+            continue
+        base = {"id": i["id"], "label": f"{i['code']} · {i['name']}", "unit": i["unit"],
+                "conversion_id": "", "factor": "", "item_qty_label": "", "problem": ""}
+        if i["unit"] == line["unit"]:
+            out.append(base)
+            continue
+        c = conversion_for(i, line["unit"], conversions)
+        if c is None:
+            continue
+        rule = f"1 {line['unit']} = {fmt_decimal(c['factor'])} {i['unit']}"
+        try:
+            q = stock.convert_qty(_d(line["qty"]), _d(c["factor"]))
+            base.update(item_qty_label=qty_label(money.to_json(q), i["unit"]), problem="")
+        except stock.StockError as e:
+            base["problem"] = e.message_ru
+        base.update(label=f"{base['label']}  (пересчёт: {rule})", conversion_id=c["id"], factor=c["factor"], rule=rule)
+        out.append(base)
+    return out
+
+
+def needs_view(needs: list, candidates: list, items: list, last_pull: str, online: bool, roles: list,
+               conversions: Optional[list] = None, config: Optional[list] = None) -> dict:
+    """Экран «Закупка»: потребности со строками и покрытием, кандидаты для формирования.
+
+    conversions — справочник пересчёта (кандидаты для ручного решения); config — настройки компании: от
+    procurement.rematch_reserved_line зависит, предлагать ли «Изменить» у строки с резервом (D-26).
+    """
     it = {i["id"]: i for i in items}
+    conversions = conversions or []
+    rematch = setting_value(config or [], "procurement.rematch_reserved_line", "forbid")
     out = []
     for n in needs:
         lines = []
@@ -163,17 +218,26 @@ def needs_view(needs: list, candidates: list, items: list, last_pull: str, onlin
             else:
                 st, tone = "Остаток неизвестен", "neutral"
             unit = ln["unit"]
-            lines.append({**ln, "qty_label": qty_label(ln["qty"], unit), "reserved_label": qty_label(cov["reserved"], unit),
-                          "open_label": qty_label(cov["open"], unit),
-                          "available_label": qty_label(cov["available"], unit) if cov["available"] is not None else "неизвестно",
+            # Покрытие считает сервер в единицах ПОЗИЦИИ (при пересчёте они отличаются от единиц строки, A-27).
+            cu = ln.get("item_unit") or unit
+            reserved = _d(cov["reserved"])
+            lines.append({**ln, "qty_label": qty_label(ln["qty"], unit), "reserved_label": qty_label(cov["reserved"], cu),
+                          "item_qty_label": qty_label(ln.get("item_qty"), cu) if ln.get("factor") else "",
+                          "open_label": qty_label(cov["open"], cu),
+                          "available_label": qty_label(cov["available"], cu) if cov["available"] is not None else "неизвестно",
                           "state_label": st, "state_tone": tone,
                           "item_label": (it[ln["item_id"]]["code"] + " · " + it[ln["item_id"]]["name"]) if ln.get("item_id") in it
                           else ("сопоставлена" if ln.get("item_id") else ""),
-                          # Ручное сопоставление (A-25): чьё решение действует и можно ли его поменять. Поменять —
-                          # только пока под строку ничего не зарезервировано (сервер проверит то же самое).
+                          # Ручное сопоставление (A-25): чьё решение действует и можно ли его поменять. При резервах —
+                          # по настройке компании (D-26): «запрещено» → кнопки нет; «снимать» → есть, с предупреждением.
+                          # Выданное со склада и право снимать резервы проверит сервер.
                           "match_source": ln.get("match_source"),
                           "match_label": _match_label(ln),
-                          "can_rematch": _d(cov["reserved"]) == 0})
+                          "can_rematch": reserved == 0 or rematch == "release_active",
+                          "rematch_warning": ("Под строку зарезервировано " + qty_label(cov["reserved"], cu) + ". По настройке "
+                                              "компании действующие резервы будут сняты (нужно право склада снимать "
+                                              "резервы; выданное со склада не отменить).") if reserved > 0 else "",
+                          "match_candidates": match_candidates(ln, items, conversions)})
         open_count = sum(1 for x in lines if x["item_id"] and _d(x["coverage"]["open"]) > 0)
         out.append({**n, "lines": lines, "open_count": open_count,
                     "unmatched_count": sum(1 for x in lines if not x["item_id"]),
@@ -183,3 +247,50 @@ def needs_view(needs: list, candidates: list, items: list, last_pull: str, onlin
             "can_generate": "procurement" in roles and online, "can_reserve": "warehouse" in roles and online,
             "can_match": "procurement" in roles and online,
             "sees_stock": "warehouse" in roles or "procurement" in roles}
+
+
+def setting_value(config: list, key: str, default: str) -> str:
+    """Действующее значение настройки компании из снимка pull (сервер уже подставил strictest, если не задана)."""
+    for c in config:
+        if c.get("key") == key:
+            return c.get("value") or default
+    return default
+
+
+def directory_view(aliases: list, conversions: list, items: list, roles: list, online: bool) -> dict:
+    """Вкладка «Справочник» раздела «Склад»: другие обозначения позиций (D-25) и пересчёт единиц (A-27).
+
+    Вести справочник могут склад и закупка (A-27), только при связи; остальные (если видят склад) — читают.
+    """
+    it = {i["id"]: i for i in items}
+
+    def item_label(iid):
+        """«Код · наименование» позиции или «—», если позиции нет в снимке (например, удалённая из кэша)."""
+        i = it.get(iid)
+        return f"{i['code']} · {i['name']}" if i else "—"
+    al = [{**a, "item_label": item_label(a["item_id"]), "state_label": "Действует" if a["active"] else "Отключено",
+           "state_tone": "success" if a["active"] else "neutral"} for a in aliases]
+    cv = [{**c, "rule_label": f"1 {c['from_unit']} = {fmt_decimal(c['factor'])} {c['to_unit']}",
+           "scope_label": item_label(c["item_id"]) if c.get("item_id") else "Общий (любая позиция в «" + c["to_unit"] + "»)",
+           "state_label": "Действует" if c["active"] else "Отключён", "state_tone": "success" if c["active"] else "neutral"}
+          for c in conversions]
+    return {"aliases": al, "conversions": cv, "online": online,
+            "can_edit": online and ("warehouse" in roles or "procurement" in roles),
+            "items": [{"id": i["id"], "label": f"{i['code']} · {i['name']}", "unit": i["unit"]}
+                      for i in items if i.get("active") is not False]}
+
+
+def settings_view(config: list, roles: list, online: bool) -> dict:
+    """Раздел настроек в «Администрировании»: настройки компании, действующее значение, кто/когда/почему задал.
+
+    «Не задано» показывается явно: тогда действует самое строгое значение (07-configuration). Публикует только
+    администратор при связи (A-26); остальные видят, какие правила сейчас действуют.
+    """
+    out = []
+    for c in config:
+        labels = {v["value"]: v["label_ru"] for v in c.get("values", [])}
+        out.append({**c, "value_label": labels.get(c["value"], c["value"]),
+                    "state_label": "Задано" if c.get("is_set") else "Не задано — действует самое строгое",
+                    "state_tone": "info" if c.get("is_set") else "neutral",
+                    "options": [{"id": v["value"], "label": v["label_ru"]} for v in c.get("values", [])]})
+    return {"items": out, "can_publish": online and "admin" in roles}

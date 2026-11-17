@@ -11,6 +11,9 @@ Item {
     property var users: []
     property string state: "loading"
     property string selectedId: ""
+    property string tab: "users"
+    // Настройки компании (D-26, A-26) приходят снимком pull — видны и без загрузки списка пользователей.
+    readonly property var sv: backend.settingsOverview
     readonly property var sel: users.find(u => u.id === selectedId) || null
     function reload() { state = "loading"; backend.loadUsers("admin-users") }
     Component.onCompleted: reload()
@@ -29,16 +32,52 @@ Item {
         spacing: 20
         PageHeader {
             title: "Администрирование"
-            subtitle: "Учётные записи и роли доступа. Должность ≠ отдел ≠ роль доступа."
-            VButton { text: "Обновить"; iconName: "refresh-cw"; onClicked: page.reload() }
-            VButton { text: "Новый пользователь"; kind: "primary"; iconName: "user-plus"; enabled: backend.sessionMode === "online"; onClicked: createUser.open() }
+            subtitle: page.tab === "users" ? "Учётные записи и роли доступа. Должность ≠ отдел ≠ роль доступа."
+                                           : "Правила работы компании. Каждое изменение — новая версия с причиной; откат — публикация прежнего значения."
+            VButton { text: "Обновить"; iconName: "refresh-cw"; onClicked: { page.reload(); backend.syncNow() } }
+            VButton { visible: page.tab === "users"; text: "Новый пользователь"; kind: "primary"; iconName: "user-plus"; enabled: backend.sessionMode === "online"; onClicked: createUser.open() }
         }
-        Banner { visible: page.state === "offline"; tone: "warning"; text: "Администрирование требует связи с сервером." }
-        Banner { visible: page.state === "denied"; tone: "danger"; text: "Раздел доступен только администратору." }
+        VSegmented {
+            objectName: "adminTabs"
+            current: page.tab
+            onPicked: id => page.tab = id
+            model: [{ id: "users", label: "Пользователи", icon: "users" },
+                    { id: "settings", label: "Настройки компании", icon: "sliders-horizontal" }]
+        }
+        Banner { visible: page.tab === "users" && page.state === "offline"; tone: "warning"; text: "Администрирование требует связи с сервером." }
+        Banner { visible: page.tab === "users" && page.state === "denied"; tone: "danger"; text: "Раздел доступен только администратору." }
+
+        // ================================================================ Настройки компании
+        Banner { visible: page.tab === "settings" && page.sv.can_publish !== true; tone: "info"
+                 text: "Публиковать настройки может администратор при связи с сервером. Здесь видно, какие правила действуют сейчас." }
+        ListView {
+            objectName: "settingsList"
+            visible: page.tab === "settings"
+            Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 12
+            model: page.tab === "settings" ? (page.sv.items || []) : []
+            ScrollBar.vertical: ScrollBar {}
+            delegate: VCard {
+                width: ListView.view.width; implicitHeight: scol.implicitHeight + 36
+                ColumnLayout {
+                    id: scol
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 18; spacing: 6
+                    RowLayout { Layout.fillWidth: true; spacing: 10
+                        Text { text: modelData.label_ru; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsM; font.weight: Font.Bold; Layout.fillWidth: true; wrapMode: Text.Wrap }
+                        VChip { text: modelData.state_label; tone: modelData.state_tone }
+                        VButton { objectName: "btnPublish"; visible: page.sv.can_publish === true; text: "Изменить"; compact: true; kind: "soft"; iconName: "pencil"
+                                  onClicked: pub.openFor(modelData) } }
+                    Text { text: "Действует: " + modelData.value_label; color: Theme.primary; font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold }
+                    Text { text: modelData.description_ru || ""; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    Text { visible: modelData.is_set === true; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs; wrapMode: Text.Wrap; Layout.fillWidth: true
+                           text: "Версия " + modelData.version + " · " + (modelData.set_by || "") + " · " + (modelData.set_at || "").substring(0, 16).replace("T", " ") + " UTC · причина: " + (modelData.reason || "") }
+                    Text { visible: !!modelData.decision; text: "Решение: " + (modelData.decision || ""); color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs }
+                }
+            }
+        }
 
         RowLayout {
             Layout.fillWidth: true; Layout.fillHeight: true; spacing: 20
-            visible: page.state === "ready"
+            visible: page.tab === "users" && page.state === "ready"
             VCard {
                 Layout.fillWidth: true; Layout.fillHeight: true
                 ColumnLayout { anchors.fill: parent; anchors.margins: 12; spacing: 0
@@ -159,4 +198,30 @@ Item {
         VField { id: aReason; label: "Основание"; required: true }
     }
     Cmd { id: aCmd; dialog: act; tag: "adm-act" }
+
+    // Публикация настройки: новое значение + причина. Версия — та, что видел администратор (0 — не задавалась);
+    // если её успели изменить, сервер вернёт конфликт и форма покажет причину.
+    FormDialog {
+        id: pub
+        objectName: "publishForm"
+        property var item: null
+            title: item ? item.label_ru : ""
+        subtitle: item ? (item.is_set ? "Сейчас: " + item.value_label + " (версия " + item.version + ")." : "Не задано — действует самое строгое: " + item.value_label + ".") : ""
+        confirmText: "Опубликовать"
+        canConfirm: pValue.currentValue !== "" && pReason.text.trim() !== "" && (!item || !item.is_set || pValue.currentValue !== item.value)
+        function openFor(it) { item = it; pReason.text = ""; pValue.currentIndex = page.indexOfOpt(it.options, it.value); open() }
+        onConfirmed: { working = true; error = ""; backend.publishSetting("adm-config", item.key, pValue.currentValue, pReason.text.trim(), item.version) }
+        VSelect { id: pValue; objectName: "pValue"; label: "Значение"; model: pub.item ? pub.item.options : [] }
+        VField { id: pReason; objectName: "pReason"; label: "Причина изменения"; required: true; placeholder: "Решение совещания склада и закупки от …" }
+    }
+    function indexOfOpt(options, id) { for (var i = 0; i < options.length; i++) if (options[i].id === id) return i; return 0 }
+    Connections {
+        target: backend
+        function onCommandDone(t, r) {
+            if (t !== "adm-config") return
+            pub.working = false
+            if (r.status === "accepted") pub.close()
+            else pub.error = r.message_ru || "Не опубликовано."
+        }
+    }
 }
