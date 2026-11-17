@@ -1,5 +1,5 @@
 {
-  "contract": "workflows-slice1-v2",
+  "contract": "workflows-slice1-v3",
   "notes": "Переходы и условия — временные предположения A-02/A-05 (Decision Log). Статус меняется только явной командой.",
   "tender": {
     "initial": "draft",
@@ -107,5 +107,25 @@
     "code_unique_within": "project",
     "versions": "Версия документа неизменяема: файл, размер и SHA-256 фиксируются при добавлении; новая правка — новая версия с номером n+1.",
     "assumption": "A-15"
+  },
+  "stock_reservation": {
+    "initial": "active",
+    "terminal": [
+      "consumed",
+      "released"
+    ],
+    "transitions": {
+      "active": [
+        "consumed",
+        "released"
+      ]
+    },
+    "labels_ru": {
+      "active": "Действует",
+      "consumed": "Израсходован",
+      "released": "Снят"
+    },
+    "note": "consumed — автоматически, когда выдачи по резерву израсходовали его полностью; released — командой stock.release (неизрасходованное возвращается в доступное). Срок резерва не утверждён (A-23).",
+    "assumption": "A-23"
   }
 }

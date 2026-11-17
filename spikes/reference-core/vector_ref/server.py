@@ -126,6 +126,8 @@ OUT_OF_SPIKE_SCOPE = frozenset({
     "task.create", "task.update", "task.transition",
     "document.create", "document.update", "document.add_version",
     "calc.save_draft", "calc.freeze",
+    "warehouse.create", "warehouse.update", "item.create", "item.update",
+    "stock.receive", "stock.issue", "stock.reverse", "stock.reserve", "stock.release", "need.generate",
 })
 
 

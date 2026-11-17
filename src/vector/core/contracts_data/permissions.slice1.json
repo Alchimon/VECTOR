@@ -1,5 +1,5 @@
 {
-  "contract": "permissions-slice1-v4",
+  "contract": "permissions-slice1-v5",
   "notes": [
     "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
     "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -491,6 +491,107 @@
       ],
       "assumption": "A-18",
       "note": "Проектный итог: ГИП и РП проекта; бухгалтерия — суммы (матрица 04). Изменять итог не может никто — только вычисление при фиксации."
+    },
+    "stock.read": {
+      "any_of": [
+        {
+          "global_role": [
+            "warehouse",
+            "procurement"
+          ]
+        }
+      ],
+      "assumption": "A-21",
+      "note": "Остатки, резервы и журнал движений видят склад и закупка. Руководство проекта видит покрытие своей потребности (need.read)."
+    },
+    "warehouse.create": {
+      "any_of": [
+        {
+          "global_role": [
+            "warehouse"
+          ]
+        }
+      ],
+      "assumption": "A-20",
+      "note": "Справочник складов ведёт склад. Admin бизнес-прав не получает."
+    },
+    "warehouse.update": {
+      "same_as": "warehouse.create"
+    },
+    "item.create": {
+      "any_of": [
+        {
+          "global_role": [
+            "warehouse",
+            "procurement"
+          ]
+        }
+      ],
+      "assumption": "A-20",
+      "note": "Номенклатуру ведут склад и закупка."
+    },
+    "item.update": {
+      "same_as": "item.create"
+    },
+    "stock.receive": {
+      "any_of": [
+        {
+          "global_role": [
+            "warehouse"
+          ]
+        }
+      ],
+      "assumption": "A-21",
+      "note": "Матрица 04: «Складское движение — провести — G: warehouse»."
+    },
+    "stock.issue": {
+      "same_as": "stock.receive"
+    },
+    "stock.reverse": {
+      "same_as": "stock.receive"
+    },
+    "stock.reserve": {
+      "any_of": [
+        {
+          "global_role": [
+            "warehouse"
+          ]
+        }
+      ],
+      "assumption": "A-21",
+      "note": "Временно резервирует склад. Совместное решение «склад + закупка» (С4 шаг 4) и предложения перемещения — следующий шаг."
+    },
+    "stock.release": {
+      "same_as": "stock.reserve"
+    },
+    "need.generate": {
+      "any_of": [
+        {
+          "global_role": [
+            "procurement"
+          ]
+        }
+      ],
+      "assumption": "A-22",
+      "note": "Матрица 04: «Потребность/заказ — C/U — G: procurement». Формируется явным действием закупки, а не автоматически при фиксации."
+    },
+    "need.read": {
+      "any_of": [
+        {
+          "global_role": [
+            "procurement",
+            "warehouse"
+          ]
+        },
+        {
+          "project_role": [
+            "gip",
+            "rp"
+          ]
+        }
+      ],
+      "assumption": "A-22",
+      "note": "Строки потребности без цен. ГИП/РП видят потребности своего проекта."
     }
   }
 }

@@ -1,5 +1,5 @@
 {
-  "contract": "command-catalog-slice1-v4",
+  "contract": "command-catalog-slice1-v5",
   "offline_classes": {
     "offline_full": "Полностью доступно офлайн (чтение локального кэша, локальные черновики без эффекта для других).",
     "queued": "Создаёт локальное изменение в очереди синхронизации. До ответа сервера это НЕ подтверждённое действие; сервер заново проверяет права, состояние и версию.",
@@ -171,6 +171,65 @@
       "label_ru": "Зафиксировать расчёт комплекта",
       "requires_expected_version": true,
       "note": "Фиксирует ровно ту версию черновика, которую видел пользователь; создаёт неизменяемую версию K.n и новую ревизию проектного итога в той же транзакции."
+    },
+    "warehouse.create": {
+      "offline": "queued",
+      "object": "warehouse",
+      "label_ru": "Создать склад"
+    },
+    "warehouse.update": {
+      "offline": "queued",
+      "object": "warehouse",
+      "label_ru": "Изменить склад",
+      "requires_expected_version": true
+    },
+    "item.create": {
+      "offline": "queued",
+      "object": "stock_item",
+      "label_ru": "Создать позицию номенклатуры"
+    },
+    "item.update": {
+      "offline": "queued",
+      "object": "stock_item",
+      "label_ru": "Изменить позицию номенклатуры",
+      "requires_expected_version": true,
+      "note": "Единицу измерения нельзя менять, если по позиции уже есть остатки или движения (пересчёта единиц нет)."
+    },
+    "stock.receive": {
+      "offline": "online_required",
+      "object": "stock_movement",
+      "label_ru": "Провести приход",
+      "note": "Проведённое движение неизменяемо; ошибку исправляют сторно (stock.reverse)."
+    },
+    "stock.issue": {
+      "offline": "online_required",
+      "object": "stock_movement",
+      "label_ru": "Провести выдачу на проект",
+      "note": "Без резерва — только из доступного (остаток − резервы); по резерву — не больше неизрасходованной части. Проверка в транзакции."
+    },
+    "stock.reverse": {
+      "offline": "online_required",
+      "object": "stock_movement",
+      "label_ru": "Сторнировать движение",
+      "note": "Встречное движение со ссылкой на исходное; у движения не больше одного сторно."
+    },
+    "stock.reserve": {
+      "offline": "online_required",
+      "object": "stock_reservation",
+      "label_ru": "Зарезервировать на проект",
+      "note": "Только из доступного количества; резервы никогда не сливаются автоматически."
+    },
+    "stock.release": {
+      "offline": "online_required",
+      "object": "stock_reservation",
+      "label_ru": "Снять резерв",
+      "requires_expected_version": true
+    },
+    "need.generate": {
+      "offline": "online_required",
+      "object": "procurement_need",
+      "label_ru": "Сформировать потребность из зафиксированной версии",
+      "note": "Только из ПОСЛЕДНЕЙ зафиксированной версии расчёта комплекта; одна потребность на версию. Потребность — не заказ."
     }
   },
   "queries": {
