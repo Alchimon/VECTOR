@@ -94,3 +94,16 @@ def test_coverage_unknown_is_not_zero():
     unk = stock.coverage(D("10"), D("0"), None)
     assert unk["can_cover"] is None and unk["available"] is None
     assert stock.coverage(D("2"), D("3"), D("0"))["open"] == "0.0000"   # резерв больше нужного — «открыто» не отрицательное
+
+
+def test_convert_qty_is_exact_or_refuses():
+    from decimal import Decimal as D
+    from vector.core import stock as st
+    assert st.convert_qty(D("1.85"), D("1000")) == D("1850.0000")          # 1,85 км → 1850 м
+    assert st.convert_qty(D("7"), D("0.0833")) == D("0.5831")              # точный результат — принимается
+    with pytest.raises(st.StockError) as e:
+        st.convert_qty(D("0.5"), D("0.0001"))                               # 0,00005 — пятый знак
+    assert e.value.code == "conversion_inexact" and e.value.details["exact"] == "0.00005"
+    with pytest.raises(st.StockError) as e:
+        st.convert_qty(D("99999999999999"), D("1000"))
+    assert e.value.code == "out_of_range"

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from typing import Optional
 
 from . import money
@@ -96,6 +96,26 @@ class Balance:
         """Остаток для ответа сервера: три десятичные строки с 4 знаками (on_hand, reserved, available)."""
         return {"on_hand": money.to_json(self.on_hand), "reserved": money.to_json(self.reserved),
                 "available": money.to_json(self.available)}
+
+
+def convert_qty(qty: Decimal, factor: Decimal) -> Decimal:
+    """Количество строки потребности в единицах позиции: qty × factor (1 единица строки = factor единиц позиции).
+
+    Результат должен быть ТОЧНЫМ: не больше 4 знаков после запятой и в допустимом диапазоне. Иначе — ошибка
+    conversion_inexact: округлять количество за пользователя программа не будет (A-27, Q2). Пример: 7 шт при
+    «1 шт = 0,0833 упак» дают 0,5831 упак — точно; 1 шт при «1 шт = 0,33333 упак» — коэффициент уже недопустим.
+    """
+    with localcontext() as ctx:
+        ctx.prec = 60
+        exact = qty * factor
+        q = exact.quantize(Decimal("0.0001"))
+    if q != exact:
+        raise StockError("conversion_inexact", f"Пересчёт {_fmt(qty)} × {_fmt(factor)} = {exact.normalize():f} — больше 4 знаков "
+                         "после запятой. Округление не выполняется: проверьте коэффициент или единицы.",
+                         {"exact": f"{exact.normalize():f}"})
+    if q > money.MAX_ABS:
+        raise StockError("out_of_range", "Пересчитанное количество вне допустимого диапазона.")
+    return q
 
 
 def _fmt(d: Decimal) -> str:

@@ -41,10 +41,10 @@ from typing import Any, Optional
 import sqlalchemy as sa
 
 from vector.core import money, stock
-from vector.core.errors import Conflict, Rejected
+from vector.core.errors import Conflict, Denied, Rejected
 
-from .db import (calc_version_lines, calc_versions, kits, procurement_need_line_matches, procurement_need_lines,
-                 procurement_needs, projects,
+from .db import (calc_version_lines, calc_versions, item_aliases, kits, procurement_need_line_match_units,
+                 procurement_need_line_matches, procurement_need_lines, procurement_needs, projects, unit_conversions,
                  stock_balances, stock_items, stock_movements, stock_reservations, warehouses)
 from .validation import iso, only_keys, opt_str, req_str, req_uuid
 
@@ -96,6 +96,19 @@ class StockMixin:
         """Позиция номенклатуры для клиента: код, название, единица, примечание, действует ли, версия."""
         return {"id": o["id"], "code": o["code"], "name": o["name"], "unit": o["unit"], "note": o["note"],
                 "active": bool(o["active"]), "version": o["version"], "updated_at": iso(o["updated_at"])}
+
+    @staticmethod
+    def v_alias(o: dict) -> dict:
+        """Другое обозначение позиции (аналог, D-25) для клиента."""
+        return {"id": o["id"], "item_id": o["item_id"], "alias": o["alias"], "note": o["note"], "active": bool(o["active"]),
+                "version": o["version"], "updated_at": iso(o["updated_at"])}
+
+    @staticmethod
+    def v_conversion(o: dict) -> dict:
+        """Пересчёт единиц для клиента: «1 from_unit = factor to_unit», общий (item_id = None) или для позиции."""
+        return {"id": o["id"], "item_id": o["item_id"], "from_unit": o["from_unit"], "to_unit": o["to_unit"],
+                "factor": money.to_json(o["factor"]), "note": o["note"], "active": bool(o["active"]),
+                "version": o["version"], "updated_at": iso(o["updated_at"])}
 
     @staticmethod
     def v_balance(o: dict) -> dict:
@@ -219,6 +232,136 @@ class StockMixin:
         n = self._update_versioned(ctx, stock_items, o, {**ch, "updated_by": ctx.user_id, "updated_at": ctx.now})
         ctx.log("stock_item", o["id"], auth, o["version"], n["version"], {"before": before, "after": ch})
         return {"stock_item": self.v_item(n)}
+
+    # ------------------------------------------------------------ справочник аналогов и пересчёта (D-25, A-27)
+    def _alias_text(self, ctx, p, exclude_id: Optional[str] = None) -> str:
+        """Другое обозначение из запроса: непустое, ≤ 100 символов, не совпадает с кодом позиции номенклатуры и с
+        другим обозначением. Иначе одно обозначение указывало бы на две позиции — автомат сопоставлял бы наугад.
+        """
+        alias = req_str(p, "alias", 100).strip()
+        if not alias:
+            raise Rejected("field_required", "Поле «alias» обязательно.", {"field": "alias"})
+        if self._get(ctx.conn, stock_items, alias, "code"):
+            raise Rejected("alias_is_code", f"«{alias}» — уже код позиции номенклатуры; другим обозначением он быть не может.",
+                           {"field": "alias"})
+        dup = self._get(ctx.conn, item_aliases, alias, "alias")
+        if dup and dup["id"] != exclude_id:
+            it = self._get(ctx.conn, stock_items, dup["item_id"])
+            raise Rejected("alias_exists", f"Обозначение «{alias}» уже относится к позиции «{it['code']}».", {"field": "alias"})
+        return alias
+
+    def _item_alias_create(self, ctx, p, ev):
+        """item_alias.create {id, item_id, alias, note?} — другое обозначение позиции (аналог). Только при связи.
+
+        По нему need.generate сопоставляет строку расчёта автоматически, если единица строки совпадает с единицей
+        позиции (иначе строка остаётся для ручного решения закупки с пересчётом).
+        """
+        only_keys(p, {"id", "item_id", "alias", "note"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "item_alias.create", ctx.now)
+        aid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, item_aliases, aid)
+        it = self._require(ctx.conn, stock_items, req_uuid(p, "item_id"), "Номенклатура")
+        alias = self._alias_text(ctx, p)
+        ctx.conn.execute(item_aliases.insert().values(
+            id=aid, item_id=it["id"], alias=alias, note=opt_str(p, "note", 500), active=True, version=1,
+            created_by=ctx.user_id, created_at=ctx.now, updated_by=ctx.user_id, updated_at=ctx.now))
+        ctx.log("item_alias", aid, auth, None, 1, {"item_code": it["code"], "alias": alias})
+        return {"item_alias": self.v_alias(self._get(ctx.conn, item_aliases, aid))}
+
+    def _item_alias_update(self, ctx, p, ev):
+        """item_alias.update {id, alias?, note?, active?} + версия. Позицию у обозначения не меняют — заведите новое
+        (иначе история «это обозначение значило X» потерялась бы).
+        """
+        only_keys(p, {"id", "alias", "note", "active"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "item_alias.update", ctx.now)
+        o = self._require(ctx.conn, item_aliases, req_uuid(p, "id"), "Обозначение")
+        self._check_version(o, ev, self.v_alias)
+        ch: dict[str, Any] = {}
+        if "alias" in p:
+            ch["alias"] = self._alias_text(ctx, p, exclude_id=o["id"])
+        if "note" in p:
+            ch["note"] = opt_str(p, "note", 500)
+        if "active" in p:
+            ch["active"] = _bool(p, "active")
+        ch = {k: v for k, v in ch.items() if v != (bool(o[k]) if k == "active" else o[k])}
+        if not ch:
+            raise Rejected("no_changes", "Нет изменений.")
+        before = {k: (bool(o[k]) if k == "active" else o[k]) for k in ch}
+        n = self._update_versioned(ctx, item_aliases, o, {**ch, "updated_by": ctx.user_id, "updated_at": ctx.now})
+        ctx.log("item_alias", o["id"], auth, o["version"], n["version"], {"before": before, "after": ch})
+        return {"item_alias": self.v_alias(n)}
+
+    def _unit_conversion_create(self, ctx, p, ev):
+        """unit_conversion.create {id, from_unit, to_unit, factor, item_id?, note?} — «1 from_unit = factor to_unit».
+
+        item_id не указан — общий пересчёт («км → м» = 1000) для любой позиции в to_unit; указан — только для этой
+        позиции, и to_unit обязан быть её единицей. Коэффициент — Decimal > 0, ≤ 4 знаков (A-27); пара единиц
+        уникальна в своей области (общий / позиция).
+        """
+        only_keys(p, {"id", "from_unit", "to_unit", "factor", "item_id", "note"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "unit_conversion.create", ctx.now)
+        cid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, unit_conversions, cid)
+        fu, tu = req_str(p, "from_unit", 20).strip(), req_str(p, "to_unit", 20).strip()
+        if not fu or not tu:
+            raise Rejected("field_required", "Укажите обе единицы.", {"field": "from_unit" if not fu else "to_unit"})
+        if fu == tu:
+            raise Rejected("units_same", "Единицы совпадают — пересчёт не нужен.", {"field": "to_unit"})
+        factor = _qty(p, "factor")
+        it = None
+        if p.get("item_id") is not None:
+            it = self._require(ctx.conn, stock_items, req_uuid(p, "item_id"), "Номенклатура")
+            if it["unit"] != tu:
+                raise Rejected("to_unit_mismatch", f"Единица позиции «{it['code']}» — «{it['unit']}»; пересчёт для позиции "
+                               f"должен вести в неё, а не в «{tu}».", {"field": "to_unit"})
+        key = it["id"] if it else "*"
+        dup = ctx.conn.execute(sa.select(unit_conversions.c.id).where(
+            unit_conversions.c.item_key == key, unit_conversions.c.from_unit == fu, unit_conversions.c.to_unit == tu)).first()
+        if dup:
+            raise Rejected("conversion_exists", f"Пересчёт «{fu} → {tu}»" + (f" для «{it['code']}»" if it else "") +
+                           " уже есть — измените его, а не заводите второй.", {"conversion_id": dup.id})
+        ctx.conn.execute(unit_conversions.insert().values(
+            id=cid, item_id=it["id"] if it else None, item_key=key, from_unit=fu, to_unit=tu, factor=factor,
+            note=opt_str(p, "note", 500), active=True, version=1, created_by=ctx.user_id, created_at=ctx.now,
+            updated_by=ctx.user_id, updated_at=ctx.now))
+        ctx.log("unit_conversion", cid, auth, None, 1, {"from_unit": fu, "to_unit": tu, "factor": money.to_json(factor),
+                                                         "item_code": it["code"] if it else None})
+        return {"unit_conversion": self.v_conversion(self._get(ctx.conn, unit_conversions, cid))}
+
+    def _unit_conversion_update(self, ctx, p, ev):
+        """unit_conversion.update {id, factor?, note?, active?} + версия. Единицы и позицию не меняют — это уже
+        другой пересчёт. Принятые решения о сопоставлении не меняются: их коэффициент зафиксирован (A-27).
+        """
+        only_keys(p, {"id", "factor", "note", "active"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "unit_conversion.update", ctx.now)
+        o = self._require(ctx.conn, unit_conversions, req_uuid(p, "id"), "Пересчёт единиц")
+        self._check_version(o, ev, self.v_conversion)
+        ch: dict[str, Any] = {}
+        if "factor" in p:
+            ch["factor"] = _qty(p, "factor")
+        if "note" in p:
+            ch["note"] = opt_str(p, "note", 500)
+        if "active" in p:
+            ch["active"] = _bool(p, "active")
+        ch = {k: v for k, v in ch.items() if v != (bool(o[k]) if k == "active" else o[k])}
+        if not ch:
+            raise Rejected("no_changes", "Нет изменений.")
+        fmt = lambda k, v: money.to_json(v) if k == "factor" else v  # noqa: E731
+        before = {k: fmt(k, bool(o[k]) if k == "active" else o[k]) for k in ch}
+        n = self._update_versioned(ctx, unit_conversions, o, {**ch, "updated_by": ctx.user_id, "updated_at": ctx.now})
+        ctx.log("unit_conversion", o["id"], auth, o["version"], n["version"],
+                {"before": before, "after": {k: fmt(k, v) for k, v in ch.items()}})
+        return {"unit_conversion": self.v_conversion(n)}
+
+    def _find_conversion(self, conn, item: dict, from_unit: str) -> Optional[dict]:
+        """Действующий пересчёт из from_unit в единицу позиции: сначала для самой позиции, затем общий."""
+        for key in (item["id"], "*"):
+            r = conn.execute(sa.select(unit_conversions).where(
+                unit_conversions.c.item_key == key, unit_conversions.c.from_unit == from_unit,
+                unit_conversions.c.to_unit == item["unit"], unit_conversions.c.active == sa.true())).mappings().first()
+            if r:
+                return dict(r)
+        return None
 
     # ------------------------------------------------------------ остаток (строка с версией)
     def _wh_item(self, ctx, p, for_new_stock: bool) -> tuple[dict, dict]:
@@ -411,13 +554,16 @@ class StockMixin:
                 raise Rejected("not_found", "Строка потребности не найдена.", {"field": "need_line_id"})
             if need["project_id"] != pr["id"]:
                 raise Rejected("need_mismatch", "Потребность относится к другому проекту.")
-            line_item = self._line_items(ctx.conn, need["id"]).get(line_id, ln.item_id)
+            m = self._line_matches(ctx.conn, need["id"]).get(line_id)
+            line_item = m["item_id"] if m else ln.item_id
+            factor = m["factor"] if m else Decimal(1)
             if line_item is None:
                 raise Rejected("need_line_unmatched", "Строка потребности не сопоставлена с номенклатурой — резерв под неё "
                                "невозможен. " + (ln.match_note or ""))
             if line_item != it["id"]:
                 raise Rejected("need_mismatch", "Строка потребности относится к другой позиции номенклатуры.")
-            open_qty = ln.qty - self._need_line_covered(ctx.conn, need["id"], line_id)
+            # Покрытие считается в единицах позиции: количество строки × зафиксированный коэффициент (A-27).
+            open_qty = stock.convert_qty(ln.qty, factor) - self._need_line_covered(ctx.conn, need["id"], line_id)
             if qty > open_qty:
                 # Резерв «про запас» сверх потребности — отдельное решение, а не побочный эффект (A-23).
                 raise Rejected("exceeds_need", f"По строке потребности осталось покрыть {money.to_json(max(open_qty, Decimal(0)))}, "
@@ -451,6 +597,16 @@ class StockMixin:
         reason = req_str(p, "reason", 2000)
         if res["status"] != "active":
             raise Rejected("reservation_state", f"Резерв уже {stock.RESERVATION_LABELS_RU[res['status']].lower()}.")
+        n, nb = self._release_reservation(ctx, res, reason, auth)
+        return {"reservation": self.v_reservation(n),
+                "balance": {"warehouse_id": res["warehouse_id"], "item_id": res["item_id"], **nb.to_json()}}
+
+    def _release_reservation(self, ctx, res: dict, reason: str, auth, extra: Optional[dict] = None):
+        """Снять действующий резерв (общая часть stock.release и пересопоставления с release_active, D-26).
+
+        Неизрасходованное возвращается в доступное, резерв получает «Снят» с причиной; запись аудита — на сам резерв.
+        Вызывающий уже проверил права и состояние «active». Возвращает (новая строка резерва, новый баланс).
+        """
         remaining = res["qty"] - res["consumed"]
         row, b = self._load_balance(ctx.conn, res["warehouse_id"], res["item_id"])
         try:
@@ -461,9 +617,9 @@ class StockMixin:
         n = self._update_versioned(ctx, stock_reservations, res, {"status": "released", "close_reason": reason,
                                                                  "updated_by": ctx.user_id, "updated_at": ctx.now})
         ctx.log("stock_reservation", res["id"], auth, res["version"], n["version"],
-                {"status": "released", "released": money.to_json(remaining), "reason": reason, "balance_after": nb.to_json()})
-        return {"reservation": self.v_reservation(n),
-                "balance": {"warehouse_id": res["warehouse_id"], "item_id": res["item_id"], **nb.to_json()}}
+                {"status": "released", "released": money.to_json(remaining), "reason": reason, "balance_after": nb.to_json(),
+                 **(extra or {})})
+        return n, nb
 
     # ------------------------------------------------------------ потребность
     def _need_generate(self, ctx, p, ev):
@@ -485,11 +641,18 @@ class StockMixin:
                            "потребность формируется по последней.", {"latest_version_id": last["id"],
                                                                      "latest_version_no": last["version_no"]})
         items = {r.code: dict(r._mapping) for r in ctx.conn.execute(sa.select(stock_items))}
+        by_id = {it["id"]: it for it in items.values()}
+        # Другие обозначения (D-25): действующие, у действующих позиций. Код позиции важнее обозначения.
+        aliases = {r.alias: by_id[r.item_id] for r in ctx.conn.execute(sa.select(item_aliases).where(item_aliases.c.active == sa.true()))
+                   if r.item_id in by_id}
         rows, matched = [], 0
         for r in ctx.conn.execute(sa.select(calc_version_lines).where(calc_version_lines.c.version_id == cv["id"])
                                   .order_by(calc_version_lines.c.pos)):
             item_id, note = None, None
             it = items.get(r.code) if r.code else None
+            via_alias = it is None and bool(r.code) and r.code in aliases
+            if via_alias:
+                it = aliases[r.code]
             if not r.code:
                 note = "Нет обозначения — сопоставить с номенклатурой автоматически нельзя."
             elif it is None:
@@ -498,6 +661,11 @@ class StockMixin:
                 note = f"Позиция номенклатуры «{r.code}» отключена."
             elif it["unit"] != r.unit:
                 note = f"Единица «{r.unit}» не совпадает с единицей номенклатуры «{it['unit']}» — пересчёт не выполняется."
+            elif via_alias:
+                # Сопоставлена по другому обозначению: примечание сохраняем — по нему видно, ПОЧЕМУ так (match_source
+                # «alias» в v_need). У точных совпадений по коду примечания нет.
+                item_id, matched = it["id"], matched + 1
+                note = f"По другому обозначению «{r.code}» → позиция «{it['code']}»."
             else:
                 item_id, matched = it["id"], matched + 1
             rows.append({"need_id": nid, "pos": r.pos, "line_id": r.line_id, "code": r.code, "name": r.name,
@@ -519,11 +687,15 @@ class StockMixin:
         """Действующие ручные сопоставления строк потребности: line_id → последняя запись (наибольший seq)
         с полем count — сколько всего было ручных решений по строке (для истории в интерфейсе).
         """
+        m, u = procurement_need_line_matches, procurement_need_line_match_units
         out: dict[str, dict] = {}
-        for r in conn.execute(sa.select(procurement_need_line_matches)
-                              .where(procurement_need_line_matches.c.need_id == need_id)
-                              .order_by(procurement_need_line_matches.c.line_id, procurement_need_line_matches.c.seq)):
-            out[r.line_id] = {**dict(r._mapping), "count": r.seq}
+        for r in conn.execute(sa.select(m, u.c.factor, u.c.line_unit, u.c.item_unit)
+                              .select_from(m.outerjoin(u, u.c.match_id == m.c.id))
+                              .where(m.c.need_id == need_id).order_by(m.c.line_id, m.c.seq)):
+            row = dict(r._mapping)
+            # Нет записи о пересчёте — единицы совпадали, коэффициент 1.
+            row["factor"] = row["factor"] if row["factor"] is not None else Decimal(1)
+            out[r.line_id] = {**row, "count": r.seq}
         return out
 
     def _line_items(self, conn, need_id: str) -> dict[str, str]:
@@ -533,23 +705,28 @@ class StockMixin:
         return {lid: m["item_id"] for lid, m in self._line_matches(conn, need_id).items()}
 
     def _need_match_line(self, ctx, p, ev):
-        """need.match_line {id, need_id, line_id, item_id, reason} + версия потребности — сопоставить строку
-        потребности с позицией номенклатуры вручную (A-25, временное предположение).
+        """need.match_line {id, need_id, line_id, item_id, reason, conversion_id?, factor?} + версия потребности —
+        сопоставить строку потребности с позицией номенклатуры вручную (A-25, D-24..D-26, A-27).
 
-        Зачем: автомат сопоставляет только по ТОЧНОМУ совпадению обозначения и единицы (A-22). Строка без
-        обозначения или с обозначением, которого нет в номенклатуре, остаётся «Не сопоставлена» — под неё
-        нельзя резервировать. Закупка решает, какая позиция подходит, и записывает почему.
+        Зачем: автомат сопоставляет по точному коду или другому обозначению и только при совпадении единиц (A-22,
+        D-25). Остальное решает закупка (D-24) и записывает почему.
 
         Правила (каждое закреплено тестом):
         * только закупка (право need.match_line в проекте потребности), только при связи;
-        * единица позиции = единица строки — пересчёт единиц не придумываем (коэффициентов нет);
-        * позиция действующая (не отключена) и отличается от того, что действует сейчас;
-        * пересопоставить можно, только пока под строку нет резервов (ни действующих, ни израсходованных):
-          иначе покрытие «поплывёт» между позициями. Сначала снять резервы (stock.release);
+        * позиция действующая и отличается от той, что действует сейчас;
+        * единицы совпадают — пересчёт не нужен (conversion_id/factor передавать нельзя);
+        * единицы разные — нужен действующий пересчёт «единица строки → единица позиции» из справочника (A-27).
+          Клиент присылает conversion_id и factor, КОТОРЫЙ ПОКАЗАЛ пользователю; если в справочнике уже другой
+          коэффициент (его изменили) — отказ conversion_changed: человек подтверждал другое число. Пересчитанное
+          количество — точное (≤ 4 знаков), иначе conversion_inexact. Коэффициент фиксируется в решении навсегда;
+        * под строку есть резервы — действует настройка procurement.rematch_reserved_line (D-26):
+          «forbid» (и если не задана) — отказ need_line_reserved; «release_active» — действующие резервы снимаются
+          с причиной из решения, но только если у пользователя ЕСТЬ право stock.release: настройка не расширяет
+          права. Израсходованное (выдано со склада) не отменить — при нём отказ всегда;
         * expected_version потребности — два закупщика не перезапишут решения друг друга молча;
-        * запись неизменяема; новая запись получает следующий seq, прежние остаются историей.
+        * записи неизменяемы; новая получает следующий seq, прежние остаются историей.
         """
-        only_keys(p, {"id", "need_id", "line_id", "item_id", "reason"})
+        only_keys(p, {"id", "need_id", "line_id", "item_id", "reason", "conversion_id", "factor"})
         need = self._require(ctx.conn, procurement_needs, req_uuid(p, "need_id"), "Потребность")
         auth = self.policy.check(ctx.conn, ctx.user_id, "need.match_line", ctx.now, project_id=need["project_id"])
         self._check_version(need, ev, lambda o: self.v_need(ctx.conn, o, with_stock=True))
@@ -565,22 +742,19 @@ class StockMixin:
         if not it["active"]:
             raise Rejected("item_inactive", f"Позиция «{it['code']}» отключена — сопоставлять с ней нельзя.",
                            {"field": "item_id"})
-        if it["unit"] != ln.unit:
-            raise Rejected("unit_mismatch", f"Единица строки «{ln.unit}» не совпадает с единицей позиции «{it['unit']}». "
-                           "Пересчёт единиц не выполняется — выберите позицию с той же единицей.", {"field": "item_id"})
+        conv, factor, item_qty = self._match_conversion(ctx.conn, p, ln, it)
         matches = self._line_matches(ctx.conn, need["id"])
         current = matches[line_id]["item_id"] if line_id in matches else ln.item_id
         if current == it["id"]:
             raise Rejected("already_matched", "Строка уже сопоставлена с этой позицией.", {"field": "item_id"})
-        covered = self._need_line_covered(ctx.conn, need["id"], line_id)
-        if covered > 0:
-            raise Rejected("need_line_reserved", f"Под строку уже зарезервировано {money.to_json(covered)} {ln.unit} — "
-                           "пересопоставить нельзя. Сначала снимите резервы по этой строке.",
-                           {"reserved": money.to_json(covered)})
+        released = self._rematch_reserves(ctx, need, ln, matches.get(line_id), reason)
         seq = matches[line_id]["count"] + 1 if line_id in matches else 1
         ctx.conn.execute(procurement_need_line_matches.insert().values(
             id=mid, need_id=need["id"], line_id=line_id, seq=seq, item_id=it["id"], previous_item_id=current,
             reason=reason, matched_by=ctx.user_id, matched_at=ctx.now))
+        if conv is not None:
+            ctx.conn.execute(procurement_need_line_match_units.insert().values(
+                match_id=mid, conversion_id=conv["id"], line_unit=ln.unit, item_unit=it["unit"], factor=factor))
         # Число сопоставленных строк — производное поле потребности; версия растёт, чтобы параллельная правка
         # другой строки той же потребности получила конфликт, а не «старую» картину.
         items_now = {**{r.line_id: r.item_id for r in ctx.conn.execute(
@@ -590,10 +764,79 @@ class StockMixin:
         n = self._update_versioned(ctx, procurement_needs, need, {"matched_count": matched,
                                                                   "updated_by": ctx.user_id, "updated_at": ctx.now})
         prev_code = self._get(ctx.conn, stock_items, current)["code"] if current else None
-        ctx.log("procurement_need", need["id"], auth, need["version"], n["version"],
-                {"line_id": line_id, "line_code": ln.code, "line_name": ln.name, "item_code": it["code"],
-                 "previous_item_code": prev_code, "seq": seq, "matched_count": matched, "reason": reason})
+        details = {"line_id": line_id, "line_code": ln.code, "line_name": ln.name, "item_code": it["code"],
+                   "previous_item_code": prev_code, "seq": seq, "matched_count": matched, "reason": reason}
+        if conv is not None:
+            details.update({"conversion_id": conv["id"], "factor": money.to_json(factor), "line_unit": ln.unit,
+                            "item_unit": it["unit"], "item_qty": money.to_json(item_qty)})
+        if released:
+            details["released_reservations"] = released
+        ctx.log("procurement_need", need["id"], auth, need["version"], n["version"], details)
         return {"need": self.v_need(ctx.conn, n, with_stock=True)}
+
+    def _match_conversion(self, conn, p: dict, ln, it: dict):
+        """Проверка единиц ручного решения. Возвращает (пересчёт | None, коэффициент, количество в единицах позиции)."""
+        given = "conversion_id" in p or "factor" in p
+        if it["unit"] == ln.unit:
+            if given:
+                raise Rejected("conversion_not_needed", "Единицы строки и позиции совпадают — пересчёт не нужен.",
+                               {"field": "conversion_id"})
+            return None, Decimal(1), ln.qty
+        conv = self._find_conversion(conn, it, ln.unit)
+        if conv is None:
+            raise Rejected("unit_mismatch", f"Единица строки «{ln.unit}» не совпадает с единицей позиции «{it['unit']}», "
+                           f"а пересчёта «{ln.unit} → {it['unit']}» в справочнике нет. Заведите его (Склад → Справочник "
+                           "пересчёта) или выберите позицию с той же единицей.", {"field": "item_id"})
+        if not given:
+            raise Rejected("conversion_required", f"Нужно подтвердить пересчёт «1 {ln.unit} = "
+                           f"{money.to_json(conv['factor'])} {it['unit']}».", {"field": "factor",
+                                                                                "conversion": self.v_conversion(conv)})
+        factor = _qty(p, "factor")
+        if p.get("conversion_id") != conv["id"] or factor != conv["factor"]:
+            raise Rejected("conversion_changed", "Пересчёт в справочнике отличается от показанного вам (его изменили). "
+                           "Проверьте новый коэффициент и подтвердите заново.", {"field": "factor",
+                                                                                "conversion": self.v_conversion(conv)})
+        try:
+            item_qty = stock.convert_qty(ln.qty, factor)
+        except stock.StockError as e:
+            raise _stock_rejected(e)
+        return conv, factor, item_qty
+
+    def _rematch_reserves(self, ctx, need: dict, ln, match: Optional[dict], reason: str) -> list[dict]:
+        """Резервы под строку при пересопоставлении — по настройке procurement.rematch_reserved_line (D-26).
+
+        Возвращает список снятых резервов (для аудита решения); пустой — резервов не было.
+        """
+        res_rows = [dict(r) for r in ctx.conn.execute(sa.select(stock_reservations).where(
+            stock_reservations.c.need_id == need["id"], stock_reservations.c.need_line_id == ln.line_id,
+            stock_reservations.c.status != "released")).mappings()]
+        if not res_rows:
+            return []
+        unit = self._get(ctx.conn, stock_items, res_rows[0]["item_id"])["unit"]
+        covered = sum((r["consumed"] + (r["qty"] - r["consumed"] if r["status"] == "active" else 0) for r in res_rows),
+                      Decimal(0))
+        consumed = sum((r["consumed"] for r in res_rows), Decimal(0))
+        mode = self.config_value(ctx.conn, "procurement.rematch_reserved_line")
+        if consumed > 0:
+            raise Rejected("need_line_consumed", f"По строке уже выдано со склада {money.to_json(consumed)} {unit} — "
+                           "пересопоставить нельзя: выданное не отменить сменой позиции.",
+                           {"consumed": money.to_json(consumed), "reserved": money.to_json(covered)})
+        if mode != "release_active":
+            raise Rejected("need_line_reserved", f"Под строку уже зарезервировано {money.to_json(covered)} {unit} — "
+                           "пересопоставить нельзя (настройка «Пересопоставление при резервах»: запрещено). "
+                           "Сначала снимите резервы по этой строке.", {"reserved": money.to_json(covered), "setting": mode})
+        try:
+            rel_auth = self.policy.check(ctx.conn, ctx.user_id, "stock.release", ctx.now)
+        except Denied:
+            raise Rejected("need_line_reserved", f"Под строку зарезервировано {money.to_json(covered)} {unit}. Настройка "
+                           "разрешает снять резервы при пересопоставлении, но права снимать резервы у вас нет — "
+                           "попросите склад снять их.", {"reserved": money.to_json(covered), "setting": mode})
+        out = []
+        for r in res_rows:
+            self._release_reservation(ctx, r, f"Пересопоставление строки потребности: {reason}", rel_auth,
+                                      {"by_rematch": True, "need_id": need["id"], "need_line_id": ln.line_id})
+            out.append({"id": r["id"], "released": money.to_json(r["qty"] - r["consumed"])})
+        return out
 
     def v_need(self, conn, o: dict, with_stock: bool, available: Optional[dict] = None) -> dict:
         """Потребность со строками и покрытием. with_stock=False — «доступно» неизвестно (нет права stock.read)."""
@@ -606,16 +849,23 @@ class StockMixin:
             # Действующая позиция: ручное решение закупки (A-25) важнее автоматического из снимка.
             m = matches.get(r.line_id)
             item_id = m["item_id"] if m else r.item_id
-            source = "manual" if m else ("auto" if r.item_id else None)
+            # Источник: ручное решение / автомат по коду / автомат по другому обозначению (у него есть примечание).
+            source = "manual" if m else (("alias" if r.match_note else "auto") if r.item_id else None)
+            # Покрытие — в единицах позиции: при ручном решении с пересчётом количество = qty × зафиксированный
+            # коэффициент (A-27). Он был проверен на точность в момент решения, поэтому здесь ошибки быть не может.
+            factor = m["factor"] if m else Decimal(1)
+            item_qty = stock.convert_qty(r.qty, factor)
             avail = available.get(item_id, Decimal(0)) if (with_stock and item_id) else None
-            cov = stock.coverage(r.qty, self._need_line_covered(conn, o["id"], r.line_id), avail)
+            cov = stock.coverage(item_qty, self._need_line_covered(conn, o["id"], r.line_id), avail)
             lines.append({"pos": r.pos, "line_id": r.line_id, "code": r.code, "name": r.name, "unit": r.unit,
                           "qty": money.to_json(r.qty), "item_id": item_id,
                           "match_note": None if item_id else r.match_note, "match_source": source,
                           "auto_match_note": r.match_note,
                           "match_reason": m["reason"] if m else None, "matched_by": m["matched_by"] if m else None,
                           "matched_at": iso(m["matched_at"]) if m else None, "match_count": m["count"] if m else 0,
-                          "coverage": cov})
+                          "factor": money.to_json(factor) if (m and m["line_unit"]) else None,
+                          "item_unit": m["item_unit"] if (m and m["line_unit"]) else r.unit,
+                          "item_qty": money.to_json(item_qty), "coverage": cov})
         last = self._latest_version(conn, o["kit_id"])
         kit, pr = self._get(conn, kits, o["kit_id"]), self._get(conn, projects, o["project_id"])
         return {"id": o["id"], "project_id": o["project_id"], "project_code": pr["code"], "project_title": pr["title"],
@@ -644,11 +894,15 @@ class StockMixin:
         """
         out: dict[str, Any] = {"warehouses": [], "stock_items": [], "stock_balances": [], "stock_reservations": [],
                                "stock_movements": [], "stock_movements_truncated": False, "needs": [], "stock_projects": [],
-                               "need_candidates": []}
+                               "need_candidates": [], "item_aliases": [], "unit_conversions": []}
         can_stock = self.policy.can(conn, uid, "stock.read", now)
         if can_stock:
             out["warehouses"] = [self.v_warehouse(dict(r._mapping)) for r in conn.execute(sa.select(warehouses).order_by(warehouses.c.code))]
             out["stock_items"] = [self.v_item(dict(r._mapping)) for r in conn.execute(sa.select(stock_items).order_by(stock_items.c.code))]
+            # Справочник аналогов и пересчёта единиц (D-25, A-27) — тем же, кто видит номенклатуру.
+            out["item_aliases"] = [self.v_alias(dict(r._mapping)) for r in conn.execute(sa.select(item_aliases).order_by(item_aliases.c.alias))]
+            out["unit_conversions"] = [self.v_conversion(dict(r._mapping)) for r in conn.execute(
+                sa.select(unit_conversions).order_by(unit_conversions.c.from_unit, unit_conversions.c.to_unit))]
             out["stock_balances"] = [self.v_balance(dict(r._mapping)) for r in conn.execute(
                 sa.select(stock_balances).order_by(stock_balances.c.warehouse_id, stock_balances.c.item_id))]
             out["stock_reservations"] = [self.v_reservation(dict(r._mapping)) for r in conn.execute(

@@ -28,6 +28,7 @@ from vector.core.errors import CommandOutcome, Conflict, Denied, Rejected, Unaut
 from . import db, security
 from .authz import Authority, Policy, active_grants, grant_is_active
 from .calc import CalcMixin
+from .config_store import ConfigMixin
 from .stock import StockMixin
 from .work import WorkMixin
 from .db import audit_log, customers, kits, operations, project_assignments, projects, role_grants, sessions, tenders, tkp, tkp_approvals, users
@@ -79,9 +80,9 @@ class Ctx:
                                version_before=before, version_after=after, details=details or {}))
 
 
-class Service(WorkMixin, CalcMixin, StockMixin):
+class Service(WorkMixin, CalcMixin, StockMixin, ConfigMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
-    склад и закупочная потребность — StockMixin (stock.py).
+    склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py).
 
     Как устроен обработчик команды (все _xxx_yyy(ctx, p, ev) следуют одной схеме — так их легко проверять):
 
@@ -127,6 +128,8 @@ class Service(WorkMixin, CalcMixin, StockMixin):
             "admin.create_user": self._admin_create_user, "admin.grant_role": self._admin_grant_role,
             "admin.revoke_role": self._admin_revoke_role, "admin.revoke_sessions": self._admin_revoke_sessions,
             "admin.reset_password": self._admin_reset_password, "admin.set_user_active": self._admin_set_user_active,
+            # настройки компании (config_store.py)
+            "config.publish": self._config_publish,
             # задачи и документы (work.py)
             "task.create": self._task_create, "task.update": self._task_update, "task.transition": self._task_transition,
             "document.create": self._document_create, "document.update": self._document_update,
@@ -136,6 +139,8 @@ class Service(WorkMixin, CalcMixin, StockMixin):
             # склад и закупочная потребность (stock.py)
             "warehouse.create": self._warehouse_create, "warehouse.update": self._warehouse_update,
             "item.create": self._item_create, "item.update": self._item_update,
+            "item_alias.create": self._item_alias_create, "item_alias.update": self._item_alias_update,
+            "unit_conversion.create": self._unit_conversion_create, "unit_conversion.update": self._unit_conversion_update,
             "stock.receive": self._stock_receive, "stock.issue": self._stock_issue, "stock.reverse": self._stock_reverse,
             "stock.reserve": self._stock_reserve, "stock.release": self._stock_release,
             "need.generate": self._need_generate, "need.match_line": self._need_match_line,
@@ -1064,6 +1069,8 @@ class Service(WorkMixin, CalcMixin, StockMixin):
         out.update(self._pull_calc(conn, uid, now, readable))
         # Склад (остатки, резервы, журнал) — по праву stock.read; потребности — по праву need.read в их проекте.
         out.update(self._pull_stock(conn, uid, now))
+        # Настройки компании — всем (правила работы, по ним клиент показывает подсказки).
+        out["config"] = self._pull_config(conn)
         if out["tenders"] or out["projects"] or out["calc_revisions"] or out["warehouses"] or out["needs"]:
             # Минимальный справочник людей (имя для отображения ответственного) — без логинов и контактов.
             out["people"] = [{"id": r["id"], "display_name": r["display_name"]} for r in
@@ -1097,7 +1104,8 @@ class Service(WorkMixin, CalcMixin, StockMixin):
                   "kit": "kit.read", "task": "task.read", "document": "document.read",
                   "calc_draft": "calc.read", "project_calc": "calc.read_revisions",
                   "warehouse": "stock.read", "stock_item": "stock.read", "stock_movement": "stock.read",
-                  "stock_reservation": "stock.read", "procurement_need": "need.read"}.get(otype)
+                  "stock_reservation": "stock.read", "procurement_need": "need.read",
+                  "item_alias": "stock.read", "unit_conversion": "stock.read", "config": "config.publish"}.get(otype)
         if not action or not isinstance(oid, str):
             return {"status": "rejected", "code": "bad_history_request", "message_ru": "Укажите тип и id объекта."}
         pid = oid if otype in ("project", "project_calc") else None
