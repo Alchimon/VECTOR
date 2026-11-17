@@ -1,4 +1,4 @@
-"""Миграция схемы v3 → v4 → v5 → v6 (vector-server migrate): копия до миграции, всё-или-ничего, только добавление.
+"""Миграция схемы v3 → … → v7 (vector-server migrate): копия до миграции, всё-или-ничего, только добавление.
 
 БД версии 3 строится честно: создаются только таблицы v3 и запись schema_version=3, затем данные среза 1
 вносятся обычными командами сервиса (они не касаются таблиц расчётов).
@@ -56,8 +56,9 @@ def test_v3_to_v4_keeps_data_backs_up_first_and_enables_calc(backend, tmp_path, 
         db.check_schema(eng)                       # программа v4 на БД v3 не запускается (fail-closed)
 
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
-    # v3 → … → v6 одной транзакцией: 6 таблиц расчётов + 7 таблиц склада и закупки + 1 таблица сопоставлений.
-    assert (rep.from_version, rep.to_version) == (3, db.SCHEMA_VERSION) and len(rep.created_tables) == 14
+    # v3 → … → v7 одной транзакцией: все таблицы, добавленные после v3 (расчёты, склад, сопоставления, настройки).
+    assert (rep.from_version, rep.to_version) == (3, db.SCHEMA_VERSION)
+    assert rep.created_tables == [t.name for v in sorted(mg.ADDED_IN) for t in mg.ADDED_IN[v]]
     assert db.check_schema(eng) == db.SCHEMA_VERSION
     # Данные не тронуты (schema_meta получила одну служебную запись о миграции).
     after = counts(eng, mg.tables_of_version(3))
@@ -98,7 +99,7 @@ def test_v4_to_v5_adds_stock_without_touching_calc(backend, tmp_path, clock, key
 
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (4, db.SCHEMA_VERSION)
-    assert rep.created_tables == [t.name for t in mg.ADDED_IN[5] + mg.ADDED_IN[6]]
+    assert rep.created_tables == [t.name for v in sorted(mg.ADDED_IN) if v >= 5 for t in mg.ADDED_IN[v]]
     after = counts(eng, mg.tables_of_version(4))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
     vr = bk.verify_backup(rep.backup_path, keys)
@@ -158,3 +159,20 @@ def test_newer_or_unknown_versions_refused(backend, tmp_path, clock, keys):
         c.execute(db.schema_meta.update().where(db.schema_meta.c.key == "schema_version").values(value="1"))
     with pytest.raises(mg.MigrationError, match="Нет шага"):
         mg.migrate(eng, tmp_path / "bk", keys)
+
+
+def test_v6_to_v7_adds_settings_and_unit_tables_with_immutability(backend, tmp_path, clock, keys):
+    """v6 → v7: только новые таблицы (настройки, аналоги, пересчёт единиц); история настроек неизменяема."""
+    eng = make_v3(backend, tmp_path, clock, version=6)
+    before = counts(eng, mg.tables_of_version(6))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (6, db.SCHEMA_VERSION)
+    assert rep.created_tables == [t.name for t in mg.ADDED_IN[7]]
+    after = counts(eng, mg.tables_of_version(6))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    with eng.begin() as c:
+        c.execute(db.config_versions.insert().values(id=new_id(), key="k", scope_type="company", scope_id="", version=1,
+                                                     value_json='"x"', reason="r", author=new_id(), created_at=clock.now()))
+    with pytest.raises(sa.exc.DBAPIError):
+        with eng.begin() as c:
+            c.execute(db.config_versions.update().values(value_json='"y"'))
