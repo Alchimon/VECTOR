@@ -30,6 +30,7 @@ from . import db, security
 from .authz import Authority, Policy, active_grants, grant_is_active
 from .calc import CalcMixin
 from .config_store import ConfigMixin
+from .purchasing import PurchasingMixin
 from .stock import StockMixin
 from .work import WorkMixin
 from .db import audit_log, customers, kits, operations, project_assignments, projects, role_grants, sessions, tenders, tkp, tkp_approvals, users
@@ -81,7 +82,7 @@ class Ctx:
                                version_before=before, version_after=after, details=details or {}))
 
 
-class Service(WorkMixin, CalcMixin, StockMixin, ConfigMixin):
+class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
     склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py).
 
@@ -151,6 +152,10 @@ class Service(WorkMixin, CalcMixin, StockMixin, ConfigMixin):
             "stock.transfer_lost": self._stock_transfer_lost,
             "stock.reserve": self._stock_reserve, "stock.release": self._stock_release,
             "need.generate": self._need_generate, "need.match_line": self._need_match_line,
+            # поставщики, заказы поставщикам и факт поставки (purchasing.py, D-32)
+            "supplier.create": self._supplier_create, "supplier.update": self._supplier_update,
+            "po.create": self._po_create, "po.update": self._po_update, "po.place": self._po_place,
+            "po.cancel": self._po_cancel, "po.close": self._po_close, "po.receive": self._po_receive,
         }
         diff = set(self.contracts.catalog["commands"]) ^ set(self.handlers)
         if diff:
@@ -1090,9 +1095,11 @@ class Service(WorkMixin, CalcMixin, StockMixin, ConfigMixin):
         out.update(self._pull_calc(conn, uid, now, readable))
         # Склад (остатки, резервы, журнал) — по праву stock.read; потребности — по праву need.read в их проекте.
         out.update(self._pull_stock(conn, uid, now))
+        # Поставщики (supplier.read) и заказы поставщикам (po.read; цены — только с po.read_prices).
+        out.update(self._pull_purchasing(conn, uid, now))
         # Настройки компании — всем (правила работы, по ним клиент показывает подсказки).
         out["config"] = self._pull_config(conn)
-        if out["tenders"] or out["projects"] or out["calc_revisions"] or out["warehouses"] or out["needs"]:
+        if out["tenders"] or out["projects"] or out["calc_revisions"] or out["warehouses"] or out["needs"] or out["purchase_orders"]:
             # Минимальный справочник людей (имя для отображения ответственного) — без логинов и контактов.
             out["people"] = [{"id": r["id"], "display_name": r["display_name"]} for r in
                              self._rows(conn, sa.select(users.c.id, users.c.display_name).where(users.c.active == sa.true()))]
@@ -1126,7 +1133,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, ConfigMixin):
                   "calc_draft": "calc.read", "project_calc": "calc.read_revisions",
                   "warehouse": "stock.read", "stock_item": "stock.read", "stock_movement": "stock.read",
                   "stock_transfer": "stock.read", "stock_reservation": "stock.read", "procurement_need": "need.read",
-                  "item_alias": "stock.read", "unit_conversion": "stock.read", "config": "config.publish"}.get(otype)
+                  "item_alias": "stock.read", "unit_conversion": "stock.read", "config": "config.publish",
+                  "supplier": "supplier.read", "purchase_order": "po.read"}.get(otype)
         if not action or not isinstance(oid, str):
             return {"status": "rejected", "code": "bad_history_request", "message_ru": "Укажите тип и id объекта."}
         pid = oid if otype in ("project", "project_calc") else None

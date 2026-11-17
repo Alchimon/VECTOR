@@ -1,5 +1,5 @@
 {
-  "contract": "permissions-slice1-v10",
+  "contract": "permissions-slice1-v11",
   "notes": [
     "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
     "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -674,6 +674,132 @@
       ],
       "assumption": "A-22",
       "note": "Строки потребности без цен. ГИП/РП видят потребности своего проекта."
+    },
+    "supplier.read": {
+      "any_of": [
+        {
+          "global_role": [
+            "procurement",
+            "warehouse",
+            "accountant"
+          ]
+        }
+      ],
+      "assumption": "A-34",
+      "note": "Справочник поставщиков видят закупка, склад (принимает поставки) и бухгалтерия."
+    },
+    "supplier.create": {
+      "any_of": [
+        {
+          "global_role": [
+            "procurement"
+          ]
+        }
+      ],
+      "assumption": "A-34",
+      "note": "Справочник поставщиков ведёт закупка (матрица 04: «Потребность/заказ — C/U — G: procurement»)."
+    },
+    "supplier.update": {
+      "any_of": [
+        {
+          "global_role": [
+            "procurement"
+          ]
+        }
+      ],
+      "assumption": "A-34",
+      "note": "Справочник поставщиков ведёт закупка."
+    },
+    "po.read": {
+      "any_of": [
+        {
+          "global_role": [
+            "procurement",
+            "warehouse",
+            "accountant"
+          ]
+        }
+      ],
+      "assumption": "A-35",
+      "note": "Заказы поставщикам видят закупка, склад (что ждём) и бухгалтерия."
+    },
+    "po.read_prices": {
+      "any_of": [
+        {
+          "global_role": [
+            "procurement",
+            "accountant"
+          ]
+        }
+      ],
+      "assumption": "A-35",
+      "note": "Цены и суммы заказов видят закупка и бухгалтерия; склад видит количества без цен."
+    },
+    "po.create": {
+      "any_of": [
+        {
+          "global_role": [
+            "procurement"
+          ]
+        }
+      ],
+      "assumption": "A-34",
+      "note": "Матрица 04: «Потребность/заказ — C/U — G: procurement»."
+    },
+    "po.update": {
+      "any_of": [
+        {
+          "global_role": [
+            "procurement"
+          ]
+        }
+      ],
+      "assumption": "A-34",
+      "note": "Матрица 04: «Потребность/заказ — C/U — G: procurement»."
+    },
+    "po.place": {
+      "any_of": [
+        {
+          "global_role": [
+            "procurement"
+          ]
+        }
+      ],
+      "assumption": "A-34",
+      "note": "Размещает заказ закупка; сервер перепроверяет всё в момент размещения."
+    },
+    "po.cancel": {
+      "any_of": [
+        {
+          "global_role": [
+            "procurement"
+          ]
+        }
+      ],
+      "assumption": "A-36",
+      "note": "Отменяет закупка — только пока ничего не поставлено."
+    },
+    "po.close": {
+      "any_of": [
+        {
+          "global_role": [
+            "procurement"
+          ]
+        }
+      ],
+      "assumption": "A-36",
+      "note": "Закрывает закупка; недопоставка — с причиной."
+    },
+    "po.receive": {
+      "any_of": [
+        {
+          "global_role": [
+            "warehouse"
+          ]
+        }
+      ],
+      "assumption": "A-36",
+      "note": "Факт поставки — складское движение (матрица 04: «Складское движение — провести — G: warehouse»)."
     }
   }
 }

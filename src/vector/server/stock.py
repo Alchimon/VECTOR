@@ -1281,6 +1281,8 @@ class StockMixin:
             available = self._available_by_item(conn)
         lines = []
         matches = self._line_matches(conn, o["id"])
+        # «Заказано, ждём» по строкам — из размещённых заказов поставщикам (purchasing.py, D-32); без цен.
+        on_order = self._ordered_open_by_need_line(conn)
         for r in conn.execute(sa.select(procurement_need_lines).where(procurement_need_lines.c.need_id == o["id"])
                               .order_by(procurement_need_lines.c.pos)):
             # Действующая позиция: ручное решение закупки (A-25) важнее автоматического из снимка.
@@ -1302,7 +1304,8 @@ class StockMixin:
                           "matched_at": iso(m["matched_at"]) if m else None, "match_count": m["count"] if m else 0,
                           "factor": money.to_json(factor) if (m and m["line_unit"]) else None,
                           "item_unit": m["item_unit"] if (m and m["line_unit"]) else r.unit,
-                          "item_qty": money.to_json(item_qty), "coverage": cov})
+                          "item_qty": money.to_json(item_qty), "coverage": cov,
+                          "on_order": money.to_json(on_order.get((o["id"], r.line_id), Decimal(0)))})
         last = self._latest_version(conn, o["kit_id"])
         kit, pr = self._get(conn, kits, o["kit_id"]), self._get(conn, projects, o["project_id"])
         return {"id": o["id"], "project_id": o["project_id"], "project_code": pr["code"], "project_title": pr["title"],
