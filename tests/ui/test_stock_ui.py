@@ -180,3 +180,39 @@ def test_engineer_has_no_supply_section(ui):
     ui.login("d.kuznetsov")
     nav = ui.nav()
     assert not nav["Склад"] and not nav["Закупка"]
+
+
+def test_procurement_matches_uncoded_line_by_hand(ui):
+    """Кабель в расчёте АТХ записан без обозначения → «Не сопоставлена»; закупка сопоставляет его вручную (A-25)."""
+    ui.login("s.morozov")
+    ui.go("procurement")
+    pp = next(i for i in ui.items("nv") if i.isVisible())
+    nv = _v(pp, "nv")
+    assert nv["can_match"] is True
+    atx = next(n for n in nv["needs"] if n["kit_code"] == "АТХ")
+    cable = next(ln for ln in atx["lines"] if ln["name"].startswith("Кабель контрольный"))
+    assert cable["state_label"] == "Не сопоставлена" and cable["can_rematch"] is True
+    pp.setProperty("selectedId", atx["id"])
+    ui.wait_idle()
+    dlg = _popup(ui, "lineMatch")
+    _call(dlg, "openFor", cable)
+    ui.wait_idle()
+    cands = _v(dlg, "candidates")
+    # Кандидаты — только позиции в метрах (единица строки): пересчёт единиц не выполняется.
+    assert [c["label"] for c in cands] == ["КВВГнг-7x1.5 · Кабель контрольный КВВГнг(А)-LS 7×1,5"]
+    assert dlg.property("canConfirm") is False                  # причина обязательна
+    _popup(ui, "lmReason").setProperty("text", "Тот же кабель, в расчёте без обозначения")
+    ui.wait_idle()
+    assert dlg.property("canConfirm") is True
+    QMetaObject.invokeMethod(dlg, "confirmed")
+    ui.wait_idle()
+    assert not dlg.property("visible") and dlg.property("error") == ""
+    atx = next(n for n in _v(pp, "nv")["needs"] if n["kit_code"] == "АТХ")
+    cable = next(ln for ln in atx["lines"] if ln["name"].startswith("Кабель контрольный"))
+    assert cable["match_source"] == "manual" and cable["state_label"] == "Нужна закупка"
+    assert cable["match_label"] == "Сопоставлена вручную: Тот же кабель, в расчёте без обозначения"
+    # Без связи кнопки сопоставления нет (команда только онлайн).
+    ui.transport.online = False
+    ui.backend.syncNow()
+    ui.wait_idle()
+    assert _v(pp, "nv")["can_match"] is False

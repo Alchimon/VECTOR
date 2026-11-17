@@ -130,6 +130,20 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
             "can_edit_warehouses": is_wh, "is_warehouse": is_wh}
 
 
+def _match_label(ln: dict) -> str:
+    """Подпись «как сопоставлена строка» для карточки потребности: автоматически, вручную (с причиной и номером
+    решения) или пусто, если строка не сопоставлена (тогда показывается причина автомата).
+    """
+    src = ln.get("match_source")
+    if src == "auto":
+        return "Сопоставлена автоматически (код и единица совпали)"
+    if src == "manual":
+        n = ln.get("match_count") or 1
+        head = "Сопоставлена вручную" + (f" (решение №{n})" if n > 1 else "")
+        return head + (": " + ln["match_reason"] if ln.get("match_reason") else "")
+    return ""
+
+
 def needs_view(needs: list, candidates: list, items: list, last_pull: str, online: bool, roles: list) -> dict:
     """Экран «Закупка»: потребности со строками и покрытием, кандидаты для формирования."""
     it = {i["id"]: i for i in items}
@@ -154,7 +168,12 @@ def needs_view(needs: list, candidates: list, items: list, last_pull: str, onlin
                           "available_label": qty_label(cov["available"], unit) if cov["available"] is not None else "неизвестно",
                           "state_label": st, "state_tone": tone,
                           "item_label": (it[ln["item_id"]]["code"] + " · " + it[ln["item_id"]]["name"]) if ln.get("item_id") in it
-                          else ("сопоставлена" if ln.get("item_id") else "")})
+                          else ("сопоставлена" if ln.get("item_id") else ""),
+                          # Ручное сопоставление (A-25): чьё решение действует и можно ли его поменять. Поменять —
+                          # только пока под строку ничего не зарезервировано (сервер проверит то же самое).
+                          "match_source": ln.get("match_source"),
+                          "match_label": _match_label(ln),
+                          "can_rematch": _d(cov["reserved"]) == 0})
         open_count = sum(1 for x in lines if x["item_id"] and _d(x["coverage"]["open"]) > 0)
         out.append({**n, "lines": lines, "open_count": open_count,
                     "unmatched_count": sum(1 for x in lines if not x["item_id"]),
@@ -162,4 +181,5 @@ def needs_view(needs: list, candidates: list, items: list, last_pull: str, onlin
                     "title": f"{n.get('project_code', '')} · {n.get('kit_code', '')} v{n['calc_version_no']}"})
     return {"as_of": as_of_label(last_pull), "online": online, "needs": out, "candidates": candidates,
             "can_generate": "procurement" in roles and online, "can_reserve": "warehouse" in roles and online,
+            "can_match": "procurement" in roles and online,
             "sees_stock": "warehouse" in roles or "procurement" in roles}

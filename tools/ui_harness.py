@@ -208,7 +208,7 @@ def _plain(v):
 
 
 def main():
-    """Снять скриншоты 01–17 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
+    """Снять скриншоты 01–18 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
     args = ap.parse_args()
@@ -274,6 +274,19 @@ def main():
         pp.setProperty("selectedId", h.ids["need"])
         h.wait_idle()
         h.shot(out / f"{theme}-17-procurement-need.png")
+        # Ручное сопоставление строки без обозначения (кабель) с позицией номенклатуры (A-25).
+        nv = _plain(pp.property("nv"))
+        need = next(n for n in nv["needs"] if n["id"] == h.ids["need"])
+        cable = next(ln for ln in need["lines"] if ln["name"].startswith("Кабель контрольный"))
+        lm = next(o for o in h.win.findChildren(QObject) if o.objectName() == "lineMatch")
+        QMetaObject.invokeMethod(lm, "openFor", Q_ARG("QVariant", cable))
+        h.wait_idle()
+        next(o for o in h.win.findChildren(QObject) if o.objectName() == "lmReason").setProperty(
+            "text", "Тот же кабель, в расчёте записан без обозначения")
+        h.wait_idle()
+        h.shot(out / f"{theme}-18-procurement-match.png")
+        QMetaObject.invokeMethod(lm, "close")
+        h.wait_idle()
         h.backend.logout()
         h.wait_idle()
         h.login()

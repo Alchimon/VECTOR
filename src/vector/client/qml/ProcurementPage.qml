@@ -8,6 +8,8 @@ import QtQuick.Layouts
 //    Потребность — не заказ: она показывает, что нужно, что уже зарезервировано и чего не хватает.
 //  * В потребности нет цен: цены — данные расчёта, закупке в этом срезе не раскрываются.
 //  * Строка сопоставляется с номенклатурой по ТОЧНОМУ коду и единице; иначе — «не сопоставлена» с причиной.
+//    Закупка может сопоставить строку вручную («Сопоставить», A-25): позиция с той же единицей, причина
+//    обязательна, пока под строку нет резервов. Каждое решение сохраняется в истории потребности.
 //  * «Доступно» по складам — снимок «на момент …»; ГИП/РП видят потребность своего проекта без остатков
 //    (у них нет права на склад) — там «неизвестно», а не «0».
 //  * Формирование и резерв — только при связи с сервером.
@@ -87,10 +89,17 @@ MasterDetail {
                     VButton { visible: nv.can_reserve === true && !!modelData.item_id && Number(modelData.coverage.open) > 0
                               text: "Зарезервировать"; compact: true; kind: "soft"; iconName: "bookmark"
                               onClicked: lineReserve.openFor(modelData) }
+                    // Ручное сопоставление — закупка, при связи и пока под строку ничего не зарезервировано.
+                    VButton { objectName: "btnMatch"; visible: nv.can_match === true && modelData.can_rematch === true
+                              text: modelData.item_id ? "Изменить" : "Сопоставить"; compact: true
+                              kind: modelData.item_id ? "ghost" : "soft"; iconName: "link"
+                              onClicked: lineMatch.openFor(modelData) }
                 }
                 Text { visible: modelData.item_id !== null && modelData.item_id !== undefined
                        text: "Зарезервировано " + modelData.reserved_label + "  ·  не покрыто " + modelData.open_label + "  ·  доступно на складах " + modelData.available_label
                        color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; Layout.fillWidth: true; Layout.leftMargin: 32; wrapMode: Text.Wrap }
+                Text { visible: (modelData.match_label || "") !== ""; text: modelData.match_label || ""
+                       color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs; Layout.fillWidth: true; Layout.leftMargin: 32; wrapMode: Text.Wrap }
                 Text { visible: (modelData.match_note || "") !== ""; text: modelData.match_note || ""
                        color: Theme.warning; font.family: Theme.family; font.pixelSize: Theme.fsXs; Layout.fillWidth: true; Layout.leftMargin: 32; wrapMode: Text.Wrap }
             }
@@ -132,4 +141,29 @@ MasterDetail {
         VField { id: lrReason; objectName: "lrReason"; label: "Основание резерва"; required: true; placeholder: "Под монтаж …" }
     }
     Cmd { id: cLine; dialog: lineReserve }
+
+    // ---------- ручное сопоставление строки с номенклатурой (A-25)
+    FormDialog {
+        id: lineMatch
+        objectName: "lineMatch"
+        property var line: null
+        // Кандидаты: действующие позиции с ТОЙ ЖЕ единицей, кроме текущей (пересчёт единиц не выполняется).
+        readonly property var candidates: line ? (sov.items || []).filter(i => i.active !== false && i.unit === line.unit && i.id !== line.item_id)
+                                                     .map(i => ({ id: i.id, label: i.code + " · " + i.name })) : []
+        title: line ? (line.item_id ? "Изменить сопоставление: " : "Сопоставить строку: ") + (line.code || line.name) : ""
+        subtitle: line ? "«" + line.name + "», " + line.qty_label + ". Выберите позицию номенклатуры с единицей «" + line.unit
+                         + "» и укажите, почему она подходит. Решение сохранится в истории потребности." : ""
+        confirmText: "Сопоставить"
+        canConfirm: lmItem.currentValue !== "" && lmItem.currentValue !== undefined && lmReason.text.trim() !== ""
+        function openFor(l) { line = l; lmReason.text = ""; lmItem.currentIndex = 0; open() }
+        onConfirmed: cMatch.run("need.match_line", { id: backend.newId(), need_id: page.sel.id, line_id: line.line_id,
+                                                     item_id: lmItem.currentValue, reason: lmReason.text.trim() }, page.sel.version)
+        Banner { visible: lineMatch.line !== null && (lineMatch.line.match_note || "") !== ""; tone: "info"
+                 text: lineMatch.line ? "Почему не сопоставилось автоматически: " + (lineMatch.line.match_note || "") : "" }
+        Banner { visible: lineMatch.candidates.length === 0; tone: "warning"
+                 text: lineMatch.line ? "Нет действующих позиций с единицей «" + lineMatch.line.unit + "». Заведите позицию в разделе «Склад» → «Номенклатура»." : "" }
+        VSelect { id: lmItem; objectName: "lmItem"; label: "Позиция номенклатуры"; model: lineMatch.candidates }
+        VField { id: lmReason; objectName: "lmReason"; label: "Почему эта позиция"; required: true; placeholder: "Аналог по паспорту, исполнение 2 …" }
+    }
+    Cmd { id: cMatch; dialog: lineMatch }
 }

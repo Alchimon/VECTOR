@@ -124,3 +124,21 @@ def test_need_hints_by_role_and_connection():
     assert (wh["can_generate"], wh["can_reserve"], wh["sees_stock"]) == (False, True, True)
     gip = sv.needs_view([], [], [], PULL, True, ["gip"])
     assert (gip["can_generate"], gip["can_reserve"], gip["sees_stock"]) == (False, False, False)
+
+
+def test_manual_match_labels_and_rematch_hint():
+    auto = _line("a", "i1", "2.0000", "0.0000", "2.0000", "10.0000", True)
+    auto["match_source"] = "auto"
+    manual = _line("b", "i3", "1.0000", "1.0000", "0.0000", "0.0000", True)
+    manual.update(match_source="manual", match_reason="Аналог по паспорту", match_count=2)
+    none = _line("c", None, "1.0000", "0.0000", "1.0000", None, None)
+    v = sv.needs_view([_need([auto, manual, none])], [], ITEMS, PULL, True, ["procurement"])
+    ln = {x["line_id"]: x for x in v["needs"][0]["lines"]}
+    assert ln["a"]["match_label"].startswith("Сопоставлена автоматически")
+    assert ln["b"]["match_label"] == "Сопоставлена вручную (решение №2): Аналог по паспорту"
+    assert ln["c"]["match_label"] == ""
+    # Пересопоставить можно только без резервов под строку (как на сервере).
+    assert (ln["a"]["can_rematch"], ln["b"]["can_rematch"], ln["c"]["can_rematch"]) == (True, False, True)
+    assert v["can_match"] is True
+    assert sv.needs_view([], [], [], PULL, False, ["procurement"])["can_match"] is False
+    assert sv.needs_view([], [], [], PULL, True, ["warehouse"])["can_match"] is False
