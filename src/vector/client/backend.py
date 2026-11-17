@@ -509,6 +509,11 @@ class Backend(QObject):
         except stock.StockError as e:
             return e.message_ru
 
+    @Slot(str, str, str, result="QVariant")
+    def transferShortage(self, shipped: str, accepted_text: str, unit: str):
+        """Недостача в форме приёмки перемещения (D-30): считается в Decimal (не в JavaScript-числах QML)."""
+        return qml_safe(stock_view.shortage(shipped, accepted_text, unit))
+
     @Slot(str, result=str)
     def normalizeQty(self, text: str) -> str:
         """Количество из поля ввода → строка для команды: без пробелов, запятая → точка (без float)."""

@@ -360,3 +360,54 @@ def test_transfer_ships_in_transit_then_accept_and_return_through_forms(ui):
     ui.wait_idle()
     assert _v(page, "ov")["can_transfer"] is False and ui.find("btnTransfer").property("enabled") is False
     assert not any(t["can_act"] for t in _v(page, "ov")["transfers"])
+
+
+def test_accept_with_shortage_requires_reason_and_signature(ui):
+    """D-30 через форму: «Фактически пришло» меньше отгруженного → баннер недостачи, причина и флажок подписи
+    обязательны; после приёмки — акт с номером, на получателе — только фактическое количество. В демо уже есть
+    акт № 1 (ХМТ-200), новый — № 2."""
+    ui.login("i.belova")
+    page = _stock_page(ui)
+    demo = [t for t in _v(page, "ov")["transfers"] if t.get("act_label")]
+    assert len(demo) == 1 and demo[0]["act_label"].startswith("Акт недостачи № 1: отгружено 50 шт, принято 48 шт")
+    assert any(t.get("expected_label") for t in _v(page, "ov")["transfers"] if t["status"] == "in_transit")
+    nshvi = _item(ui, "НШВИ-1.5")
+    dlg = _popup(ui, "transferForm")
+    _call(dlg, "openFor", nshvi)
+    ui.wait_idle()
+    _popup(ui, "tQty").setProperty("text", "10")
+    _popup(ui, "tReason").setProperty("text", "Бригаде Петрова")
+    _popup(ui, "tEta").setProperty("text", "20.11.2026")
+    ui.wait_idle()
+    assert dlg.property("canConfirm") is False                     # дата не в формате ГГГГ-ММ-ДД
+    _popup(ui, "tEta").setProperty("text", "2099-01-15")
+    ui.wait_idle()
+    QMetaObject.invokeMethod(dlg, "confirmed")
+    ui.wait_idle()
+    assert dlg.property("error") == "" and not dlg.property("visible")
+    tr = _item(ui, "НШВИ-1.5")["transfers"][0]
+    assert tr["expected_label"] == "15.01.2099"
+
+    acc = _popup(ui, "acceptForm")
+    _call(acc, "openFor", tr)
+    ui.wait_idle()
+    _popup(ui, "acQty").setProperty("text", "12")
+    ui.wait_idle()
+    assert acc.property("canConfirm") is False                     # больше отгруженного
+    _popup(ui, "acQty").setProperty("text", "7")
+    ui.wait_idle()
+    assert acc.property("short") is True and acc.property("canConfirm") is False
+    _popup(ui, "acShortReason").setProperty("text", "Три наконечника потеряны при погрузке")
+    ui.wait_idle()
+    assert acc.property("canConfirm") is False                     # без подписи — нельзя
+    _popup(ui, "acSign").setProperty("checked", True)
+    ui.wait_idle()
+    assert acc.property("canConfirm") is True and acc.property("confirmText") == "Принять и подписать акт"
+    QMetaObject.invokeMethod(acc, "confirmed")
+    ui.wait_idle()
+    assert acc.property("error") == "" and not acc.property("visible")
+    nshvi = _item(ui, "НШВИ-1.5")
+    assert [b["available_label"] for b in nshvi["by_warehouse"]] == ["790 шт", "207 шт"]
+    done = next(t for t in _v(page, "ov")["transfers"] if t["id"] == tr["id"])
+    assert done["status_label"] == "Принято с недостачей"
+    assert done["act_label"] == "Акт недостачи № 2: отгружено 10 шт, принято 7 шт, недостача 3 шт"

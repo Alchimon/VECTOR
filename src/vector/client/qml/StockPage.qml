@@ -438,10 +438,11 @@ Item {
         title: "Отгрузка на другой склад: " + (item ? item.code : "")
         subtitle: "Количество спишется со склада-отправителя сразу и будет «в пути», пока склад-получатель его не примет (или не вернёт). Отгружается только доступное: резервы остаются на своём складе."
         confirmText: "Отгрузить"
-        canConfirm: tQty.text.trim() !== "" && tQty.error === "" && tReason.text.trim() !== "" && tFrom.currentValue !== "" && tTo.currentValue !== ""
-        function openFor(it) { item = it; tQty.text = ""; tReason.text = ""; tDoc.text = ""; tFrom.currentIndex = 0; tTo.currentIndex = 0; open() }
+        canConfirm: tQty.text.trim() !== "" && tQty.error === "" && tReason.text.trim() !== "" && tFrom.currentValue !== "" && tTo.currentValue !== "" && tEta.error === ""
+        function openFor(it) { item = it; tQty.text = ""; tReason.text = ""; tDoc.text = ""; tEta.text = ""; tFrom.currentIndex = 0; tTo.currentIndex = 0; open() }
         onConfirmed: cTransfer.run("stock.transfer", { id: backend.newId(), item_id: item.id, from_warehouse_id: tFrom.currentValue, to_warehouse_id: tTo.currentValue,
-                                                       qty: backend.normalizeQty(tQty.text), reason: tReason.text.trim(), source_doc: tDoc.text.trim() })
+                                                       qty: backend.normalizeQty(tQty.text), reason: tReason.text.trim(), source_doc: tDoc.text.trim(),
+                                                       expected_on: tEta.text.trim() || null })
         Banner { visible: transferForm.fromOptions.length === 0; tone: "warning"; text: "Свободного количества нет ни на одном складе (всё в резерве или нет остатка)." }
         RowLayout { Layout.fillWidth: true; spacing: 12
             VSelect { id: tFrom; objectName: "tFrom"; Layout.preferredWidth: 200; label: "Откуда (доступно)"; model: transferForm.fromOptions }
@@ -449,22 +450,46 @@ Item {
             VSelect { id: tTo; objectName: "tTo"; Layout.preferredWidth: 200; label: "Куда"; model: transferForm.toOptions } }
         VField { id: tQty; objectName: "tQty"; label: "Количество" + (transferForm.item ? ", " + transferForm.item.unit : ""); required: true; error: backend.qtyProblem(text) }
         VField { id: tReason; objectName: "tReason"; label: "Зачем перемещаем"; required: true; placeholder: "На монтажный участок, бригада …" }
-        VField { id: tDoc; objectName: "tDoc"; label: "Накладная на перемещение (если есть)"; placeholder: "№ 3 от 17.11.2026" }
+        RowLayout { Layout.fillWidth: true; spacing: 12
+            VField { id: tDoc; objectName: "tDoc"; Layout.fillWidth: true; label: "Накладная на перемещение (если есть)"; placeholder: "№ 3 от 17.11.2026" }
+            // Срок прибытия — для справки (D-30): формат как у остальных дат программы; не раньше дня отгрузки проверит сервер.
+            VField { id: tEta; objectName: "tEta"; Layout.preferredWidth: 200; label: "Ожидается (для справки)"; placeholder: "ГГГГ-ММ-ДД"
+                     error: text !== "" && !/^\d{4}-\d{2}-\d{2}$/.test(text.trim()) ? "Формат ГГГГ-ММ-ДД" : "" } }
     }
     Cmd { id: cTransfer; dialog: transferForm }
 
     // Приёмка перемещения на складе-получателе (D-29): по версии перемещения — если его уже приняли или вернули с
     // другого места, сервер вернёт конфликт/«уже закрыто», ничего не проведя. Комментарий необязателен.
-    // Частичной приёмки и недостачи нет (допущение A-29): расхождение — вернуть и отгрузить заново верное количество.
+    // Пришло меньше (D-30): приёмщик вводит фактическое количество — разница оформляется АКТОМ НЕДОСТАЧИ, для
+    // которого обязательны причина и подпись приёмщика (флажок). Недостача считается в Decimal на стороне Python.
     FormDialog {
         id: acceptForm
         objectName: "acceptForm"
         property var tr: null
+        readonly property var sh: tr ? backend.transferShortage(tr.qty, acQty.text, tr.unit || "") : ({})
+        readonly property bool short: sh.has_shortage === true
         title: "Принять перемещение"
-        subtitle: tr ? tr.item_code + " · " + tr.qty_label + " · " + tr.route_label + ": количество придёт на склад " + tr.to_code + " и станет доступным." : ""
-        confirmText: "Принять"
-        function openFor(t) { tr = t; acComment.text = ""; open() }
-        onConfirmed: cAccept.run("stock.transfer_accept", { id: tr.id, comment: acComment.text.trim() }, tr.version)
+        subtitle: tr ? tr.item_code + " · отгружено " + tr.qty_label + " · " + tr.route_label + ": принятое придёт на склад " + tr.to_code + " и станет доступным." : ""
+        confirmText: short ? "Принять и подписать акт" : "Принять"
+        confirmKind: short ? "danger" : "primary"
+        canConfirm: tr !== null && acQty.error === "" && (!short || (acShortReason.text.trim() !== "" && acSign.checked))
+        function openFor(t) { tr = t; acQty.text = ""; acComment.text = ""; acShortReason.text = ""; acSign.checked = false; open() }
+        onConfirmed: {
+            var p = { id: tr.id, comment: acComment.text.trim() }
+            if (acQty.text.trim() !== "") p.accepted_qty = backend.normalizeQty(acQty.text)
+            if (short) { p.shortage_reason = acShortReason.text.trim(); p.sign_act = true }
+            cAccept.run("stock.transfer_accept", p, tr.version)
+        }
+        VField { id: acQty; objectName: "acQty"; label: "Фактически пришло" + (acceptForm.tr ? ", " + (acceptForm.tr.unit || "") : "")
+                 placeholder: acceptForm.tr ? "пусто — всё: " + acceptForm.tr.qty_label : ""; error: acceptForm.sh.problem || "" }
+        Banner { visible: acceptForm.short; tone: "danger"
+                 text: "Недостача " + (acceptForm.sh.shortage_label || "") + " — будет оформлен акт недостачи. Недостача спишется из учёта: она не вернётся ни на один склад." }
+        VField { id: acShortReason; objectName: "acShortReason"; visible: acceptForm.short; label: "Причина недостачи (в акт)"; required: true; placeholder: "Повреждена упаковка, бой …" }
+        // Подпись акта (A-30): флажок вошедшего кладовщика. Текст переносится — длинная строка не должна растягивать диалог.
+        CheckBox { id: acSign; objectName: "acSign"; visible: acceptForm.short; Layout.fillWidth: true; Layout.preferredWidth: 1
+                   text: "Подписываю акт как приёмщик склада: количество пересчитано"
+                   contentItem: Text { text: acSign.text; wrapMode: Text.Wrap; leftPadding: acSign.indicator.width + acSign.spacing
+                                       verticalAlignment: Text.AlignVCenter; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs } }
         VField { id: acComment; objectName: "acComment"; label: "Комментарий (если нужен)"; placeholder: "Принято без замечаний" }
     }
     Cmd { id: cAccept; dialog: acceptForm }

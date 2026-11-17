@@ -25,16 +25,28 @@ Rectangle {
             Icon { name: "truck"; size: 15; color: row.t.status === "in_transit" ? Theme.tone("warning").fg : Theme.textMuted }
             Text { text: (row.showItem ? row.t.item_code + " · " + row.t.item_name + "  —  " : "") + row.t.route_label + "  ·  " + row.t.qty_label
                    color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
+            // Срок прибытия — только для справки (D-30): прошёл — пометка, никаких действий программа не делает.
+            VChip { visible: row.t.overdue === true; text: "срок прошёл"; tone: "danger"; iconName: "clock" }
             VChip { text: row.t.status_label || ""; tone: row.t.status_tone || "neutral" }
             VButton { visible: row.t.status === "in_transit"; text: "Принять"; compact: true; iconName: "check"; enabled: row.t.can_act === true; onClicked: row.acceptRequested() }
             VButton { visible: row.t.status === "in_transit"; text: "Вернуть"; compact: true; kind: "ghost"; iconName: "undo-2"; enabled: row.t.can_act === true; onClicked: row.returnRequested() }
         }
         Text { text: "Отгружено " + (row.t.created_label || "") + " UTC" + (row.t.author ? "  ·  " + row.t.author : "") + "  ·  " + (row.t.reason || "")
-                     + (row.t.source_doc ? "  ·  " + row.t.source_doc : "")
+                     + (row.t.source_doc ? "  ·  " + row.t.source_doc : "") + (row.t.expected_label ? "  ·  ожидается " + row.t.expected_label : "")
                color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; elide: Text.ElideRight; Layout.fillWidth: true; Layout.leftMargin: 25 }
         Text { visible: row.t.status !== "in_transit"
                text: (row.t.legacy === true ? "Перемещение одним шагом (до появления статуса «в пути»)" : (row.t.status === "received" ? "Принято " : "Возвращено ") + (row.t.closed_label || "") + " UTC"
                      + (row.t.closer ? "  ·  " + row.t.closer : "") + (row.t.close_reason ? "  ·  " + row.t.close_reason : ""))
                color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs; elide: Text.ElideRight; Layout.fillWidth: true; Layout.leftMargin: 25 }
+        // Акт недостачи (D-30): номер, количества, причина и подпись приёмщика. Акт неизменяем.
+        RowLayout {
+            visible: !!row.t.act_label
+            Layout.fillWidth: true; Layout.leftMargin: 25; spacing: 6
+            Icon { name: "file-exclamation-point"; size: 14; color: Theme.tone("danger").fg }
+            Text { text: row.t.act_label || ""; color: Theme.tone("danger").fg; font.family: Theme.family; font.pixelSize: Theme.fsS; font.weight: Font.DemiBold
+                   elide: Text.ElideRight; Layout.fillWidth: true }
+        }
+        Text { visible: !!row.t.act_signed_label; text: row.t.act_signed_label || ""
+               color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsXs; elide: Text.ElideRight; Layout.fillWidth: true; Layout.leftMargin: 45 }
     }
 }

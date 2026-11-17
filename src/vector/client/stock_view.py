@@ -39,6 +39,31 @@ def as_of_label(last_pull: str) -> str:
     return "на момент " + dt.strftime("%d.%m.%Y %H:%M") + " UTC"
 
 
+def _date_ru(v: Optional[str]) -> str:
+    """«2026-11-20» → «20.11.2026»; пусто → «»."""
+    return f"{v[8:10]}.{v[5:7]}.{v[0:4]}" if v and len(v) >= 10 else ""
+
+
+def shortage(shipped: str, accepted_text: str, unit: str = "") -> dict:
+    """Недостача при приёмке перемещения (D-30) для формы «Принять»: сколько не пришло, Decimal без float.
+
+    Возвращает {problem, shortage, shortage_label, has_shortage}: problem — текст ошибки ввода (пусто — нет ошибки);
+    пустое поле = «пришло всё». Правила те же, что на сервере: > 0, ≤ 4 знаков, не больше отгруженного.
+    """
+    t = (accepted_text or "").strip().replace(",", ".").replace(" ", "").replace("\u00a0", "")
+    if not t:
+        return {"problem": "", "shortage": "0", "shortage_label": "", "has_shortage": False}
+    try:
+        acc = stock.parse_qty(t)
+    except stock.StockError as e:
+        return {"problem": e.message_ru, "shortage": "0", "shortage_label": "", "has_shortage": False}
+    diff = Decimal(shipped) - acc
+    if diff < 0:
+        return {"problem": "Больше отгруженного — излишек перемещением не оформляется, проведите его приходом.",
+                "shortage": "0", "shortage_label": "", "has_shortage": False}
+    return {"problem": "", "shortage": str(diff), "shortage_label": qty_label(str(diff), unit), "has_shortage": diff > 0}
+
+
 def _d(v) -> Decimal:
     """Количество из кэша (строка) → Decimal; пусто или None → 0 (используется только для остатков, где отсутствие
     строки и есть ноль).
@@ -63,6 +88,8 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
 
     transfers — перемещения из pull (D-29): все «в пути» и недавние закрытые. Количество «в пути» не входит ни в
     остаток, ни в доступное — оно показывается отдельно, чтобы отгруженное не выглядело «потерянным».
+    У перемещений бывает ожидаемая дата прибытия «для справки» и акт недостачи (D-30): срок считается прошедшим по
+    дате снимка last_pull (тем же «на момент …», что и остатки), а не по часам компьютера.
     """
     wh = {w["id"]: w for w in warehouses}
     it = {i["id"]: i for i in items}
@@ -108,15 +135,27 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
     # одношаговые перемещения прежней версии (legacy) — только история.
     is_wh = "warehouse" in roles
     tr_rows = []
+    as_of_day = (last_pull or "")[:10]          # ГГГГ-ММ-ДД снимка; пусто — срок не оцениваем
     for t in transfers or []:
         i = it.get(t["item_id"], {})
         unit = i.get("unit", "")
         a_code = wh.get(t["from_warehouse_id"], {}).get("code", "?")
         b_code = wh.get(t["to_warehouse_id"], {}).get("code", "?")
         tr_rows.append({**t, "item_code": i.get("code", "?"), "item_name": i.get("name", ""),
-                        "from_code": a_code, "to_code": b_code, "route_label": f"{a_code} → {b_code}",
+                        "from_code": a_code, "to_code": b_code, "route_label": f"{a_code} → {b_code}", "unit": unit,
                         "qty_label": qty_label(t["qty"], unit),
-                        "status_tone": {"in_transit": "warning", "received": "success", "returned": "neutral"}.get(t["status"], "neutral"),
+                        # Принято с недостачей (есть акт) — «danger»: это расхождение, на которое стоит обратить внимание.
+                        "status_tone": "danger" if t.get("act") else
+                                       {"in_transit": "warning", "received": "success", "returned": "neutral"}.get(t["status"], "neutral"),
+                        "expected_label": _date_ru(t.get("expected_on")),
+                        "overdue": bool(t["status"] == "in_transit" and t.get("expected_on") and as_of_day
+                                        and t["expected_on"] < as_of_day),
+                        "accepted_label": qty_label(t.get("accepted_qty"), unit) if t.get("accepted_qty") else "",
+                        "act_label": (f"Акт недостачи № {t['act']['act_no']}: отгружено {qty_label(t['act']['shipped_qty'], unit)}, "
+                                      f"принято {qty_label(t['act']['accepted_qty'], unit)}, недостача "
+                                      f"{qty_label(t['act']['shortage_qty'], unit)}") if t.get("act") else "",
+                        "act_signed_label": (f"{t['act']['reason']}  ·  подписал приёмщик {t['act']['signer_name']}, "
+                                             f"{t['act']['signed_at'].replace('T', ' ')[:16]} UTC") if t.get("act") else "",
                         "author": people.get(t.get("created_by") or "", ""),
                         "closer": people.get(t.get("closed_by") or "", ""),
                         "created_label": (t.get("created_at") or "").replace("T", " ")[:16],

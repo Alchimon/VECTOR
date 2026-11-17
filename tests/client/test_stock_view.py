@@ -258,3 +258,37 @@ def test_alias_label_and_directory_and_settings_views():
     assert [o["id"] for o in s["items"][0]["options"]] == ["forbid", "release_active"]
     assert settings_view(cfg, ["warehouse"], True)["can_publish"] is False
     assert settings_view(cfg, ["admin"], False)["can_publish"] is False
+
+
+def test_shortage_is_decimal_and_follows_server_rules():
+    """D-30: недостача в форме приёмки — Decimal (без float), пусто = пришло всё, больше отгруженного — ошибка."""
+    assert sv.shortage("10.0000", "", "шт") == {"problem": "", "shortage": "0", "shortage_label": "", "has_shortage": False}
+    r = sv.shortage("10.0000", "7,5", "шт")
+    assert (r["has_shortage"], r["shortage"], r["shortage_label"], r["problem"]) == (True, "2.5000", "2,5 шт", "")
+    assert sv.shortage("0.3000", "0.1", "м")["shortage"] == "0.2000"             # 0,3 − 0,1 без ошибки float
+    assert sv.shortage("10", "10")["has_shortage"] is False
+    assert "Больше отгруженного" in sv.shortage("10", "10.0001")["problem"]
+    assert sv.shortage("10", "1.23456")["problem"] != "" and sv.shortage("10", "0")["problem"] != ""
+
+
+def test_transfer_rows_show_act_and_expected_date_for_reference():
+    """D-30: строка перемещения показывает акт недостачи (тон «danger») и срок прибытия; «срок прошёл» — по дате
+    снимка, только у «в пути»."""
+    i1 = ITEMS[0]["id"]
+    act = {"id": "a1", "act_no": 3, "shipped_qty": "10.0000", "accepted_qty": "8.0000", "shortage_qty": "2.0000",
+           "reason": "Бой", "signed_by": "u1", "signer_name": "Белова И.", "signed_at": "2026-11-17T09:00:00+00:00"}
+    trs = [{"id": "t1", "item_id": i1, "from_warehouse_id": "w1", "to_warehouse_id": "w2", "qty": "10.0000",
+            "status": "received", "status_label": "Принято с недостачей", "accepted_qty": "8.0000", "act": act,
+            "version": 2, "legacy": False},
+           {"id": "t2", "item_id": i1, "from_warehouse_id": "w1", "to_warehouse_id": "w2", "qty": "1.0000",
+            "status": "in_transit", "status_label": "В пути", "expected_on": "2000-01-01", "version": 1, "legacy": False},
+           {"id": "t3", "item_id": i1, "from_warehouse_id": "w1", "to_warehouse_id": "w2", "qty": "1.0000",
+            "status": "in_transit", "status_label": "В пути", "expected_on": "2999-12-31", "version": 1, "legacy": False}]
+    rows = {t["id"]: t for t in sv.overview(WH, ITEMS, BAL, RES, MV, PROJ, PEOPLE, PULL, True, ["warehouse"], trs)["transfers"]}
+    assert rows["t1"]["status_tone"] == "danger" and rows["t1"]["accepted_label"] == "8 м"
+    assert rows["t1"]["act_label"] == "Акт недостачи № 3: отгружено 10 м, принято 8 м, недостача 2 м"
+    assert rows["t1"]["act_signed_label"] == "Бой  ·  подписал приёмщик Белова И., 2026-11-17 09:00 UTC"
+    assert (rows["t2"]["expected_label"], rows["t2"]["overdue"], rows["t3"]["overdue"]) == ("01.01.2000", True, False)
+    assert rows["t1"]["overdue"] is False and rows["t1"]["act_label"] and rows["t2"]["act_label"] == ""
+    no_pull = sv.overview(WH, ITEMS, BAL, RES, MV, PROJ, PEOPLE, "", True, ["warehouse"], trs)
+    assert not any(t["overdue"] for t in no_pull["transfers"])                    # нет снимка — срок не оцениваем
