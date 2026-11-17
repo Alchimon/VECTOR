@@ -75,7 +75,9 @@ OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp")
                 ("warehouse", "warehouses"), ("stock_item", "stock_items"),
                 # Закупка (D-32): поставщики и черновики заказов правятся офлайн через очередь; размещение, приём,
                 # закрытие и отмена — онлайн-командами, их ответ (заказ) тоже кладётся сюда.
-                ("supplier", "suppliers"), ("purchase_order", "purchase_orders"))
+                ("supplier", "suppliers"), ("purchase_order", "purchase_orders"),
+                # Договоры с поставщиками (D-33, A-39) — тоже справочник закупки, правится офлайн через очередь.
+                ("supplier_contract", "supplier_contracts"))
 # Объекты из результата команды → список в meta (ключ результата, ключ meta); заменяются по id.
 # Движения склада, резервы и потребности меняются ТОЛЬКО онлайн-командами (online_required): в кэше это
 # снимок «на момент последнего обновления», офлайн он только читается.
@@ -111,8 +113,10 @@ def _po_same(local: dict, payload: dict) -> bool:
                                         o.get("currency"))
         except pu.PurchaseError:
             return None
+        # D-33: договор и режим цен (с НДС / без НДС) — тоже содержание черновика; ставка НДС — в строках.
         return (o.get("supplier_id"), cur, o.get("supplier_ref") or None, o.get("expected_on") or None,
-                o.get("note") or None, [x.to_json() for x in lines])
+                o.get("note") or None, o.get("contract_id") or None, o.get("vat_mode") or None,
+                [x.to_json() for x in lines])
     a = canon(local)
     return a is not None and a == canon(payload)
 

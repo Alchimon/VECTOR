@@ -12,7 +12,9 @@ RowLayout {
     ColumnLayout {
         spacing: 2; Layout.fillWidth: true
         Text { text: h.title; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsXl; font.weight: Font.Bold }
-        Text { visible: h.subtitle !== ""; text: h.subtitle; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
+        // Длинное пояснение сокращается многоточием, а не раздвигает страницу шире окна (кнопки справа важнее).
+        Text { visible: h.subtitle !== ""; text: h.subtitle; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs
+               elide: Text.ElideRight; Layout.fillWidth: true; Layout.preferredWidth: 0 }
     }
     RowLayout { id: act; spacing: 8 }
 }

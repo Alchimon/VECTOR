@@ -13,6 +13,11 @@ ApplicationWindow {
     title: "ВЕКТОР"
     color: Theme.bg
     font.family: Theme.family
+    // Стандартные элементы Qt (галочки CheckBox и т. п.) берут цвет подписи из палитры окна — задаём его из темы,
+    // иначе в тёмной теме подпись галочки тёмная на тёмном фоне.
+    palette.windowText: Theme.text
+    palette.text: Theme.text
+    palette.base: Theme.surface
 
     Binding { target: Theme; property: "dark"; value: backend.theme === "dark" }
     Binding { target: Theme; property: "family"; value: uiFontFamily }

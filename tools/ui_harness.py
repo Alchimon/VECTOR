@@ -337,7 +337,8 @@ def main():
         h.shot(out / f"{theme}-18-procurement-match.png")
         QMetaObject.invokeMethod(lm, "close")
         h.wait_idle()
-        # Заказы поставщикам (D-32): вкладка «Заказы» — № 2 поставлен частично; редактор черновика № 3; справочник.
+        # Заказы поставщикам (D-32, D-33): вкладка «Заказы» — № 2 поставлен частично (НДС раздельно); редактор
+        # черновика с ценами без НДС (строки как у № 5); справочник с реквизитами и договорами; форма реквизитов.
         sec = next(i for i in h.items("tabsModel") if i.isVisible())
         sec.setProperty("tab", "orders")
         h.wait_idle()
@@ -347,7 +348,9 @@ def main():
         h.wait_idle()
         h.shot(out / f"{theme}-25-purchase-orders.png")
         pe = next(o for o in h.win.findChildren(QObject) if o.objectName() == "poEditor")
-        QMetaObject.invokeMethod(pe, "openFor", Q_ARG("QVariant", orders[3]))
+        # Редактор показываем на новом черновике со строками № 5 (сам № 5 на согласовании и не правится).
+        draft = dict(orders[5], id=str(uuid.uuid4()), title="Новый заказ", approval_state=None)
+        QMetaObject.invokeMethod(pe, "openFor", Q_ARG("QVariant", draft))
         h.wait_idle()
         h.shot(out / f"{theme}-26-purchase-order-editor.png")
         QMetaObject.invokeMethod(pe, "close")
@@ -359,6 +362,12 @@ def main():
         spn.setProperty("selectedId", next(x["id"] for x in sups if x["code"] == "ЭЛЕКТРОСНАБ"))
         h.wait_idle()
         h.shot(out / f"{theme}-27-suppliers.png")
+        sf = next(o for o in h.win.findChildren(QObject) if o.objectName() == "supForm")
+        QMetaObject.invokeMethod(sf, "openFor", Q_ARG("QVariant", next(x for x in sups if x["code"] == "ЭЛЕКТРОСНАБ")))
+        h.wait_idle()
+        h.shot(out / f"{theme}-30-supplier-requisites.png")
+        QMetaObject.invokeMethod(sf, "close")
+        h.wait_idle()
         sec.setProperty("tab", "needs")
         h.wait_idle()
         h.backend.logout()
@@ -381,6 +390,19 @@ def main():
         h.shot(out / f"{theme}-28-purchase-receive.png")
         QMetaObject.invokeMethod(rf, "close")
         h.wait_idle()
+        h.backend.logout()
+        h.wait_idle()
+        # Согласование (D-33): v.zaitseva — вкладка «На согласовании», карточка № 5 (цены без НДС, договор П-14).
+        h.login("v.zaitseva")
+        h.go("procurement")
+        h.backend.setOrdersFilter("approval")
+        h.wait_idle()
+        op = next(i for i in h.items("pov") if i.isVisible())
+        o5 = next(o for o in _plain(op.property("pov"))["orders"] if o["order_no"] == 5)
+        op.setProperty("selectedId", o5["id"])
+        h.wait_idle()
+        h.shot(out / f"{theme}-29-purchase-approval.png")
+        h.backend.setOrdersFilter("active")
         h.backend.logout()
         h.wait_idle()
         # Настройки компании (D-26, A-26): администратор, вкладка «Настройки компании».

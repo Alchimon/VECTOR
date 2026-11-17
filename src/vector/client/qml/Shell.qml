@@ -34,6 +34,7 @@ Item {
     readonly property bool seesStock: backend.hint("stock.read", backend.permRevision)
     readonly property bool seesNeeds: seesStock || (backend.needsOverview.needs || []).length > 0
         || (backend.me.roles || []).indexOf("accountant") >= 0   // бухгалтерия видит заказы поставщикам (D-32)
+        || (backend.me.roles || []).indexOf("po_approver") >= 0  // согласующий закупки — заказы на согласовании (D-33)
     Shortcut { sequence: "F5"; onActivated: backend.syncNow() }
 
     RowLayout {

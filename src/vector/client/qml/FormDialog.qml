@@ -13,12 +13,14 @@ Popup {
     property string note: ""
     property bool working: false
     property bool canConfirm: true
+    // Ширина формы: обычные формы — 520; формы с полями в две колонки (реквизиты поставщика) — шире.
+    property int formWidth: 520
     default property alias content: body.data
     signal confirmed()
     modal: true
     focus: true
     anchors.centerIn: Overlay.overlay
-    width: Math.min(520, (Overlay.overlay ? Overlay.overlay.width : 800) - 48)
+    width: Math.min(formWidth, (Overlay.overlay ? Overlay.overlay.width : 800) - 48)
     padding: 0
     closePolicy: Popup.CloseOnEscape
     onOpened: { error = ""; working = false }

@@ -33,7 +33,8 @@ log = logging.getLogger("vector.client")
 # Русские названия глобальных ролей (коды — из contracts/permissions). Внутренние коды пользователю не показываются.
 ROLE_LABELS = {"admin": "Администратор", "gip": "ГИП", "rp": "РП", "dept_head": "Руководитель отдела",
                "lead_engineer": "Ведущий инженер", "engineer": "Инженер", "designer": "Конструктор", "technologist": "Технолог",
-               "production": "Производство", "warehouse": "Склад", "procurement": "Закупка", "accountant": "Бухгалтерия"}
+               "production": "Производство", "warehouse": "Склад", "procurement": "Закупка", "accountant": "Бухгалтерия",
+               "po_approver": "Согласование закупок"}
 # Русские названия полей команд — для экрана конфликта «моё / на сервере».
 FIELD_LABELS = {"name": "Наименование", "short_name": "Краткое наименование", "inn": "ИНН", "kpp": "КПП", "note": "Примечание",
                 "contact": "Контакт", "title": "Название", "deadline": "Срок подачи", "customer_id": "Заказчик", "tender_id": "Тендер",
@@ -106,7 +107,7 @@ def _clean_po_lines(lines) -> list[dict]:
     for raw in lines or []:
         raw = raw if isinstance(raw, dict) else {}
         ln = {}
-        for k in ("line_id", "item_id", "qty", "unit_price", "need_id", "need_line_id", "note"):
+        for k in ("line_id", "item_id", "qty", "unit_price", "need_id", "need_line_id", "note", "vat_rate"):
             v = raw.get(k)
             if isinstance(v, str):
                 v = v.strip()
@@ -178,8 +179,9 @@ class Backend(QObject):
         self._problems = 0
         self._me: dict = {}
         self._data: dict[str, list] = {"customer": [], "tender": [], "tkp": [], "project": [], "kit": [], "task": [], "document": [],
-                                       "calc_draft": [], "warehouse": [], "stock_item": [], "supplier": [], "purchase_order": []}
-        # Фильтр вкладки «Заказы поставщикам» (active / draft / placed / closed / all) — состояние экрана.
+                                       "calc_draft": [], "warehouse": [], "stock_item": [], "supplier": [], "purchase_order": [],
+                                       "supplier_contract": []}
+        # Фильтр вкладки «Заказы поставщикам» (active / approval / draft / placed / closed / all) — состояние экрана.
         self._po_filter = "active"
         # Склад: снимок остатков/резервов/журнала/потребностей на момент последнего обновления (meta кэша).
         self._stock: dict = {}
@@ -400,7 +402,7 @@ class Backend(QObject):
         key = {"customer": "name", "tender": "title", "tkp": "label", "project": "code", "kit": "code", "document": "code",
                "warehouse": "code", "stock_item": "code", "supplier": "code",
                # Порядок заказов задаёт purchasing_view.orders_view (по номеру); здесь — любой стабильный.
-               "purchase_order": "id"}[kind]
+               "purchase_order": "id", "supplier_contract": "number"}[kind]
         return sorted(out, key=lambda d: (str(d.get(key) or "")).lower())
 
     def _decorate_task(self, o: dict) -> dict:
@@ -527,37 +529,48 @@ class Backend(QObject):
         return qml_safe(stock_view.settings_view(self._stock.get("config") or [], self._me.get("roles", []),
                                                  self._online and self._session_mode == "online"))
 
-    # ------------------------------------------------------------ заказы поставщикам и поставщики (D-32)
+    # ------------------------------------------------------------ заказы поставщикам и поставщики (D-32, D-33)
     @Property("QVariantMap", notify=dataChanged)
     def ordersOverview(self):
-        """Вкладка «Заказы поставщикам»: черновики (в т. ч. не отправленные), размещённые, «поставлено / ждём»."""
+        """Вкладка «Заказы поставщикам»: черновики (в т. ч. не отправленные), согласование, размещённые,
+        «поставлено / ждём», НДС раздельно (D-33)."""
         return qml_safe(purchasing_view.orders_view(
             self._decorate("purchase_order"), self._decorate("supplier"), self._decorate("stock_item"),
             self._stock.get("needs") or [], self._me.get("roles", []), self._online and self._session_mode == "online",
-            self._last_pull, self._po_filter))
+            self._last_pull, self._po_filter, self._decorate("supplier_contract"), self._people,
+            self._me.get("user_id") or ""))
 
     @Property("QVariantMap", notify=dataChanged)
     def suppliersOverview(self):
-        """Вкладка «Поставщики»: справочник (ведёт закупка, A-34)."""
-        return qml_safe(purchasing_view.suppliers_view(self._decorate("supplier"), self._me.get("roles", [])))
+        """Вкладка «Поставщики»: справочник с реквизитами и договорами (ведёт закупка, A-34)."""
+        return qml_safe(purchasing_view.suppliers_view(self._decorate("supplier"), self._me.get("roles", []),
+                                                       self._decorate("supplier_contract")))
 
     @Slot(str)
     def setOrdersFilter(self, flt: str):
-        """Сменить фильтр списка заказов (active / draft / placed / closed / all)."""
-        self._po_filter = flt if flt in ("active", "draft", "placed", "closed", "all") else "active"
+        """Сменить фильтр списка заказов (active / approval / draft / placed / closed / all)."""
+        self._po_filter = flt if flt in ("active", "approval", "draft", "placed", "closed", "all") else "active"
         self.dataChanged.emit()
 
-    @Slot("QVariantList", str, result="QVariantMap")
-    def poPreview(self, lines, currency: str) -> dict:
-        """Проверка строк черновика заказа в форме (без сервера): суммы, замечания по строкам, итог."""
+    @Slot("QVariantList", str, str, result="QVariantMap")
+    def poPreview(self, lines, currency: str, vat_mode: str = "") -> dict:
+        """Проверка строк черновика заказа в форме (без сервера): суммы и НДС строк, замечания, итоги, чего не
+        хватает для согласования."""
         lines = lines.toVariant() if hasattr(lines, "toVariant") else lines
         return qml_safe(purchasing_view.preview(_clean_po_lines(lines), currency.strip().upper() or None,
-                                                self._decorate("stock_item")))
+                                                self._decorate("stock_item"), vat_mode or None))
 
     @Slot(str, result=str)
     def innProblem(self, text: str) -> str:
         """Проверка ИНН в форме поставщика (10/12 цифр с контрольной суммой; пусто — можно)."""
         return purchasing_view.inn_problem(text)
+
+    @Slot("QVariantMap", str, result="QVariantMap")
+    def requisitesProblems(self, fields, inn: str) -> dict:
+        """Проверка реквизитов в форме поставщика (КПП, ОГРН, БИК, счета — те же правила, что на сервере):
+        {поле: замечание}; пустой словарь — замечаний нет."""
+        f = fields.toVariant() if hasattr(fields, "toVariant") else fields
+        return purchasing_view.requisites_problems(dict(f or {}), inn)
 
     @Slot(str, "QVariantMap")
     def savePoDraft(self, tag: str, payload):
@@ -566,7 +579,8 @@ class Backend(QObject):
         """
         p = dict(payload.toVariant() if hasattr(payload, "toVariant") else payload)
         p["lines"] = _clean_po_lines(p.get("lines") or [])
-        for k in ("currency", "supplier_ref", "expected_on", "note"):
+        # Пустые поля формы → None («не указано»); договор и режим цен (D-33) — так же.
+        for k in ("currency", "supplier_ref", "expected_on", "note", "contract_id", "vat_mode"):
             v = (p.get(k) or "").strip() if isinstance(p.get(k), str) else p.get(k)
             p[k] = (v.upper() if k == "currency" else v) or None
 

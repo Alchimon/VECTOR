@@ -2,13 +2,16 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
-// Редактор черновика заказа поставщику (D-32): широкое модальное окно — реквизиты и таблица строк.
+// Редактор черновика заказа поставщику (D-32, D-33): широкое модальное окно — реквизиты и таблица строк.
 //
 //  * Рабочая копия строк — ListModel (правка поля не пересоздаёт строки, фокус не прыгает).
 //  * Каждое изменение сразу проверяется локально (backend.poPreview → vector.core.purchasing — те же правила,
 //    что на сервере): сумма строки, замечание у строки, итог. Числа — строками, без float.
 //  * Пустая цена = «неизвестна» (не ноль); валюта не подставляется сама и обязательна, если указана хоть одна
-//    цена. НДС не считается: цены вводятся так, как в счёте поставщика (A-35).
+//    цена. Цены вводятся так, как в счёте поставщика; «Цены в счёте» — с НДС или без НДС, у строки — ставка НДС.
+//    Внизу — три итога: без НДС, НДС, с НДС (A-35, НДС строки округляется до копеек). Режим и ставки для
+//    черновика необязательны, но без них заказ не отправить на согласование (подсказка внизу).
+//  * Договор — из действующих договоров выбранного поставщика (A-34); можно «без договора».
 //  * Строку можно привязать к строке потребности — тогда позиция должна совпадать с выбранной для строки
 //    потребности (проверит сервер); в потребности появится «заказано, ждём» после размещения.
 //  * «Сохранить» — через очередь (можно без связи): новый заказ — po.create, существующий черновик — po.update
@@ -27,7 +30,7 @@ Popup {
     property string tag: "po-" + Math.random().toString(36).slice(2)
     readonly property var pv: {
         editRev
-        var r = visible ? backend.poPreview(collect(), curField.text) : ({ rows: [] })
+        var r = visible ? backend.poPreview(collect(), curField.text, vatSel.currentValue || "") : ({ rows: [] })
         var m = {}
         for (var i = 0; i < (r.rows || []).length; i++) m[r.rows[i].line_id] = r.rows[i]
         r.byId = m
@@ -44,15 +47,27 @@ Popup {
 
     ListModel { id: lm }
 
-    function indexOf(options, id) { for (var i = 0; i < options.length; i++) if (options[i].id === id) return i; return -1 }
+    function indexOf(options, id) { options = options || []; for (var i = 0; i < options.length; i++) if (options[i].id === id) return i; return -1 }
+    // Договоры выбранного поставщика; текущий договор черновика остаётся в списке, даже если уже не действует.
+    readonly property var contractOpts: {
+        var sid = supSel.currentValue
+        var out = [{ id: "", label: "без договора" }].concat((ov.contracts || []).filter(c => c.supplier_id === sid))
+        if (order && order.contract_id && order.supplier_id === sid && indexOf(out, order.contract_id) < 0)
+            out.push({ id: order.contract_id, label: order.contract_label })
+        return out
+    }
+    // Ставка НДС новой строки — ставка поставщика по умолчанию (из реквизитов), если указана.
+    function defaultRate() { var s = (ov.suppliers || [])[supSel.currentIndex]; return s ? (s.vat_rate || "") : "" }
     function openFor(o) {
         order = o || null; error = ""; working = false
         orderId = o ? o.id : backend.newId()
         lm.clear()
         var src = o ? (o.lines || []) : []
         for (var i = 0; i < src.length; i++) lm.append(rowOf(src[i]))
-        if (lm.count === 0) lm.append(rowOf({}))
+        if (lm.count === 0) lm.append(rowOf({ vat_rate: defaultRate() }))
         supSel.currentIndex = o ? Math.max(0, indexOf(ov.suppliers || [], o.supplier_id)) : 0
+        vatSel.currentIndex = Math.max(0, indexOf(ov.vat_modes || [], o ? (o.vat_mode || "") : ""))
+        conSel.currentIndex = Math.max(0, indexOf(contractOpts, o ? (o.contract_id || "") : ""))
         curField.text = o ? (o.currency || "") : ""
         refField.text = o ? (o.supplier_ref || "") : ""
         dateField.text = o ? (o.expected_on || "") : ""
@@ -65,7 +80,7 @@ Popup {
         return { line_id: x.line_id || backend.newId(), item_id: x.item_id || "",
                  qty: x.qty !== undefined && x.qty !== null ? plain(x.qty) : "",
                  unit_price: x.unit_price !== undefined && x.unit_price !== null ? plain(x.unit_price) : "",
-                 need_key: x.need_id ? x.need_id + "/" + x.need_line_id : "", note: x.note || "" }
+                 need_key: x.need_id ? x.need_id + "/" + x.need_line_id : "", note: x.note || "", vat_rate: x.vat_rate || "" }
     }
     function plain(s) { s = String(s); return s.indexOf(".") >= 0 ? s.replace(/0+$/, "").replace(/\.$/, "") : s }
     function setCell(i, key, value) { lm.setProperty(i, key, value); editRev++ }
@@ -77,13 +92,14 @@ Popup {
             if (!r.item_id && !r.qty && !r.unit_price && !r.note) continue
             var nk = r.need_key ? r.need_key.split("/") : ["", ""]
             out.push({ line_id: r.line_id, item_id: r.item_id, qty: r.qty, unit_price: r.unit_price,
-                       need_id: nk[0], need_line_id: nk[1], note: r.note })
+                       need_id: nk[0], need_line_id: nk[1], note: r.note, vat_rate: r.vat_rate })
         }
         return out
     }
     function save() {
         working = true; error = ""
         backend.savePoDraft(tag, { id: orderId, supplier_id: supSel.currentValue, currency: curField.text,
+                                   vat_mode: vatSel.currentValue || "", contract_id: conSel.currentValue || "",
                                    supplier_ref: refField.text, expected_on: dateField.text, note: noteField.text, lines: collect() })
     }
     Connections {
@@ -106,16 +122,21 @@ Popup {
             ColumnLayout { spacing: 2; Layout.fillWidth: true
                 Text { text: ed.order ? ed.order.title + " · черновик" : "Новый заказ поставщику"; color: Theme.text; font.family: Theme.family
                        font.pixelSize: Theme.fsL; font.weight: Font.DemiBold }
-                Text { text: "Цены — как в счёте поставщика (НДС программа не считает). Пустая цена — «неизвестна», не ноль. Валюта не подставляется сама. Черновик можно сохранять без связи."
+                Text { text: "Цены — как в счёте поставщика; укажите, с НДС они или без, и ставку НДС строки — программа покажет суммы без НДС, НДС и с НДС. Пустая цена — «неизвестна», не ноль. Валюта не подставляется сама. Черновик можно сохранять без связи; разместить — после согласования."
                        color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true } }
             VButton { kind: "ghost"; iconName: "x"; compact: true; onClicked: ed.close(); Accessible.name: "Закрыть" }
         }
         GridLayout {
             Layout.fillWidth: true; Layout.leftMargin: Theme.padL; Layout.rightMargin: Theme.padL
             columns: 3; columnSpacing: 12; rowSpacing: 8
-            VSelect { id: supSel; objectName: "poSupplier"; label: "Поставщик *"; model: ed.ov.suppliers || []; Layout.fillWidth: true; Layout.columnSpan: 2 }
+            VSelect { id: supSel; objectName: "poSupplier"; label: "Поставщик *"; model: ed.ov.suppliers || []; Layout.fillWidth: true; Layout.columnSpan: 2
+                      onCurrentValueChanged: conSel.currentIndex = Math.max(0, ed.indexOf(ed.contractOpts, ed.order ? (ed.order.contract_id || "") : "")) }
             VField { id: curField; objectName: "poCurrency"; label: "Валюта (ISO)"; placeholder: "RUB"; Layout.fillWidth: true
                      input.onTextEdited: ed.editRev++ }
+            VSelect { id: conSel; objectName: "poContract"; label: "Договор"; model: ed.contractOpts; Layout.fillWidth: true; Layout.columnSpan: 2
+                      hint: ed.contractOpts.length <= 1 ? "У поставщика нет действующих договоров — добавьте на вкладке «Поставщики» или заказ без договора." : "" }
+            VSelect { id: vatSel; objectName: "poVatMode"; label: "Цены в счёте"; model: ed.ov.vat_modes || []; Layout.fillWidth: true
+                      onCurrentIndexChanged: ed.editRev++ }
             VField { id: refField; label: "Счёт / КП поставщика"; placeholder: "Необязательно"; Layout.fillWidth: true }
             VField { id: dateField; label: "Ожидаемая поставка (для справки)"; placeholder: "ГГГГ-ММ-ДД"; Layout.fillWidth: true
                      error: text.trim() === "" || /^\d{4}-\d{2}-\d{2}$/.test(text.trim()) ? "" : "Дата в виде ГГГГ-ММ-ДД" }
@@ -131,7 +152,7 @@ Popup {
             RowLayout { anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 6
                 Repeater {
                     model: [{ t: "№", w: 28 }, { t: "Позиция номенклатуры *", w: -1 }, { t: "Кол-во *", w: 96 }, { t: "Ед.", w: 52 },
-                            { t: "Цена за ед.", w: 120 }, { t: "Сумма", w: 120 }, { t: "Под строку потребности", w: 220 }, { t: "", w: 34 }]
+                            { t: "Цена за ед.", w: 120 }, { t: "НДС", w: 116 }, { t: "Сумма", w: 120 }, { t: "Под строку потребности", w: 180 }, { t: "", w: 34 }]
                     delegate: Text { required property var modelData
                         text: modelData.t; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsXs; font.weight: Font.DemiBold
                         Layout.preferredWidth: modelData.w > 0 ? modelData.w : -1; Layout.fillWidth: modelData.w < 0 }
@@ -170,10 +191,14 @@ Popup {
                         CalcCell { Layout.preferredWidth: 120; num: true; placeholder: "неизвестна"; text: rowItem.model.unit_price
                                    Accessible.name: "Цена " + (rowItem.index + 1)
                                    onTextEdited: ed.setCell(rowItem.index, "unit_price", text) }
+                        VSelect { Layout.preferredWidth: 116; Layout.fillWidth: false; model: ed.ov.vat_rates || []
+                                  currentIndex: Math.max(0, ed.indexOf(model, rowItem.model.vat_rate))
+                                  Accessible.name: "Ставка НДС " + (rowItem.index + 1)
+                                  onCurrentValueChanged: if (currentValue !== rowItem.model.vat_rate) ed.setCell(rowItem.index, "vat_rate", currentValue) }
                         Text { text: rowItem.info.amount_label || "—"; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs
                                font.weight: Font.DemiBold; font.features: { "tnum": 1 }; horizontalAlignment: Text.AlignRight
                                elide: Text.ElideLeft; Layout.preferredWidth: 120 }
-                        VSelect { Layout.preferredWidth: 220; model: rowItem.needOpts; enabled: rowItem.needOpts.length > 1
+                        VSelect { Layout.preferredWidth: 180; model: rowItem.needOpts; enabled: rowItem.needOpts.length > 1
                                   currentIndex: Math.max(0, ed.indexOf(rowItem.needOpts, rowItem.model.need_key))
                                   Accessible.name: "Строка потребности " + (rowItem.index + 1)
                                   onCurrentValueChanged: if (currentValue !== rowItem.model.need_key) ed.setCell(rowItem.index, "need_key", currentValue) }
@@ -189,7 +214,7 @@ Popup {
         RowLayout {
             Layout.fillWidth: true; Layout.leftMargin: Theme.padL; Layout.rightMargin: Theme.padL; Layout.topMargin: 8; spacing: 8
             VButton { objectName: "poAddLine"; text: "Добавить строку"; iconName: "plus"; kind: "soft"; compact: true
-                      onClicked: { lm.append(ed.rowOf({})); ed.editRev++; lv.positionViewAtEnd() } }
+                      onClicked: { lm.append(ed.rowOf({ vat_rate: ed.defaultRate() })); ed.editRev++; lv.positionViewAtEnd() } }
             Item { Layout.fillWidth: true }
             Text { text: (ed.pv.rows || []).length + " стр."; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsS }
         }
@@ -200,6 +225,17 @@ Popup {
             ColumnLayout { spacing: 2; Layout.fillWidth: true
                 Text { objectName: "poEditorTotal"; text: "Итог: " + (ed.pv.total_label || ""); color: Theme.text; font.family: Theme.family
                        font.pixelSize: Theme.fsM; font.weight: Font.Bold; font.features: { "tnum": 1 }; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                // НДС раздельно (A-35): без НДС · НДС · с НДС; не посчитать — «—» и почему.
+                Text { objectName: "poEditorVat"; visible: ed.pv.vat !== undefined
+                       text: ed.pv.vat ? (ed.pv.vat.known ? "Без НДС " + ed.pv.vat.net_label + "  ·  НДС " + ed.pv.vat.vat_label + "  ·  С НДС " + ed.pv.vat.gross_label
+                                                          + (ed.pv.vat.by_rate_label ? "  (" + ed.pv.vat.by_rate_label + ")" : "")
+                                                        : "НДС не посчитан: " + ed.pv.vat.why) : ""
+                       color: ed.pv.vat && ed.pv.vat.known ? Theme.text : Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs
+                       font.features: { "tnum": 1 }; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                // Чего не хватит для согласования — не мешает сохранить черновик.
+                Text { objectName: "poEditorReady"; visible: (ed.pv.ready_problems || []).length > 0
+                       text: "Для согласования: " + (ed.pv.ready_problems || []).join(" ")
+                       color: Theme.warning; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
                 Text { visible: ed.pv.problem_count > 0
                        text: "Замечаний: " + ed.pv.problem_count + ". " + ((ed.pv.general_problems || []).join(" ") || "Исправьте строки, отмеченные красным.")
                        color: Theme.danger; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }

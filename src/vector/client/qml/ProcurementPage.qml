@@ -5,12 +5,13 @@ import QtQuick
 //  * «Заказы поставщикам» (OrdersPane.qml) — черновик → размещён → закрыт, приём поставки складом (шаг 5, D-32);
 //  * «Поставщики» (SuppliersPane.qml) — справочник (A-34).
 // Каждая вкладка — полноценный экран «список + карточка»; раздел хранит только выбранную вкладку.
-// Вкладка по умолчанию — «Потребности»; кто потребностей не видит (бухгалтерия) — начинает с заказов.
+// Вкладка по умолчанию — «Потребности»; кто потребностей не видит (бухгалтерия, согласующий закупки — D-33) —
+// начинает с заказов.
 Item {
     id: page
     property var shell
     readonly property bool seesNeeds: (backend.needsOverview.needs || []).length > 0 || (backend.me.roles || []).some(r => r === "procurement" || r === "warehouse")
-    readonly property bool seesOrders: (backend.me.roles || []).some(r => r === "procurement" || r === "warehouse" || r === "accountant")
+    readonly property bool seesOrders: (backend.me.roles || []).some(r => r === "procurement" || r === "warehouse" || r === "accountant" || r === "po_approver")
     property string tab: seesNeeds ? "needs" : "orders"
     readonly property var tabsModel: [].concat(
         seesNeeds ? [{ id: "needs", label: "Потребности", icon: "shopping-cart" }] : [],
