@@ -25,7 +25,7 @@ from vector.core import money
 #   v3 — задачи, документы, неизменяемые версии документов, хранилище файлов в БД (блоками);
 #   v4 — расчёт комплекта: черновик, неизменяемые версии K.n, неизменяемые ревизии проектного итога (С3).
 #        Переход v3 → v4 только добавляет таблицы: `vector-server migrate` (migrate.py).
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 ID = sa.String(36)
 BIGID = sa.BigInteger().with_variant(sa.Integer(), "sqlite")
@@ -382,6 +382,128 @@ project_calc_revision_items = sa.Table("project_calc_revision_items", metadata,
     sa.Column("total", Money, nullable=False),
     sa.Column("unknown_price_count", sa.Integer, nullable=False))
 
+# ---------------------------------------------------------------- склад и закупка (С4, R-13/R-14, схема v5)
+# Правила остатков/резервов — vector.core.stock (общие с клиентом). Количества — тот же тип Money (Qty):
+# NUMERIC(18,4) / BIGINT в десятитысячных, без float.
+
+# Номенклатура: код уникален и сравнивается точно — по нему строки потребности сопоставляются с позицией.
+# Единица измерения принадлежит номенклатуре; пересчёта единиц нет (коэффициенты не утверждены).
+stock_items = sa.Table("stock_items", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("code", U(64), nullable=False, unique=True),
+    sa.Column("name", U(300), nullable=False),
+    sa.Column("unit", U(20), nullable=False),
+    sa.Column("note", U(1000)),
+    sa.Column("active", sa.Boolean, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
+
+warehouses = sa.Table("warehouses", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("code", U(64), nullable=False, unique=True),
+    sa.Column("name", U(200), nullable=False),
+    sa.Column("note", U(1000)),
+    sa.Column("active", sa.Boolean, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
+
+# Остаток позиции на складе — ПРОИЗВОДНЫЕ данные: всегда равны свёртке журнала движений и действующих
+# резервов (это проверяет тест и `stock_ledger_check`). Хранятся отдельно ради двух вещей:
+# 1) конкурентная проверка — каждая проводка/резерв меняет ЭТУ строку с условием по version, поэтому две
+#    параллельные выдачи последней единицы не пройдут обе даже при ошибке в уровне изоляции;
+# 2) ограничения CHECK — БД сама не даст записать отрицательный остаток или резерв больше остатка.
+stock_balances = sa.Table("stock_balances", metadata,
+    sa.Column("warehouse_id", ID, sa.ForeignKey("warehouses.id"), primary_key=True),
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id"), primary_key=True),
+    sa.Column("on_hand", Qty, nullable=False),
+    sa.Column("reserved", Qty, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("on_hand >= 0", name="on_hand_nonneg"),
+    sa.CheckConstraint("reserved >= 0", name="reserved_nonneg"),
+    sa.CheckConstraint("reserved <= on_hand", name="reserved_le_on_hand"))
+
+# Потребность закупки — снимок зафиксированной версии расчёта комплекта (без цен: цены — данные расчёта,
+# закупке они в этом срезе не раскрываются, A-22). Одна потребность на версию. Потребность — НЕ заказ.
+procurement_needs = sa.Table("procurement_needs", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id"), nullable=False, index=True),
+    sa.Column("calc_version_id", BIGID, sa.ForeignKey("calc_versions.id"), nullable=False, unique=True),
+    sa.Column("calc_version_no", sa.Integer, nullable=False),
+    sa.Column("calc_content_hash", sa.String(64), nullable=False),
+    sa.Column("line_count", sa.Integer, nullable=False),
+    sa.Column("matched_count", sa.Integer, nullable=False),
+    sa.Column("status", U(32), nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("status IN ('open')", name="status"))
+
+# Строки потребности неизменяемы (снимок). item_id — номенклатура, найденная при формировании по ТОЧНОМУ
+# совпадению кода и единицы; NULL — не сопоставлена (причина в match_note), сопоставление вручную — позже.
+procurement_need_lines = sa.Table("procurement_need_lines", metadata,
+    sa.Column("need_id", ID, sa.ForeignKey("procurement_needs.id"), primary_key=True),
+    sa.Column("pos", sa.Integer, primary_key=True),
+    sa.Column("line_id", ID, nullable=False),
+    sa.Column("code", U(100)),
+    sa.Column("name", U(300), nullable=False),
+    sa.Column("unit", U(20), nullable=False),
+    sa.Column("qty", Qty, nullable=False),
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id")),
+    sa.Column("match_note", U(200)),
+    sa.UniqueConstraint("need_id", "line_id", name="uq_procurement_need_lines_line"))
+
+# Резерв: active → consumed (израсходован выдачами полностью) | released (снят; неизрасходованное вернулось
+# в доступное). Срок резерва и автоснятие — не в этом срезе: срок по умолчанию не утверждён (A-23).
+stock_reservations = sa.Table("stock_reservations", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("warehouse_id", ID, sa.ForeignKey("warehouses.id"), nullable=False),
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id"), nullable=False),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("need_id", ID, sa.ForeignKey("procurement_needs.id"), index=True),
+    sa.Column("need_line_id", ID),
+    sa.Column("qty", Qty, nullable=False),
+    sa.Column("consumed", Qty, nullable=False),
+    sa.Column("status", U(32), nullable=False),
+    sa.Column("reason", U(2000), nullable=False),
+    sa.Column("close_reason", U(2000)),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("status IN ('active','consumed','released')", name="status"),
+    sa.CheckConstraint("qty > 0", name="qty_pos"),
+    sa.CheckConstraint("consumed >= 0 AND consumed <= qty", name="consumed_range"),
+    sa.CheckConstraint("(need_id IS NULL AND need_line_id IS NULL) OR (need_id IS NOT NULL AND need_line_id IS NOT NULL)",
+                       name="need_pair"))
+sa.Index("ix_stock_reservations_balance", stock_reservations.c.warehouse_id, stock_reservations.c.item_id)
+
+# Журнал движений — НЕИЗМЕНЯЕМ (триггеры ниже). Количество всегда > 0, направление — вид движения.
+# Сторно — встречное движение со ссылкой reverses_id; у движения не больше одного сторно (уникальный индекс).
+stock_movements = sa.Table("stock_movements", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("doc_no", sa.Integer, nullable=False, unique=True),
+    sa.Column("kind", U(16), nullable=False),
+    sa.Column("warehouse_id", ID, sa.ForeignKey("warehouses.id"), nullable=False),
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id"), nullable=False),
+    sa.Column("qty", Qty, nullable=False),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), index=True),
+    sa.Column("reservation_id", ID, sa.ForeignKey("stock_reservations.id")),
+    sa.Column("reverses_id", ID, sa.ForeignKey("stock_movements.id")),
+    sa.Column("source_doc", U(200)),
+    sa.Column("reason", U(2000)),
+    sa.Column("posted_by", ID, nullable=False),
+    sa.Column("posted_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("kind IN ('receipt','issue')", name="kind"),
+    sa.CheckConstraint("qty > 0", name="qty_pos"))
+sa.Index("ix_stock_movements_balance", stock_movements.c.warehouse_id, stock_movements.c.item_id)
+sa.Index("ux_stock_movements_reverses", stock_movements.c.reverses_id, unique=True,
+         postgresql_where=stock_movements.c.reverses_id.isnot(None),
+         mssql_where=stock_movements.c.reverses_id.isnot(None),
+         sqlite_where=stock_movements.c.reverses_id.isnot(None))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -464,7 +586,7 @@ BEGIN THROW {ms_error}, '{n} are immutable', 1; END""").execute_if(dialect="mssq
 
 
 for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_calc_revisions, 50005),
-                 (project_calc_revision_items, 50006)):
+                 (project_calc_revision_items, 50006), (stock_movements, 50007), (procurement_need_lines, 50008)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

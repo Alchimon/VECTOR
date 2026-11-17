@@ -250,7 +250,7 @@ def test_migrate_cli_v3_to_v4(setup):
     assert r.returncode == 1 and "vector-server migrate" in r.stderr
     run(["gen-backup-key", str(tmp / "backup.key")])
     r = run(["migrate", "--config", str(cfg), "--key-file", str(tmp / "backup.key")])
-    assert "схема v4" in r.stdout and "проверена" in r.stdout
+    assert f"схема v{db.SCHEMA_VERSION}" in r.stdout and "проверена" in r.stdout
     assert len(list((tmp / "backups").glob("vector-premigrate-v3-*.vbak"))) == 1
     assert "совместима" in run(["check", "--config", str(cfg)]).stdout
     assert "миграция не нужна" in run(["migrate", "--config", str(cfg), "--key-file", str(tmp / "backup.key")]).stdout

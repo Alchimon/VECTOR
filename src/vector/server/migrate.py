@@ -7,8 +7,8 @@
    миграция не начинается.
 2. **Всё или ничего.** Все шаги выполняются в ОДНОЙ транзакции вместе с записью новой версии схемы
    (DDL транзакционен на PostgreSQL, MS SQL и SQLite). Сбой посередине — БД остаётся в прежней версии.
-3. **Только добавление.** Шаги не удаляют и не переписывают существующие данные; переход v3 → v4
-   только создаёт новые таблицы расчётов. Шаги, меняющие данные, потребуют отдельного решения (Decision Log).
+3. **Только добавление.** Шаги не удаляют и не переписывают существующие данные; переходы v3 → v4
+   (таблицы расчётов) и v4 → v5 (склад и закупка) только создают новые таблицы. Шаги, меняющие данные, потребуют отдельного решения (Decision Log).
 4. **Fail-closed.** Неизвестная/более новая версия, незавершённое восстановление, уже существующая таблица,
    которую шаг должен создать, — отказ без изменений.
 
@@ -36,6 +36,9 @@ class MigrationError(RuntimeError):
 ADDED_IN: dict[int, list[sa.Table]] = {
     4: [db.calc_drafts, db.calc_draft_lines, db.calc_versions, db.calc_version_lines,
         db.project_calc_revisions, db.project_calc_revision_items],
+    # С4: склад и закупка. Порядок учитывает внешние ключи (потребность → резерв → движение).
+    5: [db.stock_items, db.warehouses, db.stock_balances, db.procurement_needs, db.procurement_need_lines,
+        db.stock_reservations, db.stock_movements],
 }
 
 
@@ -58,7 +61,7 @@ def _create_tables(tables: list[sa.Table]) -> Callable:
 
 
 # Шаг «из версии N в N+1».
-STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4])}
+STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(ADDED_IN[5])}
 
 
 @dataclass
