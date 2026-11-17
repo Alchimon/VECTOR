@@ -64,6 +64,7 @@ ColumnLayout {
                         Accessible.role: Accessible.PageTab; Accessible.name: modelData.label
                         activeFocusOnTab: true
                         Keys.onSpacePressed: kw.tab = modelData.id
+                        Keys.onReturnPressed: kw.tab = modelData.id
                         RowLayout { id: segIn; anchors.centerIn: parent; spacing: 6
                             Icon { name: modelData.icon; size: 14; color: kw.tab === modelData.id ? Theme.primary : Theme.textMuted }
                             Text { text: modelData.label; font.family: Theme.family; font.pixelSize: Theme.fsS

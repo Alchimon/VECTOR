@@ -9,7 +9,7 @@
 * класс команды берётся из contracts/command-catalog (queued / online_required);
 * queued: устойчивый operation_id создаётся ОДИН раз и переиспользуется при всех повторах;
 * синхронизация строго по порядку; на конфликте/отказе — стоп (причинность сохраняется);
-* конфликт не сливается автоматически: «отменить своё» или «повторить поверх текущей версии» (новая операция);
+* конфликт не сливается автоматически: «отменить своё» или «применить поверх текущей версии» (новая операция);
 * потерян ответ — операция остаётся в очереди с тем же operation_id.
 """
 from __future__ import annotations
@@ -35,7 +35,7 @@ from .vault import DeviceSecretStore, OpenVault, Vault, VaultError, profile_dir,
 #            server_enc — последняя известная серверная копия, pending=1 — есть неподтверждённые правки;
 # * outbox — очередь операций в порядке seq; operation_id создаётся один раз и не меняется при повторах;
 #            state: pending → accepted | conflict | rejected; конфликт/отказ решает пользователь:
-#            discarded («отменить своё») или superseded («повторить поверх» новой операцией);
+#            discarded («отменить своё») или superseded («применить поверх» новой операцией);
 # * meta   — служебное: сеанс, время снимка last_pull, люди, назначения, неизменяемые списки, склад.
 LOCAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS cache (
@@ -341,8 +341,9 @@ class SyncClient:
                     return LocalResult("unknown_outcome", op_id, "Ответ сервера не получен — неизвестно, сменён ли пароль. "
                                                                  "Попробуйте войти с новым паролем, затем со старым.")
                 self._remember_online_unknown(op_id, command, payload, expected_version)
-                return LocalResult("unknown_outcome", op_id, "Ответ сервера не получен: результат неизвестен. Нажмите «Проверить» — "
-                                                             "система спросит сервер по тому же номеру операции, не выполняя действие дважды.")
+                return LocalResult("unknown_outcome", op_id, "Ответ сервера не получен: результат неизвестен. Нажмите «Синхронизировать» "
+                                                             "(F5) — программа спросит сервер по тому же номеру операции, "
+                                                             "не выполняя действие дважды.")
             if r.get("status") == "unauthenticated":
                 self.token = None if r.get("code") != "password_change_required" else self.token
             self._apply_response(r)

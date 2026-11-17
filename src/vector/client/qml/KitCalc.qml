@@ -124,6 +124,7 @@ ColumnLayout {
                 activeFocusOnTab: true
                 Accessible.role: Accessible.RadioButton; Accessible.name: "Сравнить с версией " + modelData.label
                 Keys.onSpacePressed: kc.compareNo = modelData.version_no
+                Keys.onReturnPressed: kc.compareNo = modelData.version_no
                 Text { id: vl; anchors.centerIn: parent; text: modelData.label; color: parent.on ? Theme.primary : Theme.textMuted
                        font.family: Theme.family; font.pixelSize: Theme.fsS; font.weight: parent.on ? Font.DemiBold : Font.Normal }
                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: kc.compareNo = modelData.version_no }
