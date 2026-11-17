@@ -18,7 +18,8 @@ LINUX = STAND / "linux"
 def test_windows_cmd_files_are_ascii_crlf():
     """cmd.exe читает пакетные файлы в кодовой странице OEM: только ASCII; переводы строк — CRLF."""
     files = sorted(WIN.glob("*.cmd"))
-    assert {f.name for f in files} == {"setup.cmd", "start-server.cmd", "start-client.cmd", "backup.cmd", "update.cmd"}
+    assert {f.name for f in files} == {"setup.cmd", "start-server.cmd", "start-client.cmd", "backup.cmd", "update.cmd",
+                                      "check-stand.cmd"}
     for f in files:
         raw = f.read_bytes()
         raw.decode("ascii")

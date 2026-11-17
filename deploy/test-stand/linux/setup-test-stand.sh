@@ -120,6 +120,7 @@ cat <<EOF
   2) Клиент:  $DIR/start-client.sh      (адрес и сертификат подставятся сами)
      Адрес сервера: https://localhost:$PORT   Сертификат CA: $DIR/certs/ca.pem
   3) Копия:   $DIR/backup.sh
+  4) Самопроверка (при запущенном сервере, только чтение): bash $HERE/check-stand.sh --dir $DIR
 $( [ "$LAN" = 1 ] && echo "  С других ПК: https://$(hostname):$PORT (откройте порт $PORT в межсетевом экране; на ПК клиента нужен certs/ca.pem)" )
 Инструкция и сценарии проверки: docs/ops/test-pc.md
 EOF

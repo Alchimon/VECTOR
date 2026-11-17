@@ -236,6 +236,7 @@ Write-Host "  1) Сервер: ярлык «ВЕКТОР — сервер (те�
 Write-Host "  2) Клиент: ярлык «ВЕКТОР — клиент (тест)» или $Dir\start-client.cmd (адрес и сертификат подставятся сами)"
 Write-Host "     Адрес сервера: https://localhost:$Port    Сертификат CA: $Dir\certs\ca.pem"
 Write-Host "  3) Резервная копия: $Dir\backup.cmd"
+Write-Host "  4) Самопроверка стенда (при запущенном сервере, только чтение): $Templates\check-stand.cmd `"$Dir`""
 if ($Lan) {
     Write-Host "  С других ПК: https://$($env:COMPUTERNAME):$Port — на них запустите setup.cmd -ClientOnly (см. инструкцию)"
 }
