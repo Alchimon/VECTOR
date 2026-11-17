@@ -50,11 +50,13 @@ Item {
                 RowLayout {
                     Layout.bottomMargin: 18; Layout.topMargin: 6; Layout.leftMargin: 6
                     spacing: 10
-                    Rectangle { width: 34; height: 34; radius: 9; color: Theme.primary
-                        Icon { anchors.centerIn: parent; name: "layers"; size: 19; color: Theme.textOnPrimary } }
+                    // Знак «V» из логотипа владельца (D-28) и название; полный логотип — на экране входа.
+                    Image { objectName: "shellMark"; source: Theme.mark; Layout.preferredWidth: 46; Layout.preferredHeight: 46
+                            sourceSize: Qt.size(128, 128); fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true
+                            Accessible.name: "ВЕКТОР" }
                     ColumnLayout { spacing: -2
-                        Text { text: "ВЕКТОР"; color: Theme.text; font.family: Theme.family; font.pixelSize: 16; font.weight: Font.Black; font.letterSpacing: 1.5 }
-                        Text { text: "инженерная платформа"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs } }
+                        Text { text: "ВЕКТОР"; color: Theme.text; font.family: Theme.family; font.pixelSize: 17; font.weight: Font.DemiBold; font.letterSpacing: 2 }
+                        Text { text: "единая платформа"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs } }
                 }
                 Text { text: "РАБОТА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.bottomMargin: 4 }
                 NavItem { text: "Заказчики"; iconName: "building-2"; active: shellRoot.page === "customers"; onClicked: shellRoot.go("customers"); visible: backend.hint("customer.read", backend.permRevision) }
@@ -87,10 +89,23 @@ Item {
             }
         }
 
-        Loader {
+        Item {
             Layout.fillWidth: true; Layout.fillHeight: true
+            // Фон рабочей области — та же «чертёжная» композиция, приглушённая: видна в полях между карточками,
+            // сами карточки непрозрачны, поэтому данные читаются как прежде.
+            Image {
+                objectName: "shellBackdrop"
+                anchors.fill: parent
+                source: Theme.backdrop
+                fillMode: Image.PreserveAspectCrop
+                opacity: Theme.backdropOpacity
+                asynchronous: true; smooth: true; mipmap: true
+            }
+        Loader {
+            anchors.fill: parent
             sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC, finance: financeC,
                                stock: stockC, procurement: procurementC })[shellRoot.page]
+        }
         }
     }
     Component { id: customersC; CustomersPage { shell: shellRoot } }

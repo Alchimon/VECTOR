@@ -14,40 +14,42 @@ Item {
         anchors.fill: parent
         spacing: 0
 
-        // Бренд-панель
+        // Бренд-панель: фоновая «чертёжная» композиция владельца (D-28) + логотип. Поверх фона — мягкая вуаль цвета
+        // окна, чтобы текст и чипы читались на любом участке изображения.
         Rectangle {
             Layout.fillHeight: true
             Layout.preferredWidth: parent.width * 0.44
-            gradient: Gradient {
-                orientation: Gradient.Vertical
-                GradientStop { position: 0.0; color: Theme.dark ? "#1B2140" : "#E9ECFF" }
-                GradientStop { position: 1.0; color: Theme.dark ? "#241B3D" : "#F3EEFF" }
-            }
-            // Декоративная сетка «чертёжной» бумаги
-            Canvas {
+            color: Theme.bg
+            clip: true
+            Image {
+                objectName: "loginBackdrop"
                 anchors.fill: parent
-                opacity: Theme.dark ? 0.10 : 0.35
-                onPaint: {
-                    var ctx = getContext("2d"); ctx.clearRect(0, 0, width, height)
-                    ctx.strokeStyle = Theme.dark ? "#8EA2FF" : "#C9D0F5"; ctx.lineWidth = 1
-                    for (var x = 0; x < width; x += 28) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke() }
-                    for (var y = 0; y < height; y += 28) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke() }
+                source: Theme.backdrop
+                fillMode: Image.PreserveAspectCrop
+                horizontalAlignment: Image.AlignLeft
+                asynchronous: true; smooth: true; mipmap: true
+            }
+            Rectangle {
+                anchors.fill: parent
+                gradient: Gradient {
+                    orientation: Gradient.Vertical
+                    GradientStop { position: 0.0;  color: Qt.alpha(Theme.bg, 0.30) }
+                    GradientStop { position: 0.45; color: Qt.alpha(Theme.bg, 0.78) }
+                    GradientStop { position: 1.0;  color: Qt.alpha(Theme.bg, 0.92) }
                 }
             }
+            Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: Theme.border }
             ColumnLayout {
                 anchors.fill: parent; anchors.margins: 56
                 spacing: 18
-                RowLayout {
-                    spacing: 12
-                    Rectangle {
-                        width: 44; height: 44; radius: 12; color: Theme.primary
-                        Icon { anchors.centerIn: parent; name: "layers"; size: 24; color: Theme.textOnPrimary }
-                    }
-                    ColumnLayout {
-                        spacing: 0
-                        Text { text: "ВЕКТОР"; color: Theme.text; font.family: Theme.family; font.pixelSize: 22; font.weight: Font.Black; font.letterSpacing: 2 }
-                        Text { text: "VECTOR"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsXs; font.letterSpacing: 3 }
-                    }
+                Image {
+                    objectName: "loginLogo"
+                    source: Theme.logo
+                    Layout.preferredWidth: Math.min(400, parent.width)
+                    Layout.preferredHeight: Layout.preferredWidth * sourceSize.height / Math.max(1, sourceSize.width)
+                    fillMode: Image.PreserveAspectFit
+                    smooth: true; mipmap: true
+                    Accessible.name: "ВЕКТОР — единая платформа для инженеров и бизнеса"
                 }
                 Item { Layout.fillHeight: true }
                 Text {

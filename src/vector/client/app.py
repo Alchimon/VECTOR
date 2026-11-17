@@ -85,7 +85,8 @@ def main(argv=None) -> int:
     app = QGuiApplication(argv or sys.argv)
     app.setApplicationName("ВЕКТОР")
     app.setOrganizationName("VECTOR")
-    app.setWindowIcon(QIcon(str(ASSETS / "icons" / "layers.svg")))
+    # Значок окна и панели задач — знак «V» фирменного логотипа (D-28).
+    app.setWindowIcon(QIcon(str(ASSETS / "brand" / "mark-light.png")))
     family = load_fonts()
     from .backend import Backend
     backend = Backend()
