@@ -378,8 +378,9 @@ def test_v12_to_v13_adds_requisites_contracts_vat_and_approvals(backend, tmp_pat
     before = counts(eng, mg.tables_of_version(12))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version, rep.created_tables) == (
-        12, 13, ["supplier_requisites", "supplier_contracts", "purchase_order_terms", "purchase_order_line_taxes",
-                 "purchase_order_approvals"])
+        12, db.SCHEMA_VERSION, [t.name for v in range(13, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]])
+    assert rep.created_tables[:5] == ["supplier_requisites", "supplier_contracts", "purchase_order_terms",
+                                      "purchase_order_line_taxes", "purchase_order_approvals"]
     after = counts(eng, mg.tables_of_version(12))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
 
@@ -406,4 +407,55 @@ def test_v12_to_v13_adds_requisites_contracts_vat_and_approvals(backend, tmp_pat
         c.execute(db.purchase_order_approvals.insert().values(seq=1, kind="submit", content_hash="0" * 64, **ev))
     bad(db.purchase_order_approvals.update().values(kind="approve"))                         # неизменяем
     bad(db.purchase_order_approvals.delete())
-    assert db.check_schema(eng) == 13
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+
+
+def test_v13_to_v14_adds_delegations_bases_and_invoice_checks(backend, tmp_path, clock, keys):
+    """v13 → v14 (D-34): замещение, основания решений, суммы по счёту и сверка. Данные v13 не меняются; замещение —
+    не себе, не роль администратора, срок не наоборот; основания и результаты сверки неизменяемы; расхождение без
+    причины не записывается."""
+    from datetime import date
+    eng = make_v3(backend, tmp_path, clock, version=13)
+    now, uid, uid2, sid, oid = clock.now(), new_id(), new_id(), new_id(), new_id()
+    stamp = dict(version=1, created_by=uid, created_at=now, updated_by=uid, updated_at=now)
+    with eng.begin() as c:
+        for u, login in ((uid, "u1"), (uid2, "u2")):
+            c.execute(db.users.insert().values(id=u, login=login, display_name=login, pwd_hash="x",
+                                               must_change_password=False, password_changed_at=now, failed_attempts=0,
+                                               active=True, created_at=now))
+        c.execute(db.suppliers.insert().values(id=sid, code="П-1", name="ООО Поставщик", active=True, **stamp))
+        c.execute(db.purchase_orders.insert().values(id=oid, order_no=1, supplier_id=sid, status="draft", **stamp))
+    before = counts(eng, mg.tables_of_version(13))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version, rep.created_tables) == (
+        13, 14, ["role_delegations", "approval_bases", "purchase_order_invoices", "purchase_order_invoice_checks"])
+    after = counts(eng, mg.tables_of_version(13))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    d = dict(from_user_id=uid, to_user_id=uid2, role="po_approver", valid_from=date(2026, 11, 16),
+             valid_until=date(2026, 11, 30), reason="Отпуск", created_by=uid, created_at=now)
+    bad(db.role_delegations.insert().values(**{**d, "to_user_id": uid}))                   # не себе
+    bad(db.role_delegations.insert().values(**{**d, "role": "admin"}))                     # не администратор
+    bad(db.role_delegations.insert().values(**{**d, "valid_until": date(2026, 11, 1)}))    # срок наоборот
+    with eng.begin() as c:
+        c.execute(db.role_delegations.insert().values(**d))
+    base = dict(object_type="purchase_order", object_id=oid, seq=1, actor_id=uid2, role="po_approver",
+                authority="delegated_role:po_approver#grant:1#delegation:1", at=now)
+    with eng.begin() as c:
+        c.execute(db.approval_bases.insert().values(**base))
+    bad(db.approval_bases.update().values(role="dept_head"))                                 # неизменяемо
+    bad(db.approval_bases.delete())
+    bad(db.purchase_order_invoices.insert().values(order_id=oid, invoice_gross=Decimal("-1")))
+    with eng.begin() as c:
+        c.execute(db.purchase_order_invoices.insert().values(order_id=oid, invoice_gross=Decimal("100.10")))
+    bad(db.purchase_order_invoice_checks.insert().values(order_id=oid, seq=1, state="mismatch"))   # без причины
+    bad(db.purchase_order_invoice_checks.insert().values(order_id=oid, seq=1, state="maybe"))
+    with eng.begin() as c:
+        c.execute(db.purchase_order_invoice_checks.insert().values(order_id=oid, seq=1, state="mismatch",
+                                                                   diff_gross=Decimal("0.01"), reason="Счёт округлён"))
+    bad(db.purchase_order_invoice_checks.update().values(reason="другая"))
+    assert db.check_schema(eng) == 14

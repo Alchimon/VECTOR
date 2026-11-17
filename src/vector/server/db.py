@@ -30,8 +30,10 @@ from vector.core import money
 #   v7 — настройки компании (версии, D-26), справочник аналогов и пересчёта единиц, коэффициент в решении о
 #        сопоставлении (D-25, A-27);
 #   v8 — перемещения между складами: связка двух движений журнала (A-28);
-#   v9 — перемещение со статусом «в пути»: отгрузка → приёмка получателем или возврат отправителю (D-29, A-29).
-SCHEMA_VERSION = 13
+#   v9 — перемещение со статусом «в пути»: отгрузка → приёмка получателем или возврат отправителю (D-29, A-29);
+#   v10–v13 — акты, подписи, поставщики и заказы, согласование и НДС (D-30…D-33, см. migrate.py);
+#   v14 — замещение (передача роли на время), основания решений, сверка заказа со счётом поставщика (D-34).
+SCHEMA_VERSION = 14
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -871,6 +873,64 @@ purchase_order_approvals = sa.Table("purchase_order_approvals", metadata,
     sa.CheckConstraint("seq > 0", name="seq_pos"),
     sa.CheckConstraint("kind NOT IN ('submit','approve') OR content_hash IS NOT NULL", name="hash_when_needed"))
 
+# ------------------------------------------------------------ D-34 (схема v14): замещение и контроль расчёта
+# Замещение (ответ владельца на A-37, правила — vector.core.delegation): носитель глобальной роли (или руководитель
+# отдела / администратор от его имени) передаёт роль другому сотруднику на срок с причиной. Даты календарные,
+# включительно. Отмена — revoked_* (строка остаётся в истории). Действует, только пока у носителя есть своя роль.
+role_delegations = sa.Table("role_delegations", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("from_user_id", ID, sa.ForeignKey("users.id"), nullable=False, index=True),
+    sa.Column("to_user_id", ID, sa.ForeignKey("users.id"), nullable=False, index=True),
+    sa.Column("role", U(32), nullable=False),
+    sa.Column("valid_from", sa.Date, nullable=False),
+    sa.Column("valid_until", sa.Date, nullable=False),
+    sa.Column("reason", U(500), nullable=False),
+    sa.Column("created_by", ID, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("revoked_at", UtcDateTime),
+    sa.Column("revoked_by", ID),
+    sa.Column("revoke_reason", U(500)),
+    sa.CheckConstraint("valid_until >= valid_from", name="period"),
+    sa.CheckConstraint("from_user_id <> to_user_id", name="not_self"),
+    sa.CheckConstraint("role <> 'admin'", name="not_admin"))
+
+# Основание решений по согласованию (неизменяемо): чьим правом принято решение — своя роль, роль руководителя
+# отдела или замещение (тогда on_behalf_of — носитель, delegation_id — замещение, grant_id — выдача роли носителя).
+# object_type: purchase_order (object_id = id заказа, seq = номер события согласования) или tkp_approval
+# (object_id = id согласования ТКП, seq = 1). authority — та же строка, что в журнале аудита.
+approval_bases = sa.Table("approval_bases", metadata,
+    sa.Column("object_type", U(32), primary_key=True),
+    sa.Column("object_id", U(64), primary_key=True),
+    sa.Column("seq", sa.Integer, primary_key=True),
+    sa.Column("actor_id", ID, nullable=False),
+    sa.Column("role", U(32), nullable=False),
+    sa.Column("authority", U(200), nullable=False),
+    sa.Column("grant_id", sa.BigInteger),
+    sa.Column("delegation_id", sa.BigInteger),
+    sa.Column("on_behalf_of", ID),
+    sa.Column("at", UtcDateTime, nullable=False))
+
+# Суммы по счёту поставщика для сверки с расчётом (A-38 → D-34). Черновик: правится вместе с заказом (входит в
+# согласуемое содержание). NULL — не введена. Только целые копейки, ≥ 0.
+purchase_order_invoices = sa.Table("purchase_order_invoices", metadata,
+    sa.Column("order_id", ID, sa.ForeignKey("purchase_orders.id"), primary_key=True),
+    sa.Column("invoice_gross", Money),
+    sa.Column("invoice_vat", Money),
+    sa.CheckConstraint("invoice_gross IS NULL OR invoice_gross >= 0", name="gross_nonneg"),
+    sa.CheckConstraint("invoice_vat IS NULL OR invoice_vat >= 0", name="vat_nonneg"))
+
+# Результат сверки со счётом в момент отправки на согласование (неизменяемо): state — none / match / mismatch /
+# unknown, разницы «счёт − расчёт» и причина, без которой расхождение отправить нельзя.
+purchase_order_invoice_checks = sa.Table("purchase_order_invoice_checks", metadata,
+    sa.Column("order_id", ID, sa.ForeignKey("purchase_orders.id"), primary_key=True),
+    sa.Column("seq", sa.Integer, primary_key=True),
+    sa.Column("state", sa.String(8), nullable=False),
+    sa.Column("diff_gross", Money),
+    sa.Column("diff_vat", Money),
+    sa.Column("reason", U(2000)),
+    sa.CheckConstraint("state IN ('none','match','mismatch','unknown')", name="state"),
+    sa.CheckConstraint("state NOT IN ('mismatch','unknown') OR reason IS NOT NULL", name="reason_when_needed"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -957,7 +1017,8 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (procurement_need_line_matches, 50009), (config_versions, 50010),
                  (procurement_need_line_match_units, 50011), (stock_transfers, 50012),
                  (stock_transfer_acts, 50013), (stock_shipment_terms, 50014), (stock_shipment_losses, 50015),
-                 (signatures, 50016), (purchase_receipts, 50017), (purchase_order_approvals, 50018)):
+                 (signatures, 50016), (purchase_receipts, 50017), (purchase_order_approvals, 50018),
+                 (approval_bases, 50019), (purchase_order_invoice_checks, 50020)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):
