@@ -106,7 +106,9 @@ class StockMixin:
     @staticmethod
     def v_movement(o: dict, reversed_by: Optional[str] = None) -> dict:
         return {"id": o["id"], "doc_no": o["doc_no"], "kind": o["kind"],
-                "kind_label": ("Сторно: " if o["reverses_id"] else "") + stock.MOVEMENT_LABELS_RU[o["kind"]],
+                # Сторно имеет противоположный вид (сторно прихода — расход), поэтому подпись берём по исходному
+                # движению: «Сторно прихода», а не «Сторно: Выдача» — так понятнее, что именно отменено.
+                "kind_label": stock.STORNO_LABELS_RU[o["kind"]] if o["reverses_id"] else stock.MOVEMENT_LABELS_RU[o["kind"]],
                 "warehouse_id": o["warehouse_id"], "item_id": o["item_id"], "qty": money.to_json(o["qty"]),
                 "project_id": o["project_id"], "reservation_id": o["reservation_id"], "reverses_id": o["reverses_id"],
                 "reversed_by": reversed_by, "source_doc": o["source_doc"], "reason": o["reason"],
@@ -158,7 +160,7 @@ class StockMixin:
                "created_at": ctx.now, "updated_by": ctx.user_id, "updated_at": ctx.now}
         ctx.conn.execute(stock_items.insert().values(**row))
         ctx.log("stock_item", iid, auth, None, 1, {"code": code, "name": row["name"], "unit": row["unit"]})
-        return {"item": self.v_item(self._get(ctx.conn, stock_items, iid))}
+        return {"stock_item": self.v_item(self._get(ctx.conn, stock_items, iid))}
 
     def _item_update(self, ctx, p, ev):
         only_keys(p, {"id", "name", "unit", "note", "active"})
@@ -187,7 +189,7 @@ class StockMixin:
         before = {k: (bool(o[k]) if k == "active" else o[k]) for k in ch}
         n = self._update_versioned(ctx, stock_items, o, {**ch, "updated_by": ctx.user_id, "updated_at": ctx.now})
         ctx.log("stock_item", o["id"], auth, o["version"], n["version"], {"before": before, "after": ch})
-        return {"item": self.v_item(n)}
+        return {"stock_item": self.v_item(n)}
 
     # ------------------------------------------------------------ остаток (строка с версией)
     def _wh_item(self, ctx, p, for_new_stock: bool) -> tuple[dict, dict]:

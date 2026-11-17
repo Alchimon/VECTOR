@@ -39,6 +39,8 @@ ZERO = Decimal("0")
 # и ссылку reverses_id — поэтому отдельного вида «storno» в балансе нет.
 MOVEMENT_SIGN = {"receipt": 1, "issue": -1}
 MOVEMENT_LABELS_RU = {"receipt": "Приход", "issue": "Выдача"}
+# Подпись сторно по ВИДУ САМОГО СТОРНО: расход ("issue") отменяет приход, приход ("receipt") — выдачу.
+STORNO_LABELS_RU = {"issue": "Сторно прихода", "receipt": "Сторно выдачи"}
 RESERVATION_STATES = ("active", "consumed", "released")
 RESERVATION_LABELS_RU = {"active": "Действует", "consumed": "Израсходован", "released": "Снят"}
 

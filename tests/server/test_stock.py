@@ -77,7 +77,7 @@ def test_reference_data_rights_and_codes(world, st):
     r = st.wh.cmd("item.create", {"id": new_id(), "code": "с пробелом", "name": "Х", "unit": "м"})
     assert r["code"] == "invalid_code"
     # Правка с версией; повтор без изменений — отказ «нет изменений».
-    it = st.wh.ok("item.update", {"id": st.item, "name": "Кабель КВВГнг 4×1,5"}, expected_version=1)["item"]
+    it = st.wh.ok("item.update", {"id": st.item, "name": "Кабель КВВГнг 4×1,5"}, expected_version=1)["stock_item"]
     assert it["version"] == 2
     assert st.wh.cmd("item.update", {"id": st.item, "name": it["name"]}, expected_version=2)["code"] == "no_changes"
     assert st.wh.cmd("item.update", {"id": st.item, "name": "Y"}, expected_version=1)["status"] == "conflict"
@@ -149,7 +149,7 @@ def test_storno_once_and_never_below_reserved(world, st):
     res = st.wh.query("pull")["result"]["stock_reservations"][0]
     st.wh.ok("stock.release", {"id": res["id"], "reason": "Пересчёт"}, expected_version=1)
     s = st.wh.ok("stock.reverse", {"id": new_id(), "movement_id": m["id"], "reason": "Ошибка ввода"})["movement"]
-    assert (s["kind"], s["reverses_id"], s["kind_label"]) == ("issue", m["id"], "Сторно: Выдача")
+    assert (s["kind"], s["reverses_id"], s["kind_label"]) == ("issue", m["id"], "Сторно прихода")
     r = st.wh.cmd("stock.reverse", {"id": new_id(), "movement_id": m["id"], "reason": "ещё раз"})
     assert r["code"] == "already_reversed"
     r = st.wh.cmd("stock.reverse", {"id": new_id(), "movement_id": s["id"], "reason": "сторно сторно"})
