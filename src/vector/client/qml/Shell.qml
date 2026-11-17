@@ -5,7 +5,7 @@ import QtQuick.Layouts
 // Рабочая оболочка после входа: левое меню разделов, верхняя строка (связь, очередь), область страницы.
 // page — текущий раздел; go(page, id) — перейти к разделу и (необязательно) открыть объект id (navTarget).
 // Видимость пунктов меню — подсказка по правам (backend.hint); настоящий отказ всегда даёт сервер.
-// Горячие клавиши: Ctrl+1…6 — разделы, F5 — синхронизация. В офлайн-режиме внизу — кнопка переподключения.
+// Горячие клавиши: Ctrl+1…7 — разделы, F5 — синхронизация. В офлайн-режиме внизу — кнопка переподключения.
 Item {
     id: shellRoot
     objectName: "shell"
@@ -18,8 +18,11 @@ Item {
     function pickStart() {
         if (startPicked || !backend.me.user_id) return
         startPicked = true
+        var rs = backend.me.roles || []
         if (page === "tenders" && !backend.hint("tender.read", backend.permRevision))
-            page = backend.hint("stock.read", backend.permRevision) ? "stock" : "projects"
+            // Технолог и производство (D-36) начинают с раздела «Производство».
+            page = rs.some(r => r === "production" || r === "technologist") ? "production"
+                 : backend.hint("stock.read", backend.permRevision) ? "stock" : "projects"
     }
     Component.onCompleted: pickStart()
     Connections { target: backend; function onChanged() { shellRoot.pickStart() } }
@@ -36,6 +39,11 @@ Item {
         || (backend.me.roles || []).indexOf("accountant") >= 0   // бухгалтерия видит заказы поставщикам (D-32)
         || (backend.me.roles || []).indexOf("po_approver") >= 0  // согласующий закупки — заказы на согласовании (D-33)
         || (backend.me.roles || []).indexOf("dept_head") >= 0    // руководитель отдела «в курсе» согласований (D-34)
+    Shortcut { sequence: "Ctrl+7"; onActivated: if (shellRoot.seesProduction) shellRoot.go("production") }
+    // Производство (D-36): технолог, исполнитель, руководитель отдела, склад — и все, кому сервер отдал наряды или ТП
+    // (РП и ГИП проектов). Подсказка; данные решает сервер.
+    readonly property bool seesProduction: (backend.me.roles || []).some(r => r === "technologist" || r === "production" || r === "dept_head" || r === "warehouse")
+        || (backend.productionOverview.work_orders || []).length > 0 || (backend.productionOverview.tps || []).length > 0
     Shortcut { sequence: "F5"; onActivated: backend.syncNow() }
 
     RowLayout {
@@ -71,6 +79,10 @@ Item {
                 NavItem { objectName: "navStock"; text: "Склад"; iconName: "warehouse"; active: shellRoot.page === "stock"; onClicked: shellRoot.go("stock"); visible: shellRoot.seesStock }
                 NavItem { objectName: "navProcurement"; text: "Закупка"; iconName: "shopping-cart"; active: shellRoot.page === "procurement"; onClicked: shellRoot.go("procurement"); visible: shellRoot.seesNeeds
                           badge: (backend.needsOverview.candidates || []).length; badgeTone: "warning" }
+                Text { visible: shellRoot.seesProduction; text: "ПРОИЗВОДСТВО"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
+                // Бейдж: исполнителю — операции в работе/на паузе, остальным — открытые наряды.
+                NavItem { objectName: "navProduction"; text: "Производство"; iconName: "factory"; active: shellRoot.page === "production"; onClicked: shellRoot.go("production"); visible: shellRoot.seesProduction
+                          badge: (backend.productionOverview.my_ops || []).length > 0 ? backend.productionOverview.my_ops.length : 0; badgeTone: "primary" }
                 Text { text: "СИСТЕМА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
                 NavItem { text: "Синхронизация"; iconName: "refresh-cw"; active: shellRoot.page === "sync"; onClicked: shellRoot.go("sync")
                           badge: backend.problemCount > 0 ? backend.problemCount : backend.pendingCount; badgeTone: backend.problemCount > 0 ? "danger" : "warning" }
@@ -116,7 +128,7 @@ Item {
             anchors.fill: parent
             sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC, finance: financeC,
                                stock: stockC, procurement: procurementC, delegations: delegationsC,
-                               notifications: notificationsC })[shellRoot.page]
+                               notifications: notificationsC, production: productionC })[shellRoot.page]
         }
         }
     }
@@ -130,6 +142,7 @@ Item {
     Component { id: procurementC; ProcurementPage { shell: shellRoot } }
     Component { id: delegationsC; DelegationsPage { shell: shellRoot } }
     Component { id: notificationsC; NotificationsPage { shell: shellRoot } }
+    Component { id: productionC; ProductionPage { shell: shellRoot } }
 
     FormDialog {
         id: reconnect

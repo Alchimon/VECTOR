@@ -23,7 +23,7 @@ from vector import __version__
 from vector.core import stock
 from vector.core.contracts import Contracts
 
-from . import calc_view, delegation_view, notification_view, purchasing_view, stock_view
+from . import calc_view, delegation_view, notification_view, production_view, purchasing_view, stock_view
 from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
 from .vault import KeyringStore, MemoryStore, VaultError
@@ -95,6 +95,18 @@ def _clean_lines(lines) -> list[dict]:
                 ln[k] = v
         out.append(ln)
     return out
+
+
+def _int_or_none(v: Any) -> Optional[int]:
+    """Целое из поля формы или QML-числа: 5, 5.0, «5», « 5 » → 5; иначе (пусто, 5.5, «abc», True) — None."""
+    if isinstance(v, bool) or v is None:
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float):
+        return int(v) if v.is_integer() else None
+    t = str(v).strip()
+    return int(t) if re.fullmatch(r"-?\d{1,9}", t) else None
 
 
 def _plain_amount(v) -> Optional[str]:
@@ -188,7 +200,7 @@ class Backend(QObject):
         self._me: dict = {}
         self._data: dict[str, list] = {"customer": [], "tender": [], "tkp": [], "project": [], "kit": [], "task": [], "document": [],
                                        "calc_draft": [], "warehouse": [], "stock_item": [], "supplier": [], "purchase_order": [],
-                                       "supplier_contract": []}
+                                       "supplier_contract": [], "tech_process": [], "work_order": [], "wo_operation": []}
         # Фильтр вкладки «Заказы поставщикам» (active / approval / draft / placed / closed / all) — состояние экрана.
         self._po_filter = "active"
         # Наибольший id уведомления, о котором уже сказали (None — ещё не было снимка после входа, D-35).
@@ -607,6 +619,72 @@ class Backend(QObject):
         if text:
             self.toast.emit("info", text)
 
+    # ------------------------------------------------------------ технология и производство (D-36)
+    @Property("QVariantMap", notify=dataChanged)
+    def productionOverview(self):
+        """Раздел «Производство»: мои операции (исполнителю, офлайн), наряды, техпроцессы — снимок кэша."""
+        st = self._stock
+        return qml_safe(production_view.production_view(
+            self._data.get("tech_process", []), st.get("tech_specs") or [], self._data.get("work_order", []),
+            self._data.get("wo_operation", []), st.get("production_staff") or [], self._data.get("project", []),
+            self._data.get("kit", []), self._assignments, st.get("project_deputies") or [], self._people, self._me,
+            self._online and self._session_mode == "online", self._last_pull, prod_kits=st.get("production_kits") or []))
+
+    @Slot(int, str, str, result=str)
+    def opTimer(self, fact_seconds: int, running_since: str, state: str) -> str:
+        """Табло таймера операции на «сейчас» (QML вызывает раз в секунду, пока операция в работе)."""
+        return production_view.op_timer_label(fact_seconds, running_since, state)
+
+    @Slot(str, "QVariantMap")
+    def saveTpDraft(self, tag: str, payload):
+        """«Сохранить ТП»: через очередь (можно без связи); создание или правка и expected_version — решает
+        SyncClient.save_tp_draft. Числа из QML приходят как float — номер версии расчёта приводится к целому."""
+        p = dict(payload.toVariant() if hasattr(payload, "toVariant") else payload)
+        p["title"] = (p.get("title") or "").strip()
+        p["note"] = (p.get("note") or "").strip() or None
+        p["spec_version_id"] = _int_or_none(p.get("spec_version_id"))
+        p["operations"] = production_view.clean_operations(
+            [dict(o.toVariant() if hasattr(o, "toVariant") else o) for o in p.get("operations") or []])
+
+        def job():
+            """Сохранить черновик ТП в рабочем потоке и снять снимок данных."""
+            r = self.client.save_tp_draft(p)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "tp.update", res))
+
+    @Slot("QVariantList", result="QVariantMap")
+    def tpOpsCheck(self, rows) -> dict:
+        """Проверка операций в форме ТП (без сервера, правила ядра): замечания по строкам и норма на изделие."""
+        rows = rows.toVariant() if hasattr(rows, "toVariant") else rows
+        return qml_safe(production_view.operations_problems([dict(r) for r in rows or []]))
+
+    @Slot(str, str, str, str, str)
+    def opEvent(self, tag: str, op_id: str, kind: str, qty_done: str, note: str):
+        """Кнопка исполнителя (старт / пауза / продолжить / завершить / проблема): событие с временем этого
+        компьютера — в очередь (можно без связи, D-36). qty_done — «сколько изделий выполнено» при завершении
+        (пусто — весь наряд)."""
+        q = _int_or_none(qty_done) if (qty_done or "").strip() else None
+        if (qty_done or "").strip() and q is None:
+            self._command_done(tag, {"status": "rejected", "message_ru": "«Выполнено» — целое число изделий."})
+            return
+
+        def job():
+            """Поставить событие в очередь (и сразу отправить, если есть связь) и снять снимок данных."""
+            r = self.client.op_event(op_id, kind, q, (note or "").strip() or None)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "wo.op_event", res))
+
+    @Slot(str, str, str, "QVariantMap")
+    def releaseWo(self, tag: str, tp_id: str, qty: str, assignees):
+        """«Выпустить наряд» (только при связи): ТП, количество изделий (целое), исполнители по номерам операций."""
+        n = _int_or_none(qty)
+        if n is None:
+            self._command_done(tag, {"status": "rejected", "message_ru": "Количество изделий — целое число."})
+            return
+        a = dict(assignees.toVariant() if hasattr(assignees, "toVariant") else assignees)
+        clean = {str(_int_or_none(k) if _int_or_none(k) is not None else k): v for k, v in a.items() if v}
+        self.execute(tag, "wo.release", {"id": self.newId(), "tp_id": tp_id, "qty": n, "assignees": clean}, 0)
+
     @Property("QVariantMap", notify=dataChanged)
     def suppliersOverview(self):
         """Вкладка «Поставщики»: справочник с реквизитами и договорами (ведёт закупка, A-34)."""
@@ -984,8 +1062,9 @@ class Backend(QObject):
     # Справочник и настройки тоже приходят только с pull — после их команд снимок перечитывается.
     # Замещение (D-34) меняет роли — после него перечитываются и роли (me), и права в интерфейсе; после «прочитано»
     # (D-35) — список уведомлений и бейдж.
+    # Наряды (D-36): после выпуска, замены, закрытия — свежие материалы и статусы с сервера.
     _STOCK_PREFIXES = frozenset({"stock", "need", "item_alias", "unit_conversion", "config", "po", "delegation",
-                                 "notification"})
+                                 "notification", "wo", "tp"})
 
     def _finish_command(self, tag: str, command: str, res: dict):
         """Общий разбор результата команды: снимок данных, уведомление, сигнал commandDone для формы."""

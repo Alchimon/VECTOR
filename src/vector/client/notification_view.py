@@ -12,11 +12,16 @@ from typing import Any, Optional
 
 # Значок и тон по виду уведомления (значки — из набора Lucide в assets/icons).
 KIND_ICONS = {"po_submitted": "shield-check", "po_approved": "circle-check", "po_returned": "undo-2",
-              "po_withdrawn": "undo-2", "delegation_created": "user-check", "delegation_revoked": "user-x"}
+              "po_withdrawn": "undo-2", "delegation_created": "user-check", "delegation_revoked": "user-x",
+              # Технология и производство (D-36).
+              "tp_approved": "circle-check", "wo_assigned": "factory", "wo_problem": "triangle-alert",
+              "wo_completed": "check-check"}
 KIND_TONES = {"po_submitted": "warning", "po_approved": "success", "po_returned": "danger",
-              "po_withdrawn": "neutral", "delegation_created": "info", "delegation_revoked": "neutral"}
+              "po_withdrawn": "neutral", "delegation_created": "info", "delegation_revoked": "neutral",
+              "tp_approved": "success", "wo_assigned": "info", "wo_problem": "danger", "wo_completed": "success"}
 # Куда ведёт «Открыть»: раздел оболочки по типу объекта.
-TARGET_PAGES = {"purchase_order": "procurement", "delegation": "delegations"}
+TARGET_PAGES = {"purchase_order": "procurement", "delegation": "delegations", "tech_process": "production",
+                "work_order": "production"}
 
 
 def when_label(at: Optional[str], now: datetime, tz: Optional[tzinfo] = None) -> str:

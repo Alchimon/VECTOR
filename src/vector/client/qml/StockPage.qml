@@ -411,20 +411,31 @@ Item {
     }
     Cmd { id: cReceive; dialog: receiveForm }
 
+    // Наряды проекта, на которые можно выдать материал (D-36): выдача с привязкой к наряду учитывается в «Материалах»
+    // наряда и нужна для его закрытия. «без наряда» — обычная выдача на проект.
+    function woOptions(pid) {
+        return [{ id: "", label: "без наряда" }].concat((backend.productionOverview.work_orders || [])
+            .filter(w => w.project_id === pid && (w.status === "released" || w.status === "in_progress" || w.status === "completed"))
+            .map(w => ({ id: w.id, label: w.label + " · " + w.title })))
+    }
+
     FormDialog {
         id: issueForm
+        objectName: "issueForm"
         property var item: null
         readonly property var whAvail: item ? item.by_warehouse.filter(b => Number(b.available) > 0).map(b => ({ id: b.warehouse_id, label: b.warehouse_code + " — доступно " + b.available_label })) : []
         title: "Выдача на проект: " + (item ? item.code : "")
         subtitle: "Без резерва можно выдать только доступное количество (остаток − резервы других проектов)."
         confirmText: "Провести выдачу"
         canConfirm: iQty.text.trim() !== "" && iQty.error === "" && iReason.text.trim() !== "" && iWh.currentValue !== "" && iProj.currentValue !== ""
-        function openFor(it) { item = it; iQty.text = ""; iReason.text = ""; iWh.currentIndex = 0; iProj.currentIndex = 0; open() }
+        function openFor(it) { item = it; iQty.text = ""; iReason.text = ""; iWh.currentIndex = 0; iProj.currentIndex = 0; iWo.currentIndex = 0; open() }
         onConfirmed: cIssue.run("stock.issue", { id: backend.newId(), warehouse_id: iWh.currentValue, item_id: item.id, project_id: iProj.currentValue,
-                                                 qty: backend.normalizeQty(iQty.text), reason: iReason.text.trim() })
+                                                 qty: backend.normalizeQty(iQty.text), reason: iReason.text.trim(), work_order_id: iWo.currentValue })
         Banner { visible: issueForm.whAvail.length === 0; tone: "warning"; text: "Свободного количества нет ни на одном складе (всё в резерве или нет остатка)." }
         VSelect { id: iWh; label: "Склад"; model: issueForm.whAvail }
-        VSelect { id: iProj; label: "Проект"; model: page.projectOptions }
+        VSelect { id: iProj; objectName: "iProj"; label: "Проект"; model: page.projectOptions; onCurrentValueChanged: iWo.currentIndex = 0 }
+        VSelect { id: iWo; objectName: "iWo"; label: "Наряд"; model: page.woOptions(iProj.currentValue); visible: model.length > 1
+                  hint: "Выдача на наряд засчитывается в его материалы (нужно для закрытия наряда)." }
         VField { id: iQty; label: "Количество" + (issueForm.item ? ", " + issueForm.item.unit : ""); required: true; error: backend.qtyProblem(text) }
         VField { id: iReason; label: "Основание выдачи"; required: true; placeholder: "Монтаж, бригада …" }
     }
@@ -565,11 +576,12 @@ Item {
         subtitle: res ? res.item_code + " · " + res.project_code + " · осталось по резерву " + res.remaining_label : ""
         confirmText: "Провести выдачу"
         canConfirm: irQty.text.trim() !== "" && irQty.error === "" && irReason.text.trim() !== ""
-        function openFor(r) { res = r; irQty.text = backend.normalizeQty(r.remaining).replace(/\.?0+$/, ""); irReason.text = ""; open() }
+        function openFor(r) { res = r; irQty.text = backend.normalizeQty(r.remaining).replace(/\.?0+$/, ""); irReason.text = ""; irWo.currentIndex = 0; open() }
         onConfirmed: cIssueRes.run("stock.issue", { id: backend.newId(), warehouse_id: res.warehouse_id, item_id: res.item_id, reservation_id: res.id,
-                                                    qty: backend.normalizeQty(irQty.text), reason: irReason.text.trim() })
+                                                    qty: backend.normalizeQty(irQty.text), reason: irReason.text.trim(), work_order_id: irWo.currentValue })
         VField { id: irQty; label: "Количество"; required: true; error: backend.qtyProblem(text); hint: "Не больше остатка резерва. Сверх резерва — отдельной выдачей из доступного." }
         VField { id: irReason; label: "Основание выдачи"; required: true }
+        VSelect { id: irWo; label: "Наряд"; model: issueResForm.res ? page.woOptions(issueResForm.res.project_id) : []; visible: model.length > 1 }
     }
     Cmd { id: cIssueRes; dialog: issueResForm }
 

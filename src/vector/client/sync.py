@@ -77,7 +77,10 @@ OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp")
                 # закрытие и отмена — онлайн-командами, их ответ (заказ) тоже кладётся сюда.
                 ("supplier", "suppliers"), ("purchase_order", "purchase_orders"),
                 # Договоры с поставщиками (D-33, A-39) — тоже справочник закупки, правится офлайн через очередь.
-                ("supplier_contract", "supplier_contracts"))
+                ("supplier_contract", "supplier_contracts"),
+                # Технология и производство (D-36): ТП (черновик правится офлайн), наряды и операции нарядов (события
+                # исполнителя — офлайн через очередь; выпуск, назначение, замена, закрытие — онлайн-командами).
+                ("tech_process", "tech_processes"), ("work_order", "work_orders"), ("wo_operation", "wo_operations"))
 # Объекты из результата команды → список в meta (ключ результата, ключ meta); заменяются по id.
 # Движения склада, резервы и потребности меняются ТОЛЬКО онлайн-командами (online_required): в кэше это
 # снимок «на момент последнего обновления», офлайн он только читается.
@@ -90,7 +93,9 @@ META_LISTS = (("calc_version", "calc_versions"), ("calc_revision", "calc_revisio
 # читается.
 STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_movements_truncated", "needs",
               "stock_transfers", "stock_projects", "need_candidates", "item_aliases", "unit_conversions", "config",
-              "delegations", "role_coverage", "project_deputies", "notifications")
+              "delegations", "role_coverage", "project_deputies", "notifications",
+              # D-36: состав изделий из зафиксированных версий расчёта (без цен) — для ТП; исполнители «Производства».
+              "tech_specs", "production_kits", "production_staff")
 
 
 # Онлайн-команды, которым не нужно сначала отправить очередь (их результат не зависит от неотправленных правок).
@@ -130,6 +135,21 @@ def _po_same(local: dict, payload: dict) -> bool:
                 [x.to_json() for x in lines])
     a = canon(local)
     return a is not None and a == canon(payload)
+
+
+def _tp_same(local: dict, payload: dict) -> bool:
+    """Совпадает ли черновик ТП в кэше с сохраняемым — по SHA-256 содержимого из ядра (как считает сервер)."""
+    from vector.core import production as prod
+
+    def h(o):
+        """Хэш содержимого ТП (операции не разобрались — None, т. е. «не равно»)."""
+        try:
+            ops = prod.parse_operations(o.get("operations") or [])
+        except prod.ProductionError:
+            return None
+        return prod.tp_content_hash((o.get("title") or "").strip(), o.get("spec_version_id"), ops, o.get("note") or None)
+    a = h(local)
+    return a is not None and a == h(payload)
 
 
 @dataclass
@@ -458,6 +478,53 @@ class SyncClient:
             return LocalResult("accepted", message_ru="Изменений нет — сохранять нечего.", response={"unchanged": True})
         ev = (prev[0] or 0) + 1 if prev is not None else row[0]
         return self.execute("po.update", payload, ev)
+
+    def save_tp_draft(self, payload: dict) -> LocalResult:
+        """«Сохранить ТП (черновик)»: tp.create (ТП ещё нет ни на сервере, ни в очереди) или tp.update — через
+        офлайн-очередь (D-36). Цепочка expected_version — как у черновика заказа (save_po_draft); сохранение без
+        изменений в очередь не ставится.
+        """
+        if self.db is None:
+            return LocalResult("unauthenticated", message_ru="Войдите в систему.")
+        oid = payload["id"]
+        row = self.db.execute("SELECT server_version FROM cache WHERE object_type='tech_process' AND id=?", (oid,)).fetchone()
+        prev = self.db.execute("SELECT expected_version FROM outbox WHERE command IN ('tp.create','tp.update') AND object_id=? "
+                               "AND state IN ('pending','conflict','rejected') ORDER BY seq DESC LIMIT 1", (oid,)).fetchone()
+        if prev is None and (row is None or row[0] is None):
+            return self.execute("tp.create", payload)
+        local = self.get_local("tech_process", oid) or {}
+        if _tp_same(local, payload):
+            return LocalResult("accepted", message_ru="Изменений нет — сохранять нечего.", response={"unchanged": True})
+        ev = (prev[0] or 0) + 1 if prev is not None else row[0]
+        # tp.update не принимает kit_id: комплект ТП не меняется после создания.
+        return self.execute("tp.update", {k: v for k, v in payload.items() if k != "kit_id"}, ev)
+
+    def op_event(self, op_id: str, kind: str, qty_done: Optional[int] = None, note: Optional[str] = None) -> LocalResult:
+        """Событие исполнителя по операции наряда (старт / пауза / продолжить / завершить / проблема) — офлайн (D-36).
+
+        Время события — часы ЭТОГО компьютера в момент нажатия (A-44): так таймер честен и без связи. Сначала
+        событие проверяется по локальной копии операции теми же правилами ядра, что на сервере: заведомо
+        недопустимое («завершить» уже завершённую) в очередь не ставится — пользователь сразу видит причину. Принятое
+        локально — в очередь; на сервере оно проверяется ещё раз (назначение, наряд не закрыт, порядок времени), и
+        расхождение даёт видимый конфликт в разделе «Синхронизация».
+        """
+        from vector.core import production as prod
+        if self.db is None:
+            return LocalResult("unauthenticated", message_ru="Войдите в систему.")
+        op = self.get_local("wo_operation", op_id)
+        if op is None:
+            return LocalResult("rejected", message_ru="Операция не найдена в данных этого компьютера — обновите данные.")
+        dt = self.now()
+        try:
+            prod.apply_event(op, kind, dt, int(op.get("wo_qty") or 0), qty_done)
+        except prod.ProductionError as e:
+            return LocalResult("rejected", message_ru=e.message_ru, response={"code": e.code})
+        payload: dict[str, Any] = {"id": op_id, "kind": kind, "device_time": dt.isoformat()}
+        if qty_done is not None:
+            payload["qty_done"] = qty_done
+        if note:
+            payload["note"] = note
+        return self.execute("wo.op_event", payload)
 
     def retry_online(self, op_id: str) -> LocalResult:
         """Повторить операцию с неизвестным исходом с ТЕМ ЖЕ operation_id: сервер либо выполнит её впервые, либо вернёт
@@ -860,10 +927,15 @@ class SyncClient:
         if isinstance(need, dict):
             self._set_meta("need_candidates", [c for c in (self.get_meta("need_candidates") or [])
                                                if c.get("calc_version_id") != need.get("calc_version_id")])
-        for otype, _ in OBJECT_TYPES:
-            obj = (r.get("result") or {}).get(otype)
-            if not obj:
-                continue
+        objs = []
+        for otype, key in OBJECT_TYPES:
+            obj = res.get(otype)
+            if isinstance(obj, dict) and obj.get("id"):
+                objs.append((otype, obj))
+            # Списки объектов в результате (выпуск наряда возвращает его операции, D-36).
+            if key != otype and isinstance(res.get(key), list):
+                objs += [(otype, x) for x in res[key] if isinstance(x, dict) and x.get("id")]
+        for otype, obj in objs:
             self._set_server_state(otype, obj)
             if not self._open_problems(otype, obj["id"]):
                 j = json.dumps(obj, ensure_ascii=False)
@@ -877,7 +949,11 @@ class SyncClient:
         if not oid:
             return
         row = self.db.execute("SELECT data_enc FROM cache WHERE object_type=? AND id=?", (otype, oid)).fetchone()
-        if row:
+        if row and otype == "wo_operation" and "kind" in payload:
+            data = _op_event_overlay(json.loads(self._open("cache", f"{otype}/{oid}/d", row[0])), payload)
+            self.db.execute("UPDATE cache SET data_enc=?, pending=1 WHERE object_type=? AND id=?",
+                            (self._seal("cache", f"{otype}/{oid}/d", json.dumps(data, ensure_ascii=False)), otype, oid))
+        elif row:
             data = json.loads(self._open("cache", f"{otype}/{oid}/d", row[0]))
             data.update(payload)
             self.db.execute("UPDATE cache SET data_enc=?, pending=1 WHERE object_type=? AND id=?",
@@ -901,6 +977,36 @@ class SyncClient:
             j = self._open("cache", f"{otype}/{oid}/s", row[0])
             self.db.execute("UPDATE cache SET data_enc=?, pending=0 WHERE object_type=? AND id=?",
                             (self._seal("cache", f"{otype}/{oid}/d", j), otype, oid))
+
+
+def _op_event_overlay(op: dict, payload: dict) -> dict:
+    """Локальная копия операции после события исполнителя (офлайн): те же изменения, что посчитает сервер
+    (vector.core.production.apply_event), плюс событие в списке «последние события» с пометкой «не отправлено».
+
+    Ошибку правил здесь не поднимаем: событие уже проверено перед постановкой в очередь (SyncClient.op_event); если
+    копия успела измениться (pull), событие просто добавляется в список — решит сервер.
+    """
+    from vector.core import production as prod
+    data = dict(op)
+    kind = payload["kind"]
+    try:
+        dt = prod.parse_device_time(payload["device_time"])
+        ch = prod.apply_event(data, kind, dt, int(data.get("wo_qty") or 0), payload.get("qty_done"))
+    except prod.ProductionError:
+        ch = {}
+    for k, v in ch.items():
+        data[k] = v.isoformat() if isinstance(v, datetime) else v
+    if "fact_seconds" in ch:
+        data["fact_min"] = prod.fact_minutes(ch["fact_seconds"])
+    if "state" in ch:
+        data["state_label"] = prod.OP_STATE_LABELS_RU[ch["state"]]
+    if kind == "problem":
+        data["problem_count"] = int(data.get("problem_count") or 0) + 1
+    data["events"] = list(data.get("events") or []) + [
+        {"kind": kind, "kind_label": prod.EVENT_LABELS_RU.get(kind, kind), "device_time": payload["device_time"],
+         "server_time": None, "user_id": None, "qty_done": ch.get("qty_done"), "note": payload.get("note"),
+         "local": True}]
+    return data
 
 
 def _sha256_of(f) -> tuple[str, int]:
