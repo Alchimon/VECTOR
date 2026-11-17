@@ -30,18 +30,24 @@ from .vault import KeyringStore, MemoryStore, VaultError
 
 log = logging.getLogger("vector.client")
 
+# Русские названия глобальных ролей (коды — из contracts/permissions). Внутренние коды пользователю не показываются.
 ROLE_LABELS = {"admin": "Администратор", "gip": "ГИП", "rp": "РП", "dept_head": "Руководитель отдела",
                "lead_engineer": "Ведущий инженер", "engineer": "Инженер", "designer": "Конструктор", "technologist": "Технолог",
                "production": "Производство", "warehouse": "Склад", "procurement": "Закупка", "accountant": "Бухгалтерия"}
+# Русские названия полей команд — для экрана конфликта «моё / на сервере».
 FIELD_LABELS = {"name": "Наименование", "short_name": "Краткое наименование", "inn": "ИНН", "kpp": "КПП", "note": "Примечание",
                 "contact": "Контакт", "title": "Название", "deadline": "Срок подачи", "customer_id": "Заказчик", "tender_id": "Тендер",
                 "amount": "Сумма", "currency": "Валюта", "number": "Номер", "code": "Шифр", "status": "Статус", "reason": "Основание",
                 "channel": "Канал", "sent_at": "Дата отправки", "responsible_id": "Ответственный", "valid_until": "Действует до",
                 "lines": "Позиции расчёта"}
+# Русские названия ролей в проекте (назначения).
 PROJECT_ROLE_LABELS = {"gip": "ГИП проекта", "rp": "РП проекта", "participant": "Участник"}
 
 
 def default_data_dir() -> Path:
+    """Каталог профилей клиента: в Windows — %LOCALAPPDATA%\VECTOR\profiles (локально для пользователя, не в
+    перемещаемом профиле), в Linux — ~/.local/share/vector/profiles.
+    """
     if platform.system() == "Windows":
         return Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "VECTOR" / "profiles"
     return Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "vector" / "profiles"
@@ -101,14 +107,22 @@ def _conflict_value(field: str, value, obj) -> str:
 
 
 def _ro(attr: str, typ, notify):
+    """Фабрика свойства QML «только чтение» из атрибута объекта (на уровне модуля — так требует PySide6)."""
     return Property(typ, lambda self: getattr(self, attr), notify=notify)
 
 
 def _lst(kind: str, notify):
+    """Фабрика свойства-списка QML: объекты кэша типа kind с подписями для интерфейса (_decorate)."""
     return Property("QVariantList", lambda self: qml_safe(self._decorate(kind)), notify=notify)
 
 
 class Backend(QObject):
+    """Объект backend, доступный во всём QML: состояние сеанса, данные для экранов и слоты-действия.
+
+    Сигналы: changed — сеанс, экран, флаги; dataChanged — данные; toast(kind, text) — уведомление; commandDone /
+    queryDone(tag, result) — ответ на действие формы (tag — её метка). Все обращения к SyncClient выполняются в
+    одном фоновом потоке (_run), а результаты возвращаются в поток интерфейса сигналом _deliver.
+    """
     changed = Signal()
     dataChanged = Signal()
     toast = Signal(str, str)                 # kind (success|info|warning|error), text
@@ -118,6 +132,9 @@ class Backend(QObject):
 
     def __init__(self, client_factory: Optional[Callable[[str, str], SyncClient]] = None, settings: Optional[QSettings] = None,
                  auto_timers: bool = True):
+        """client_factory и settings подменяются в тестах; auto_timers=False отключает фоновую синхронизацию (в боевом
+        режиме — каждые 20 с).
+        """
         super().__init__()
         self.contracts = Contracts.load()
         self._settings = settings or QSettings("VECTOR", "VECTOR-desktop")
@@ -160,6 +177,9 @@ class Backend(QObject):
 
     # ------------------------------------------------------------ инфраструктура
     def _default_factory(self, server_url: str, ca_file: str) -> SyncClient:
+        """Создать SyncClient для адреса сервера: секрет устройства в хранилище Windows (без него — отказ; переменная
+        VECTOR_DEV_INSECURE_STORE=1 только для разработки), постоянный id устройства из настроек, HTTPS-транспорт.
+        """
         try:
             store = KeyringStore()
         except VaultError:
@@ -174,12 +194,16 @@ class Backend(QObject):
         return SyncClient(HttpTransport(server_url, ca_file or None), server_url, default_data_dir(), store, device, self.contracts)
 
     def _run(self, fn: Callable[[], Any], done: Callable[[Any], None]):
+        """Выполнить fn в рабочем потоке, а done(результат) — в потоке интерфейса. Пока есть незавершённые задания,
+        busy=true. Исключение не роняет программу: пользователь видит сообщение, подробности уходят в журнал.
+        """
         self._seq += 1
         n = self._seq
         self._callbacks[n] = done
         self._set_busy(True)
 
         def job():
+            """Тело задания в рабочем потоке: вызвать fn, перехватить ошибки, отправить результат сигналом."""
             try:
                 res = fn()
             except VaultError as e:
@@ -192,6 +216,7 @@ class Backend(QObject):
 
     @Slot(int, object)
     def _on_deliver(self, n, res):
+        """Принять результат задания в потоке интерфейса и вызвать его обработчик."""
         cb = self._callbacks.pop(n, None)
         if not self._callbacks:
             self._set_busy(False)
@@ -199,18 +224,22 @@ class Backend(QObject):
             cb(res)
 
     def _set_busy(self, v):
+        """Изменить флаг «идёт работа» (индикатор в шапке)."""
         if self._busy != v:
             self._busy = v
             self.changed.emit()
 
     # Все данные для QML уходят через qml_safe (см. её описание): сигналы — тоже.
     def _command_done(self, tag: str, result: Any) -> None:
+        """Сигнал commandDone с данными, безопасными для QML."""
         self.commandDone.emit(tag, qml_safe(result))
 
     def _query_done(self, tag: str, result: Any) -> None:
+        """Сигнал queryDone с данными, безопасными для QML."""
         self.queryDone.emit(tag, qml_safe(result))
 
     def shutdown(self):
+        """Дождаться завершения рабочего потока при выходе из программы."""
         self._exec.shutdown(wait=True)
 
     # ------------------------------------------------------------ свойства
@@ -225,6 +254,7 @@ class Backend(QObject):
 
     @Property(str, notify=changed)
     def theme(self):
+        """Тема интерфейса: «light» или «dark»; сохраняется в настройках пользователя."""
         return self._theme
 
     @theme.setter
@@ -236,6 +266,7 @@ class Backend(QObject):
 
     @Property(str, constant=True)
     def version(self):
+        """Версия программы (для окна «О программе» и журнала)."""
         return __version__
 
     # Поля входа можно заполнить заранее переменными окружения VECTOR_SERVER_URL и VECTOR_CA_FILE — так делает
@@ -243,18 +274,22 @@ class Backend(QObject):
     # истины о его адресе и сертификате. Это только подстановка в форму: пароль так не передаётся никогда.
     @Property(str, notify=changed)
     def savedServer(self):
+        """Адрес сервера для формы входа."""
         return os.environ.get("VECTOR_SERVER_URL") or self._settings.value("server/url", "")
 
     @Property(str, notify=changed)
     def savedLogin(self):
+        """Последний логин для формы входа."""
         return self._settings.value("server/login", "")
 
     @Property(str, notify=changed)
     def savedCa(self):
+        """Путь к файлу корневого сертификата для формы входа."""
         return os.environ.get("VECTOR_CA_FILE") or self._settings.value("server/ca", "")
 
     @Property("QVariantMap", notify=changed)
     def me(self):
+        """Текущий пользователь: id, имя, глобальные роли с русскими подписями, инициалы для аватара."""
         roles = self._me.get("roles", [])
         return qml_safe({**self._me, "role_labels": [ROLE_LABELS.get(r, r) for r in roles],
                 "initials": "".join(w[:1] for w in (self._me.get("display_name") or "?").split()[:2]).upper()})
@@ -269,22 +304,29 @@ class Backend(QObject):
 
     @Property("QVariantList", notify=dataChanged)
     def people(self):
+        """Люди (id и имя), отсортированные по имени, — для выпадающих списков исполнителей."""
         return [{"id": k, "display_name": v} for k, v in sorted(self._people.items(), key=lambda kv: kv[1])]
 
     @Property("QVariantList", notify=dataChanged)
     def assignments(self):
+        """Назначения в проектах с именами людей и русскими названиями проектных ролей."""
         return qml_safe([{**a, "user_name": self._people.get(a["user_id"], "—"), "role_label": PROJECT_ROLE_LABELS.get(a["project_role"], a["project_role"])}
                          for a in self._assignments])
 
     @Property("QVariantList", constant=True)
     def roleOptions(self):
+        """Глобальные роли из контракта прав с русскими подписями (для админки)."""
         return [{"id": r, "label": ROLE_LABELS.get(r, r)} for r in self.contracts.permissions["roles"]]
 
     @Property("QVariantList", constant=True)
     def projectRoleOptions(self):
+        """Роли в проекте (ГИП, РП, участник) из контракта прав с подписями."""
         return [{"id": r, "label": PROJECT_ROLE_LABELS.get(r, r)} for r in self.contracts.permissions["project_roles"]]
 
     def _decorate(self, kind):
+        """Объекты кэша типа kind + всё, что нужно экрану: подписи статусов из контракта workflows, допустимые
+        переходы, имена связанных объектов и людей, суммы в русском формате, признак «не отправлено».
+        """
         wf = self.contracts.workflows
         out = []
         for o in self._data[kind]:
@@ -376,6 +418,7 @@ class Backend(QObject):
                    for a in self._assignments)
 
     def _name(self, kind, oid, field="name"):
+        """Поле (по умолчанию name) объекта типа kind по id из кэша или пустая строка."""
         return next((o.get(field) for o in self._data[kind] if o["id"] == oid), "")
 
     # ------------------------------------------------------------ расчёт комплекта и проектный итог (С3)
@@ -407,6 +450,8 @@ class Backend(QObject):
 
     @Slot(str, int, result="QVariantMap")
     def projectCalc(self, project_id: str, _rev: int = 0) -> dict:
+        """Проектный итог (ревизии) для карточки проекта. _rev — dataRevision, чтобы привязка QML пересчитывалась.
+        """
         return qml_safe(calc_view.project_calc(project_id, self._calc_revisions, self._people))
 
     @Property("QVariantList", notify=dataChanged)
@@ -449,6 +494,7 @@ class Backend(QObject):
 
     @Slot(str, result=str)
     def normalizeQty(self, text: str) -> str:
+        """Количество из поля ввода → строка для команды: без пробелов, запятая → точка (без float)."""
         return text.strip().replace(",", ".").replace(" ", "").replace("\u00a0", "")
 
     @Slot(str, str, str, str, "QVariantList")
@@ -458,16 +504,21 @@ class Backend(QObject):
         cur = currency.strip().upper() or None
 
         def job():
+            """Сохранить черновик в рабочем потоке и снять снимок данных."""
             r = self.client.save_calc_draft(kit_id, cur, note.strip() or None, lines)
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, "calc.save_draft", res))
 
     def _assignments_known(self, project_id) -> bool:
+        """Известны ли клиенту назначения проекта (если нет — подсказки прав не скрывают действия, решит сервер)."""
         return any(a.get("project_id") == project_id for a in self._assignments)
 
     # ------------------------------------------------------------ права-подсказки
     @Property(int, notify=changed)
     def permRevision(self):
+        """Счётчик смены прав текущего пользователя: QML передаёт его в hint(), чтобы кнопки обновлялись после смены
+        ролей.
+        """
         return self._perm_rev
 
     # События журнала, которые не являются командами каталога (файловые маршруты, вход и т. п.).
@@ -475,6 +526,7 @@ class Backend(QObject):
 
     @Slot(str, result=str)
     def commandLabel(self, command: str) -> str:
+        """Русское название команды или события журнала (для истории и очереди)."""
         meta = self.contracts.catalog["commands"].get(command) or {}
         return meta.get("label_ru") or self._EVENT_LABELS.get(command) or command
 
@@ -510,6 +562,9 @@ class Backend(QObject):
     # ------------------------------------------------------------ вход
     @Slot(str, str, str, str)
     def login(self, server_url: str, login: str, password: str, ca_file: str):
+        """Вход из формы: проверить поля, создать клиент для сервера (или переиспользовать), запомнить
+        адрес/логин/сертификат (не пароль) и войти в рабочем потоке.
+        """
         server_url, login = server_url.strip(), login.strip()
         if not server_url or not login or not password:
             self._login_error = "Укажите адрес сервера, логин и пароль."
@@ -528,6 +583,10 @@ class Backend(QObject):
         self._settings.setValue("server/ca", ca_file.strip())
 
         def done(r):
+            """Итог входа: онлайн → главный экран (или смена пароля) и обновление данных; офлайн → главный экран в
+            офлайн-режиме с предупреждением; иначе — текст ошибки на форме. Если пароль сбрасывал администратор,
+            прежний кэш отложен — пользователь предупреждается.
+            """
             st = r.status if hasattr(r, "status") else r.get("status")
             msg = r.message_ru if hasattr(r, "message_ru") else r.get("message_ru", "")
             if st == "accepted":
@@ -549,7 +608,9 @@ class Backend(QObject):
 
     @Slot(str, str)
     def changePassword(self, current: str, new: str):
+        """Смена пароля (обязательная при первом входе или по желанию)."""
         def done(r):
+            """Итог смены пароля: переход на главный экран или уведомление об ошибке."""
             if r.status == "accepted":
                 self.toast.emit("success", "Пароль изменён. Другие сеансы этого пользователя завершены.")
                 self._screen = "main"
@@ -561,7 +622,9 @@ class Backend(QObject):
 
     @Slot(str)
     def reconnect(self, password: str):
+        """Перейти из офлайн-режима в онлайн тем же пользователем (ввод пароля) и сразу отправить очередь."""
         def done(r):
+            """Итог переподключения."""
             if r.status == "accepted":
                 self._session_mode, self._online = "online", True
                 self.toast.emit("success", "Связь с сервером восстановлена. Отправляем очередь…")
@@ -573,7 +636,9 @@ class Backend(QObject):
 
     @Slot()
     def logout(self):
+        """Выход: закрыть профиль и стереть все данные из памяти интерфейса (на экране входа ничего не остаётся)."""
         def done(_):
+            """Сбросить состояние интерфейса после выхода."""
             self._screen, self._session_mode, self._me = "login", "none", {}
             self._data = {k: [] for k in self._data}
             # Снимки из кэша тоже убираются из памяти: после выхода на экране входа не должно оставаться данных.
@@ -584,6 +649,9 @@ class Backend(QObject):
 
     # ------------------------------------------------------------ синхронизация
     def _snapshot(self, pull: bool):
+        """Собрать в рабочем потоке всё, что показывает интерфейс (объекты кэша, списки meta, склад, люди, счётчики
+        очереди), при pull=True — предварительно синхронизировать.
+        """
         c = self.client
         rep = None
         if pull and c.token:
@@ -596,6 +664,9 @@ class Backend(QObject):
                 "online": c.t.online and c.token is not None, "token": c.token is not None, "rep": rep.__dict__ if rep else None}
 
     def _apply_snapshot(self, s):
+        """Применить снимок в потоке интерфейса и разослать changed/dataChanged. Если сеанс с сервером пропал — перейти
+        в офлайн-режим с уведомлением.
+        """
         if not isinstance(s, dict) or "data" not in s:
             if isinstance(s, dict) and s.get("message_ru"):
                 self.toast.emit("error", s["message_ru"])
@@ -620,17 +691,21 @@ class Backend(QObject):
         self.dataChanged.emit()
 
     def _refresh_after(self, then, pull: bool):
+        """Обновить снимок (с синхронизацией или без) и затем вызвать then()."""
         def done(s):
+            """Применить снимок и продолжить."""
             self._apply_snapshot(s)
             then()
         self._run(lambda: self._snapshot(pull), done)
 
     @Slot()
     def syncNow(self):
+        """Кнопка «Синхронизировать»: отправить очередь, получить свежие данные, сообщить итог."""
         if not self.client or self._screen != "main":
             return
 
         def done(s):
+            """Уведомление по итогу: остановка на конфликте, нет связи или число отправленных изменений."""
             self._apply_snapshot(s)
             rep = (s or {}).get("rep") if isinstance(s, dict) else None
             if rep:
@@ -644,13 +719,18 @@ class Backend(QObject):
 
     @Slot()
     def backgroundSync(self):
+        """Фоновая синхронизация по таймеру: при сеансе — тихая синхронизация; в офлайн-режиме — только проверка,
+        доступен ли сервер (пароль для входа спросит пользователь).
+        """
         if self.client and self._screen == "main" and not self._busy and self.client.token:
             self._run(lambda: self._snapshot(True), self._apply_snapshot)
         elif self.client and self._screen == "main" and not self._busy and self._session_mode == "offline":
             def probe():
+                """Проверить доступность сервера."""
                 return {"ping": self.client.t.ping()}
 
             def done(r):
+                """Обновить индикатор связи; при появлении сервера — подсказать войти."""
                 was = self._online
                 self._online = bool(r.get("ping"))
                 if self._online and not was:
@@ -661,11 +741,15 @@ class Backend(QObject):
     # ------------------------------------------------------------ команды
     @Slot(str, str, "QVariantMap", int)
     def execute(self, tag: str, command: str, payload: dict, expected_version: int):
+        """Выполнить команду из формы QML: tag — метка формы, payload — поля (пустая строка = поле не передаётся, null
+        = очистить), expected_version > 0 — ожидаемая версия объекта.
+        """
         ev = expected_version if expected_version > 0 else None
         # "" из пустого поля формы = «не указано» (ключ не передаётся); null = явная очистка значения при изменении.
         payload = {k: v for k, v in dict(payload).items() if v != ""}
 
         def job():
+            """Выполнить команду в рабочем потоке; после складских команд сразу перечитать снимок с сервера."""
             r = self.client.execute(command, payload, ev)
             if r.status == "accepted" and command.split(".")[0] in self._STOCK_PREFIXES:
                 # Проводка/резерв/потребность меняют производные данные, которые клиент сам не пересчитывает
@@ -717,6 +801,7 @@ class Backend(QObject):
         path = Path(QUrl(file_url).toLocalFile() if "://" in file_url else file_url)
 
         def job():
+            """Проверить файл (существует, не больше предела клиента) и загрузить его потоком."""
             try:
                 size = path.stat().st_size
             except OSError:
@@ -734,6 +819,7 @@ class Backend(QObject):
         dest = Path(QUrl(dest_url).toLocalFile() if "://" in dest_url else dest_url)
 
         def job():
+            """Скачать версию в выбранный файл (сохранение — только после сверки SHA-256)."""
             r = self.client.download_document_version(document_id, version_no, dest)
             return {"result": r.__dict__, "snap": None}
 
@@ -766,6 +852,9 @@ class Backend(QObject):
 
     @Slot(result=str)
     def newId(self) -> str:
+        """Новый UUID для создаваемого объекта: id выдаёт клиент, чтобы объект, созданный офлайн, сохранил его на
+        сервере.
+        """
         return str(uuid.uuid4())
 
     @Slot(str, result=str)
@@ -788,19 +877,24 @@ class Backend(QObject):
 
     @Slot(str, result=str)
     def normalizeMoney(self, text: str) -> str:
+        """Сумма из поля ввода → строка для команды: без пробелов, запятая → точка (без float)."""
         return text.strip().replace(" ", "").replace("\u00a0", "").replace(",", ".")
 
     # ------------------------------------------------------------ очередь и конфликты
     @Property("QVariantList", notify=dataChanged)
     def queueItems(self):
+        """Очередь синхронизации для экрана «Синхронизация» (после loadQueue)."""
         return qml_safe(self._queue)
 
     @Slot()
     def loadQueue(self):
+        """Загрузить очередь и проблемные операции; для конфликтов собрать сравнение «моё / на сервере» по полям."""
         def job():
+            """Прочитать очередь и проблемы в рабочем потоке."""
             return {"queue": self.client.queue(), "problems": self.client.problems()}
 
         def done(r):
+            """Построить строки экрана очереди с русскими названиями полей и признаком расхождения."""
             probs = {p["operation_id"]: p for p in r.get("problems", [])}
             items = []
             for q in r.get("queue", []):
@@ -820,16 +914,20 @@ class Backend(QObject):
 
     @Slot(str)
     def discard(self, op_id: str):
+        """«Отменить своё» для операции очереди; на экране остаётся версия сервера."""
         self._run(lambda: (self.client.discard(op_id), self._snapshot(False))[1],
                   lambda s: (self._apply_snapshot(s), self.loadQueue(), self.toast.emit("info", "Ваше изменение отменено; показана версия сервера.")))
 
     @Slot(str)
     def reapply(self, op_id: str):
+        """«Повторить поверх текущей версии» для конфликта."""
         def job():
+            """Повторить операцию в рабочем потоке и снять снимок."""
             r = self.client.reapply_on_current(op_id)
             return {"r": r.__dict__, "snap": self._snapshot(False)}
 
         def done(res):
+            """Обновить экран и сообщить итог."""
             self._apply_snapshot(res.get("snap"))
             self.loadQueue()
             r = res.get("r", {})
@@ -840,11 +938,14 @@ class Backend(QObject):
     # ------------------------------------------------------------ запросы
     @Slot(str, str, str)
     def history(self, tag: str, object_type: str, object_id: str):
+        """Запросить с сервера историю объекта (журнал изменений) — только онлайн; ответ придёт в queryDone(tag)."""
         self._run(lambda: self.client.query("history", object_type=object_type, object_id=object_id), lambda r: self._query_done(tag, r))
 
     @Slot(str)
     def loadUsers(self, tag: str):
+        """Запросить список пользователей для администрирования (только онлайн, право проверяет сервер)."""
         def done(r):
+            """Добавить русские подписи ролей к выдачам и передать ответ форме."""
             if r.get("status") == "accepted":
                 for u in r["result"]:
                     u["role_labels"] = [ROLE_LABELS.get(g["role"], g["role"]) for g in u["grants"] if g["active"]]

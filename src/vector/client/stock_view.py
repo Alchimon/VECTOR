@@ -40,6 +40,9 @@ def as_of_label(last_pull: str) -> str:
 
 
 def _d(v) -> Decimal:
+    """Количество из кэша (строка) → Decimal; пусто или None → 0 (используется только для остатков, где отсутствие
+    строки и есть ноль).
+    """
     return Decimal(str(v)) if v not in (None, "") else ZERO
 
 

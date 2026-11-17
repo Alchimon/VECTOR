@@ -34,20 +34,26 @@ KEYRING_SERVICE = "VECTOR-desktop"
 
 
 class VaultError(Exception):
+    """Отказ открыть или создать локальное хранилище: code — для логики клиента, message_ru — для пользователя."""
     def __init__(self, code: str, message_ru: str):
+        """Запомнить машинный код и русский текст."""
         super().__init__(message_ru)
         self.code, self.message_ru = code, message_ru
 
 
 class DeviceSecretStore(Protocol):
-    def get(self, name: str) -> Optional[str]: ...
-    def set(self, name: str, value: str) -> None: ...
+    """Интерфейс хранилища секрета устройства: получить или записать строку по имени."""
+    def get(self, name: str) -> Optional[str]: ...          # значение по имени или None
+    def set(self, name: str, value: str) -> None: ...       # записать значение по имени
 
 
 class KeyringStore:
     """Секрет устройства в хранилище ОС. Fail-closed: без защищённого хранилища клиент не хранит данные."""
 
     def __init__(self):
+        """Подключить keyring и убедиться, что есть настоящее защищённое хранилище (в Windows — Credential Manager).
+        Если нет — отказ no_secure_store: класть ключ в обычный файл нельзя.
+        """
         import keyring
         from keyring.backends import fail
         kr = keyring.get_keyring()
@@ -57,9 +63,11 @@ class KeyringStore:
         self._kr = keyring
 
     def get(self, name):
+        """Прочитать секрет из хранилища ОС."""
         return self._kr.get_password(KEYRING_SERVICE, name)
 
     def set(self, name, value):
+        """Записать секрет в хранилище ОС."""
         self._kr.set_password(KEYRING_SERVICE, name, value)
 
 
@@ -67,20 +75,29 @@ class MemoryStore:
     """Только для тестов."""
 
     def __init__(self):
+        """Пустой словарь вместо хранилища ОС."""
         self.d: dict[str, str] = {}
 
     def get(self, name):
+        """Значение по имени или None."""
         return self.d.get(name)
 
     def set(self, name, value):
+        """Записать значение по имени."""
         self.d[name] = value
 
 
 def server_dir(base: Path, server_url: str) -> Path:
+    """Каталог данных одного сервера: имя — первые 16 символов SHA-256 от адреса (без слэша в конце, в нижнем
+    регистре). Кэши разных серверов не смешиваются.
+    """
     return Path(base) / hashlib.sha256(server_url.rstrip("/").lower().encode()).hexdigest()[:16]
 
 
 def profile_dir(base: Path, server_url: str, user_id: str) -> Path:
+    """Каталог профиля пользователя на сервере. user_id проверяется по формату UUID, чтобы им нельзя было выйти за
+    пределы каталога (../).
+    """
     if not re.fullmatch(r"[0-9a-f-]{36}", user_id):
         raise VaultError("bad_user", "Некорректный идентификатор пользователя.")
     return server_dir(base, server_url) / user_id
@@ -88,15 +105,24 @@ def profile_dir(base: Path, server_url: str, user_id: str) -> Path:
 
 @dataclass
 class OpenVault:
+    """Открытое хранилище: ключ данных (DEK) в памяти и каталог профиля. Через него шифруются и расшифровываются поля
+    локальной БД.
+    """
     dek: bytes
     path: Path
 
     def seal(self, table: str, key: str, plaintext: str) -> str:
+        """Зашифровать значение: AES-256-GCM, случайный nonce, AAD = «таблица|ключ». Результат — base64(nonce +
+        шифротекст).
+        """
         nonce = os.urandom(12)
         ct = AESGCM(self.dek).encrypt(nonce, plaintext.encode("utf-8"), f"{table}|{key}".encode())
         return base64.b64encode(nonce + ct).decode()
 
     def open(self, table: str, key: str, sealed: str) -> str:
+        """Расшифровать значение; при неверном теге (данные изменены, перенесены между строками или повреждены) — отказ
+        local_data_corrupt с подсказкой пользователю.
+        """
         raw = base64.b64decode(sealed)
         try:
             return AESGCM(self.dek).decrypt(raw[:12], raw[12:], f"{table}|{key}".encode()).decode("utf-8")
@@ -106,7 +132,13 @@ class OpenVault:
 
 
 class Vault:
+    """Локальное хранилище одного пользователя на одном сервере: файл vault.json с обёрнутым ключом данных и временем
+    последнего онлайн-входа (для предела офлайн-работы).
+    """
     def __init__(self, directory: Path, store: DeviceSecretStore, offline_unlock_max_days: int = 7):
+        """Каталог профиля, хранилище секрета устройства и предел офлайн-работы в днях (по умолчанию 7 — техническое
+        значение, OQ-18).
+        """
         self.dir = Path(directory)
         self.store = store
         self.max_days = offline_unlock_max_days
@@ -114,6 +146,9 @@ class Vault:
         self.orphaned: Optional[Path] = None
 
     def _device_secret(self, create: bool) -> Optional[bytes]:
+        """Секрет устройства для этого профиля из хранилища ОС; при create=True создаётся (32 случайных байта), если
+        его ещё нет.
+        """
         name = "device:" + hashlib.sha256(str(self.dir).encode()).hexdigest()[:24]
         v = self.store.get(name)
         if v is None and create:
@@ -123,10 +158,14 @@ class Vault:
 
     @staticmethod
     def _kek(password: str, salt: bytes, dev: bytes, kdf: dict) -> bytes:
+        """Ключ обёртки (KEK): scrypt от пароля с солью, затем HKDF вместе с секретом устройства. Нужны оба: пароль
+        пользователя И эта учётная запись Windows.
+        """
         pk = hashlib.scrypt(password.encode("utf-8"), salt=salt, n=kdf["n"], r=kdf["r"], p=kdf["p"], maxmem=256 * 1024 * 1024, dklen=32)
         return HKDF(algorithm=hashes.SHA256(), length=32, salt=salt, info=b"VECTOR local vault v1").derive(pk + dev)
 
     def exists(self) -> bool:
+        """Есть ли на этом ПК офлайн-профиль (vault.json)."""
         return self.file.exists()
 
     def unlock_after_online_login(self, password: str, now: datetime, kdf: dict | None = None) -> OpenVault:
@@ -159,6 +198,11 @@ class Vault:
         self._write(opened.dek, new_password, dev, now, kdf or SCRYPT)
 
     def unlock_offline(self, password: str, now: datetime) -> OpenVault:
+        """Открыть хранилище без связи с сервером.
+
+        Условия: профиль есть; с последнего онлайн-входа прошло не больше max_days; секрет устройства на месте;
+        пароль подходит (тот, что был при последнем онлайн-входе). Каждое нарушение — свой понятный отказ.
+        """
         if not self.file.exists():
             raise VaultError("no_offline_profile", "На этом компьютере нет офлайн-профиля этого пользователя. Нужен вход при связи с сервером.")
         meta = json.loads(self.file.read_text())
@@ -175,6 +219,7 @@ class Vault:
         return OpenVault(dek, self.dir)
 
     def _try_unwrap(self, meta: dict, password: str, dev: Optional[bytes]) -> Optional[bytes]:
+        """Попробовать развернуть ключ данных паролем и секретом устройства; None — не подошло."""
         if dev is None:
             return None
         kek = self._kek(password, base64.b64decode(meta["salt"]), dev, meta["kdf"])
@@ -185,6 +230,9 @@ class Vault:
             return None
 
     def _write(self, dek: bytes, password: str, dev: bytes, now: datetime, kdf: dict):
+        """Записать vault.json: новая соль, ключ данных, обёрнутый KEK, время входа. Запись атомарная (временный файл +
+        replace), права только владельцу.
+        """
         salt = os.urandom(16)
         kek = self._kek(password, salt, dev, kdf)
         nonce = os.urandom(12)
@@ -198,6 +246,7 @@ class Vault:
 
 
 def _restrict(p: Path):
+    """Права только владельцу (700 для каталога, 600 для файла) там, где ОС это поддерживает."""
     try:
         os.chmod(p, 0o700 if p.is_dir() else 0o600)
     except OSError:
@@ -205,4 +254,5 @@ def _restrict(p: Path):
 
 
 def constant_eq(a: str, b: str) -> bool:
+    """Сравнение строк за постоянное время (не выдаёт по времени ответа, сколько символов совпало)."""
     return hmac.compare_digest(a.encode(), b.encode())

@@ -56,11 +56,19 @@ def _seekable(f):
     return io.BytesIO(f.read())
 
 
+# Тип запроса протокола → путь HTTP API сервера (api.py).
 _ROUTES = {"login": "/api/v1/auth/login", "logout": "/api/v1/auth/logout", "command": "/api/v1/command", "query": "/api/v1/query"}
 
 
 class HttpTransport:
+    """Транспорт по HTTPS к серверу ВЕКТОР (httpx). Только https:// (http — лишь для localhost при разработке); свой
+    корневой сертификат — ca_file; редиректы запрещены (не уводим токен на чужой адрес). Флаг online отражает
+    последний исход связи — по нему интерфейс показывает «Офлайн».
+    """
     def __init__(self, base_url: str, ca_file: Optional[str] = None, timeout: float = 15.0):
+        """Проверить адрес сервера и создать HTTP-клиент: таймаут подключения 5 с, остальное — timeout (15 с по
+        умолчанию).
+        """
         if not base_url.startswith("https://") and not base_url.startswith("http://127.0.0.1") and not base_url.startswith("http://localhost"):
             raise ValueError("Адрес сервера должен начинаться с https:// (открытый HTTP допустим только для localhost в режиме разработки).")
         self.base_url = base_url.rstrip("/")
@@ -70,9 +78,16 @@ class HttpTransport:
         self.online = True
 
     def close(self):
+        """Закрыть HTTP-клиент и его соединения."""
         self._http.close()
 
     def send(self, request: dict) -> dict:
+        """Отправить запрос протокола (login / logout / command / query) как JSON и вернуть ответ сервера.
+
+        Токен уходит в заголовке Authorization, а не в теле. Сбои классифицируются: нет связи до отправки → Offline
+        (можно ставить в очередь); запрос ушёл, но ответа нет или он не JSON → ResponseLost (исход неизвестен,
+        повтор только с тем же operation_id); ошибка сертификата → TlsError (это не «офлайн», а возможная атака).
+        """
         t = request.get("type")
         body = {k: v for k, v in request.items() if k not in ("type", "token")}
         headers = {"Authorization": f"Bearer {request['token']}"} if request.get("token") else {}
@@ -136,6 +151,7 @@ class HttpTransport:
             size = _remaining(src)
 
         def body():
+            """Генератор тела запроса: файл блоками по FILE_BLOCK."""
             while True:
                 b = src.read(FILE_BLOCK)
                 if not b:
@@ -160,6 +176,9 @@ class HttpTransport:
         вызывающего (SyncClient): транспорт только доставляет байты. Обрыв посреди передачи → ResponseLost.
         """
         def fetch():
+            """Потоковое скачивание: при 200 и application/octet-stream — байты в sink, иначе разбор JSON-ответа об
+            ошибке.
+            """
             with self._http.stream("GET", f"/api/v1/files/{document_id}/{int(version_no)}",
                                    headers={"Authorization": f"Bearer {token}"}, timeout=self._FILE_TIMEOUT) as r:
                 if r.status_code == 200 and r.headers.get("content-type", "").startswith("application/octet-stream"):
@@ -177,6 +196,7 @@ class HttpTransport:
         return self._guard(fetch)
 
     def ping(self) -> bool:
+        """Проверка доступности сервера (/api/v1/health, 3 с); обновляет флаг online."""
         try:
             ok = self._http.get("/api/v1/health", timeout=3.0).status_code == 200
         except httpx.HTTPError:
@@ -186,6 +206,7 @@ class HttpTransport:
 
 
 def _is_cert_error(e: Exception) -> bool:
+    """Причина ошибки подключения — непрошедшая проверка TLS-сертификата? Просматривается вся цепочка исключений."""
     c: BaseException | None = e
     while c is not None:
         if isinstance(c, ssl.SSLCertVerificationError):
@@ -198,6 +219,9 @@ class LoopbackTransport:
     """Для автотестов: in-process сервис с JSON-границей и инъекцией сбоев."""
 
     def __init__(self, service, addr: str = "127.0.0.1"):
+        """Подключить сервис напрямую. Флаги для тестов: online=False — имитация отсутствия сети; drop_next_response —
+        запрос выполнен, ответ «потерян»; corrupt_next_download — порча байта при скачивании.
+        """
         self._svc, self._addr = service, addr
         self.online = True
         self.drop_next_response = False
@@ -205,6 +229,9 @@ class LoopbackTransport:
         self.sent: list[dict] = []
 
     def send(self, request: dict) -> dict:
+        """Передать запрос в сервис через JSON-сериализацию (как по сети: никаких Python-объектов через границу) с
+        учётом флагов сбоев.
+        """
         if not self.online:
             raise Offline()
         raw = json.loads(json.dumps(request, ensure_ascii=False))
@@ -216,6 +243,7 @@ class LoopbackTransport:
         return resp
 
     def upload(self, token: str, project_id: str, source, sha256: str, size: Optional[int] = None) -> dict:
+        """Загрузить файл в сервис напрямую (с той же проверкой SHA-256 на стороне сервиса)."""
         if not self.online:
             raise Offline()
         resp = self._svc.put_file_stream(token, project_id, _seekable(_as_reader(source)), sha256, self._addr)
@@ -225,6 +253,7 @@ class LoopbackTransport:
         return json.loads(json.dumps(resp, ensure_ascii=False))
 
     def download(self, token: str, document_id: str, version_no: int, sink) -> dict:
+        """Скачать файл из сервиса; при corrupt_next_download один байт портится — клиент обязан это обнаружить."""
         if not self.online:
             raise Offline()
         # Сервис собирает проверенный файл во временный буфер (как HTTP-слой), затем «передаёт» его в sink.
@@ -241,7 +270,9 @@ class LoopbackTransport:
         return json.loads(json.dumps(resp, ensure_ascii=False))
 
     def ping(self) -> bool:
+        """«Сервер доступен», если не включена имитация офлайна."""
         return self.online
 
     def close(self):
+        """Нечего закрывать."""
         pass

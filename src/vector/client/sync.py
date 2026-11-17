@@ -30,6 +30,13 @@ from vector.core.contracts import Contracts
 from .transport import FILE_BLOCK, Offline, ResponseLost, TlsError
 from .vault import DeviceSecretStore, OpenVault, Vault, VaultError, profile_dir, server_dir
 
+# Локальная БД профиля (SQLite на ПК пользователя). Все данные — в зашифрованных полях *_enc (vault.py).
+# * cache  — объекты: data_enc — то, что видит пользователь (с его неотправленными правками),
+#            server_enc — последняя известная серверная копия, pending=1 — есть неподтверждённые правки;
+# * outbox — очередь операций в порядке seq; operation_id создаётся один раз и не меняется при повторах;
+#            state: pending → accepted | conflict | rejected; конфликт/отказ решает пользователь:
+#            discarded («отменить своё») или superseded («повторить поверх» новой операцией);
+# * meta   — служебное: сеанс, время снимка last_pull, люди, назначения, неизменяемые списки, склад.
 LOCAL_SCHEMA = """
 CREATE TABLE IF NOT EXISTS cache (
   object_type TEXT NOT NULL,
@@ -88,6 +95,13 @@ def _calc_same(local: dict, payload: dict) -> bool:
 
 @dataclass
 class LocalResult:
+    """Исход действия пользователя на клиенте — то, что видит интерфейс.
+
+    Ключевые статусы: queued — сохранено локально, сервер ещё не подтвердил; accepted — сервер принял;
+    refused_offline — действие требует сервера и НЕ выполнено (и не поставлено в очередь); unknown_outcome — запрос
+    ушёл, ответа нет (проверка повтором с тем же operation_id); blocked — сначала разберите очередь; conflict /
+    rejected / denied — ответ сервера; offline_unlocked — вход без связи.
+    """
     status: str   # queued | accepted | refused_offline | conflict | rejected | denied | unauthenticated | unknown_outcome | blocked | error | offline_unlocked
     operation_id: Optional[str] = None
     message_ru: str = ""
@@ -96,6 +110,10 @@ class LocalResult:
 
 @dataclass
 class SyncReport:
+    """Итог прохода синхронизации: сколько отправлено и принято (replayed — сервер вернул сохранённый ранее исход), на
+    какой операции и с каким статусом остановились, была ли связь, обновлён ли кэш (pulled), сообщение для
+    пользователя.
+    """
     sent: int = 0
     accepted: int = 0
     replayed: int = 0
@@ -108,12 +126,23 @@ class SyncReport:
 
 
 def _now() -> datetime:
+    """Текущее время в UTC (если в SyncClient не подставлены тестовые часы)."""
     return datetime.now(timezone.utc)
 
 
 class SyncClient:
+    """Клиентская часть синхронизации: сеанс, зашифрованный локальный кэш, очередь операций (outbox), отправка, приём
+    снимка (pull), конфликты и файлы.
+
+    Один экземпляр обслуживает одного вошедшего пользователя одного сервера. Используется из Backend (интерфейс) и
+    напрямую в тестах tests/client.
+    """
     def __init__(self, transport, server_url: str, base_dir: Path, store: DeviceSecretStore, device_id: str,
                  contracts: Optional[Contracts] = None, clock=None, offline_unlock_max_days: int = 7, kdf: dict | None = None):
+        """Транспорт, адрес сервера, базовый каталог профилей, хранилище секрета устройства, id устройства. contracts —
+        каталог команд (класс queued/online_required); clock и kdf подменяются в тестах; offline_unlock_max_days —
+        предел офлайн-входа.
+        """
         self.t = transport
         self.server_url = server_url
         self.base_dir = Path(base_dir)
@@ -134,13 +163,18 @@ class SyncClient:
         self.orphaned_cache: Optional[Path] = None
 
     def now(self) -> datetime:
+        """Текущее время (тестовые часы, если заданы)."""
         return self.clock.now() if self.clock else _now()
 
     # ------------------------------------------------------------ профили
     def _accounts_file(self) -> Path:
+        """Файл соответствия «логин → user_id» для сервера: нужен для офлайн-входа (найти профиль без связи). Пароли и
+        токены в нём не хранятся.
+        """
         return server_dir(self.base_dir, self.server_url) / "accounts.json"
 
     def _remember_account(self, login: str, user_id: str):
+        """Запомнить user_id для логина после успешного онлайн-входа."""
         f = self._accounts_file()
         f.parent.mkdir(parents=True, exist_ok=True)
         data = json.loads(f.read_text()) if f.exists() else {}
@@ -148,10 +182,15 @@ class SyncClient:
         f.write_text(json.dumps(data))
 
     def _known_user(self, login: str) -> Optional[str]:
+        """user_id ранее входившего на этом ПК пользователя или None."""
         f = self._accounts_file()
         return json.loads(f.read_text()).get(login.lower()) if f.exists() else None
 
     def _open_db(self, ov: OpenVault):
+        """Открыть локальную БД профиля (SQLite), создать таблицы, включить secure_delete (удалённое затирается).
+        Служебная запись «check» проверяет, что ключ подходит к этой базе: чужая или повреждённая база сразу даёт
+        ошибку.
+        """
         if self.db:
             self.db.close()
         self.ov = ov
@@ -166,20 +205,30 @@ class SyncClient:
             self.db.execute("INSERT INTO meta VALUES ('check', ?)", (self._seal("meta", "check", "ok"),))
 
     def _seal(self, table, key, text):
+        """Зашифровать значение для ячейки (таблица, ключ строки) ключом открытого хранилища."""
         return self.ov.seal(table, key, text)
 
     def _open(self, table, key, sealed):
+        """Расшифровать значение ячейки; при подмене — VaultError local_data_corrupt."""
         return self.ov.open(table, key, sealed)
 
     def _set_meta(self, k: str, v: Any):
+        """Записать служебное значение (JSON) в meta зашифрованным."""
         self.db.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (k, self._seal("meta", k, json.dumps(v, ensure_ascii=False))))
 
     def get_meta(self, k: str) -> Any:
+        """Прочитать служебное значение из meta (None, если нет)."""
         row = self.db.execute("SELECT v_enc FROM meta WHERE k=?", (k,)).fetchone()
         return json.loads(self._open("meta", k, row[0])) if row else None
 
     # ------------------------------------------------------------ сеанс
     def login(self, login: str, password: str) -> LocalResult:
+        """Вход.
+
+        При связи: запрос к серверу; при успехе — запомнить токен (только в памяти), предел размера файла, открыть
+        или создать зашифрованный профиль под этим паролем. Смена пользователя закрывает прежний профиль. Нет связи
+        → офлайн-разблокировка профиля. Ошибка сертификата → отказ (а не офлайн-режим).
+        """
         try:
             r = self.t.send({"type": "login", "login": login, "password": password, "device_id": self.device_id})
         except TlsError as e:
@@ -204,6 +253,9 @@ class SyncClient:
         return LocalResult("accepted", response=r)
 
     def _offline_unlock(self, login: str, password: str) -> LocalResult:
+        """Вход без связи: найти профиль по логину и открыть его паролем последнего онлайн-входа. Сеанса с сервером нет
+        (token=None): можно смотреть кэш и ставить queued-команды в очередь.
+        """
         uid = self._known_user(login)
         if not uid:
             return LocalResult("refused_offline", message_ru="Нет связи с сервером, а офлайн-профиля этого пользователя на компьютере нет. "
@@ -225,6 +277,9 @@ class SyncClient:
         return self.login(self.login_name, password)
 
     def change_password(self, current: str, new: str) -> LocalResult:
+        """Сменить пароль на сервере (только онлайн); при успехе перешифровать обёртку ключа профиля новым паролем —
+        очередь и кэш сохраняются.
+        """
         r = self.execute("account.change_password", {"current_password": current, "new_password": new})
         if r.status == "accepted":
             self.must_change_password = False
@@ -232,6 +287,9 @@ class SyncClient:
         return r
 
     def logout(self):
+        """Выйти: сообщить серверу (если есть связь), забыть токен, закрыть локальную БД. Очередь остаётся на диске —
+        она будет отправлена при следующем входе этого пользователя.
+        """
         if self.token:
             try:
                 self.t.send({"type": "logout", "token": self.token})
@@ -244,10 +302,20 @@ class SyncClient:
 
     @property
     def online_session(self) -> bool:
+        """Есть ли действующий сеанс с сервером (а не только открытый офлайн-кэш)."""
         return self.token is not None
 
     # ------------------------------------------------------------ команды
     def execute(self, command: str, payload: dict, expected_version: Optional[int] = None) -> LocalResult:
+        """Выполнить команду пользователя по её классу из каталога команд.
+
+        * online_required (проводки, фиксации, файлы, смена пароля): нужен сеанс; если в очереди есть
+          неотправленное — сначала синхронизация (причинность), иначе blocked. Отправка с новым operation_id; без
+          связи — refused_offline (не ставится в очередь); потерянный ответ — операция запоминается для проверки
+          повтором.
+        * queued (справочники, задачи, черновики): запись в outbox и наложение на локальный объект в одной
+          транзакции; при наличии сеанса — сразу синхронизация, и пользователь получает исход сервера.
+        """
         if self.db is None:
             return LocalResult("unauthenticated", message_ru="Войдите в систему.")
         cls = self.contracts.offline_class(command)
@@ -328,6 +396,9 @@ class SyncClient:
         return self.execute("calc.save_draft", payload, ev)
 
     def retry_online(self, op_id: str) -> LocalResult:
+        """Повторить операцию с неизвестным исходом с ТЕМ ЖЕ operation_id: сервер либо выполнит её впервые, либо вернёт
+        сохранённый исход — дважды она не выполнится.
+        """
         row = self.db.execute("SELECT command, payload_enc, expected_version FROM outbox WHERE operation_id=? AND state='pending'", (op_id,)).fetchone()
         if not row:
             return LocalResult("rejected", op_id, "Операция не найдена в очереди.")
@@ -343,6 +414,12 @@ class SyncClient:
 
     # ------------------------------------------------------------ синхронизация
     def sync(self) -> SyncReport:
+        """Отправить очередь строго по порядку.
+
+        На принятой операции — дальше; на конфликте или отказе — стоп (следующие операции могут зависеть от этой).
+        Нет связи или ответ потерян — стоп, очередь сохранена. Сеанс истёк — стоп, токен забыт. После полного
+        прохода — pull свежего снимка.
+        """
         rep = SyncReport()
         if self.db is None or not self.token:
             rep.stop_status = "unauthenticated"
@@ -383,6 +460,12 @@ class SyncClient:
         return rep
 
     def pull(self) -> bool:
+        """Получить с сервера снимок всего, что пользователь вправе видеть, и заменить им кэш.
+
+        Объекты без локальных правок заменяются целиком (если права сузились, лишнее исчезает). Для объектов с
+        операциями в очереди обновляется только «серверная» копия — локальная правка пользователя не затирается.
+        Списки (версии документов, расчёты, склад) кладутся в meta вместе с временем снимка last_pull.
+        """
         if not self.token:
             return False
         try:
@@ -419,6 +502,7 @@ class SyncClient:
         return True
 
     def query(self, name: str, **kw) -> dict:
+        """Произвольный запрос к серверу (история, отчёты) — только онлайн; без связи возвращает refused_offline."""
         if not self.token:
             return {"status": "refused_offline", "message_ru": "Нужна связь с сервером."}
         try:
@@ -550,6 +634,9 @@ class SyncClient:
 
     # ------------------------------------------------------------ конфликты и отказы
     def problems(self) -> list[dict]:
+        """Операции очереди, отклонённые сервером или в конфликте: команда, отправленные данные, ответ сервера и его
+        текущая версия объекта — для экрана «Требуют решения».
+        """
         out = []
         for op_id, command, state, penc, renc in self.db.execute(
                 "SELECT operation_id, command, state, payload_enc, response_enc FROM outbox WHERE state IN ('conflict','rejected') ORDER BY seq"):
@@ -560,6 +647,7 @@ class SyncClient:
         return out
 
     def queue(self) -> list[dict]:
+        """Все незавершённые операции очереди (ожидают, конфликт, отказ) по порядку — для экрана очереди."""
         out = []
         for op_id, command, state, attempts, created, otype, oid in self.db.execute(
                 "SELECT operation_id, command, state, attempts, created_at, object_type, object_id FROM outbox "
@@ -569,6 +657,9 @@ class SyncClient:
         return out
 
     def discard(self, op_id: str) -> None:
+        """«Отменить своё»: операция помечается отменённой (не удаляется — остаётся след), локальный объект
+        возвращается к серверной копии, затем pull.
+        """
         row = self.db.execute("SELECT object_type, object_id, state FROM outbox WHERE operation_id=?", (op_id,)).fetchone()
         if not row or row[2] not in ("conflict", "rejected", "pending"):
             raise ValueError("Нечего отменять")
@@ -577,6 +668,10 @@ class SyncClient:
         self.pull()
 
     def reapply_on_current(self, op_id: str) -> LocalResult:
+        """«Повторить поверх текущей версии»: прежняя операция помечается заменённой, те же данные отправляются новой
+        операцией с версией объекта, которую сообщил сервер. Пользователь делает это сознательно, увидев изменения
+        коллеги.
+        """
         row = self.db.execute("SELECT command, payload_enc, response_enc, state FROM outbox WHERE operation_id=?", (op_id,)).fetchone()
         if not row or row[3] != "conflict":
             raise ValueError("Повтор поверх доступен только для конфликта")
@@ -586,6 +681,9 @@ class SyncClient:
 
     # ------------------------------------------------------------ чтение кэша
     def list_local(self, object_type: str) -> list[dict]:
+        """Все объекты типа из кэша (с локальными правками), с пометками _pending (есть неподтверждённые изменения) и
+        _server_version.
+        """
         out = []
         for oid, denc, pending, sv in self.db.execute("SELECT id, data_enc, pending, server_version FROM cache WHERE object_type=? ORDER BY id", (object_type,)):
             d = json.loads(self._open("cache", f"{object_type}/{oid}/d", denc))
@@ -595,24 +693,32 @@ class SyncClient:
         return out
 
     def get_local(self, object_type: str, oid: str) -> Optional[dict]:
+        """Один объект из кэша или None."""
         return next((d for d in self.list_local(object_type) if d["id"] == oid), None)
 
     def pending_count(self) -> int:
+        """Сколько операций ждут отправки."""
         return self.db.execute("SELECT COUNT(*) FROM outbox WHERE state='pending'").fetchone()[0] if self.db else 0
 
     def problem_count(self) -> int:
+        """Сколько операций требуют решения пользователя (конфликт или отказ)."""
         return self.db.execute("SELECT COUNT(*) FROM outbox WHERE state IN ('conflict','rejected')").fetchone()[0] if self.db else 0
 
     # ------------------------------------------------------------ внутреннее
     def _op_state(self, op_id):
+        """Состояние операции в очереди и сохранённый ответ сервера."""
         st, renc = self.db.execute("SELECT state, response_enc FROM outbox WHERE operation_id=?", (op_id,)).fetchone()
         return st, (json.loads(self._open("outbox", op_id + "/r", renc)) if renc else {})
 
     def _send_command(self, op_id, command, payload, ev) -> dict:
+        """Отправить одну команду протокола с operation_id и ожидаемой версией."""
         return self.t.send({"type": "command", "token": self.token, "operation_id": op_id, "command": command,
                             "payload": payload, "expected_version": ev})
 
     def _remember_online_unknown(self, op_id, command, payload, ev):
+        """Сохранить online_required-операцию с потерянным ответом в очередь как pending — чтобы её можно было
+        проверить повтором с тем же operation_id.
+        """
         otype = self.contracts.catalog["commands"][command]["object"]
         self.db.execute("INSERT INTO outbox(operation_id,command,payload_enc,expected_version,object_type,object_id,created_at,state) "
                         "VALUES (?,?,?,?,?,?,?,'pending')",
@@ -620,6 +726,9 @@ class SyncClient:
                          self.now().isoformat()))
 
     def _finish(self, op_id, command, r):
+        """Записать исход операции: принята — применить результат к кэшу; конфликт — сохранить текущую серверную версию
+        объекта (для сравнения). Затем пересчитать признак «есть локальные правки».
+        """
         state = {"accepted": "accepted", "conflict": "conflict"}.get(r["status"], "rejected")
         row = self.db.execute("SELECT object_type, object_id FROM outbox WHERE operation_id=?", (op_id,)).fetchone()
         self.db.execute("BEGIN")
@@ -634,16 +743,24 @@ class SyncClient:
             self._refresh_pending_flag(row[0], row[1])
 
     def _open_problems(self, otype, oid) -> int:
+        """Сколько незавершённых операций относится к объекту."""
         return self.db.execute("SELECT COUNT(*) FROM outbox WHERE object_type=? AND object_id=? AND state IN ('pending','conflict','rejected')",
                                (otype, oid)).fetchone()[0]
 
     def _set_server_state(self, otype, obj):
+        """Обновить «серверную» копию объекта в кэше (или создать запись, если объекта ещё не было), не трогая
+        локальную правку.
+        """
         j = json.dumps(obj, ensure_ascii=False)
         se = self._seal("cache", f"{otype}/{obj['id']}/s", j)
         if self.db.execute("UPDATE cache SET server_enc=?, server_version=? WHERE object_type=? AND id=?", (se, obj["version"], otype, obj["id"])).rowcount == 0:
             self.db.execute("INSERT INTO cache VALUES (?,?,?,?,?,0)", (otype, obj["id"], self._seal("cache", f"{otype}/{obj['id']}/d", j), se, obj["version"]))
 
     def _apply_response(self, r):
+        """Применить результат принятой команды к кэшу сразу, не дожидаясь pull: неизменяемые объекты — в списки meta;
+        новый остаток — в снимок остатков; сторно помечает исходное движение; сформированная потребность убирается
+        из кандидатов; изменённые объекты — в кэш (если по ним нет других операций в очереди).
+        """
         if r.get("status") != "accepted":
             return
         # Неизменяемые объекты (версия расчёта, ревизия итога) — сразу в локальные списки, не дожидаясь pull:
@@ -679,6 +796,9 @@ class SyncClient:
                                 (self._seal("cache", f"{otype}/{obj['id']}/d", j), otype, obj["id"]))
 
     def _overlay(self, otype, oid, payload):
+        """Наложить данные queued-команды на локальную копию объекта (или создать её), пометив «есть локальные правки».
+        Так пользователь сразу видит своё изменение офлайн.
+        """
         if not oid:
             return
         row = self.db.execute("SELECT data_enc FROM cache WHERE object_type=? AND id=?", (otype, oid)).fetchone()
@@ -692,6 +812,9 @@ class SyncClient:
                             (otype, oid, self._seal("cache", f"{otype}/{oid}/d", json.dumps(payload, ensure_ascii=False))))
 
     def _refresh_pending_flag(self, otype, oid):
+        """Если по объекту больше нет незавершённых операций — вернуть локальную копию к серверной (а созданный офлайн
+        и не принятый объект — удалить из кэша).
+        """
         if not oid or self._open_problems(otype, oid):
             return
         row = self.db.execute("SELECT server_enc FROM cache WHERE object_type=? AND id=?", (otype, oid)).fetchone()
@@ -720,13 +843,16 @@ class _HashingWriter:
     """Обёртка файла для записи: считает SHA-256 записанных байтов по ходу скачивания."""
 
     def __init__(self, f):
+        """Обернуть файл и начать подсчёт SHA-256."""
         self._f, self._h = f, hashlib.sha256()
 
     def write(self, b) -> int:
+        """Учесть байты в хэше и записать их в файл."""
         self._h.update(b)
         return self._f.write(b)
 
     def hexdigest(self) -> str:
+        """SHA-256 всего записанного."""
         return self._h.hexdigest()
 
 

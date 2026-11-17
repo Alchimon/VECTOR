@@ -17,6 +17,7 @@ KIND_LABELS = {"added": "Добавлена", "removed": "Удалена", "chan
 
 
 def group_digits(whole: str) -> str:
+    """Разбить целую часть числа на группы по три цифры пробелом: «1234567» → «1 234 567»."""
     groups = []
     while whole:
         groups.insert(0, whole[-3:])
@@ -39,6 +40,7 @@ def fmt_decimal(value: Optional[str], min_frac: int = 0) -> str:
 
 
 def fmt_money(value: Optional[str], currency: Optional[str]) -> str:
+    """Сумма для показа: два знака после запятой и код валюты. None → «—» (неизвестно, а не 0)."""
     if value is None:
         return "—"
     return (fmt_decimal(value, 2) + (" " + currency if currency else "")).strip()
@@ -55,6 +57,7 @@ def total_label(total: Optional[str], currency: Optional[str], unknown: int, lin
 
 
 def plural(n: int, one: str, few: str, many: str) -> str:
+    """Русское склонение после числа: plural(3, 'позиция', 'позиции', 'позиций') → «позиции»."""
     n = abs(n) % 100
     if 11 <= n <= 19:
         return many
@@ -63,6 +66,7 @@ def plural(n: int, one: str, few: str, many: str) -> str:
 
 
 def short_dt(iso_text: Optional[str]) -> str:
+    """Время ISO → «ГГГГ-ММ-ДД ЧЧ:ММ» для подписей (без секунд)."""
     return (iso_text or "")[:16].replace("T", " ")
 
 
@@ -112,6 +116,9 @@ def preview(lines: list[dict], currency: Optional[str]) -> dict:
 
 
 def decorate_version(v: dict, people: dict[str, str]) -> dict:
+    """Зафиксированная версия расчёта + подписи для интерфейса: «v2», дата фиксации, автор, итог с пометкой неполноты,
+    короткий хэш.
+    """
     return {**v, "label": f"v{v['version_no']}", "frozen_label": short_dt(v.get("frozen_at")),
             "author_name": people.get(v.get("frozen_by") or "", "—"),
             "total_label": total_label(v.get("total"), v.get("currency"), v.get("unknown_price_count", 0), v.get("line_count", 0)),
@@ -181,6 +188,9 @@ def _normalized(lines: list[dict], cur: Optional[str]) -> list[dict]:
 
 
 def _val(field: str, v: Any) -> str:
+    """Значение поля в строке сравнения версий: неизвестная цена — «неизвестно», количество и суммы — в русском
+    формате.
+    """
     if v is None:
         return "неизвестно" if field in ("unit_price", "amount") else "—"
     if field in ("qty",):
@@ -197,6 +207,9 @@ def project_calc(project_id: str, revisions: list[dict], people: dict[str, str])
 
 
 def decorate_revision(r: dict, people: dict[str, str]) -> dict:
+    """Ревизия проектного итога + подписи: итоги по каждой валюте отдельно (валюты не суммируются), состав «АТХ v1, ЭМ
+    v1», автор, признак нескольких валют.
+    """
     totals = [{**t, "label": total_label(t["total"], t["currency"], t["unknown_price_count"], 1)
                if t["currency"] else ("без цен" if t["unknown_price_count"] else "0"),
                "currency_label": t["currency"] or "без валюты"} for t in r.get("totals", [])]
