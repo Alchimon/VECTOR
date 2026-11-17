@@ -41,6 +41,9 @@ MOVEMENT_SIGN = {"receipt": 1, "issue": -1}
 MOVEMENT_LABELS_RU = {"receipt": "Приход", "issue": "Выдача"}
 # Подпись сторно по ВИДУ САМОГО СТОРНО: расход ("issue") отменяет приход, приход ("receipt") — выдачу.
 STORNO_LABELS_RU = {"issue": "Сторно прихода", "receipt": "Сторно выдачи"}
+# Подписи половин перемещения между складами (A-28): расход на отправителе и приход на получателе. В балансе это обычные
+# issue/receipt — перемещение не меняет общий запас, только распределение по складам.
+TRANSFER_LABELS_RU = {"issue": "Расход по перемещению", "receipt": "Приход по перемещению"}
 RESERVATION_STATES = ("active", "consumed", "released")
 RESERVATION_LABELS_RU = {"active": "Действует", "consumed": "Израсходован", "released": "Снят"}
 

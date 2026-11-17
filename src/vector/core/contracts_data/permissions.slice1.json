@@ -1,5 +1,5 @@
 {
-  "contract": "permissions-slice1-v7",
+  "contract": "permissions-slice1-v8",
   "notes": [
     "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
     "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -607,6 +607,9 @@
       "same_as": "stock.receive"
     },
     "stock.reverse": {
+      "same_as": "stock.receive"
+    },
+    "stock.transfer": {
       "same_as": "stock.receive"
     },
     "stock.reserve": {

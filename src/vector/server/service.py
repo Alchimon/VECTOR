@@ -142,6 +142,7 @@ class Service(WorkMixin, CalcMixin, StockMixin, ConfigMixin):
             "item_alias.create": self._item_alias_create, "item_alias.update": self._item_alias_update,
             "unit_conversion.create": self._unit_conversion_create, "unit_conversion.update": self._unit_conversion_update,
             "stock.receive": self._stock_receive, "stock.issue": self._stock_issue, "stock.reverse": self._stock_reverse,
+            "stock.transfer": self._stock_transfer,
             "stock.reserve": self._stock_reserve, "stock.release": self._stock_release,
             "need.generate": self._need_generate, "need.match_line": self._need_match_line,
         }
@@ -1104,7 +1105,7 @@ class Service(WorkMixin, CalcMixin, StockMixin, ConfigMixin):
                   "kit": "kit.read", "task": "task.read", "document": "document.read",
                   "calc_draft": "calc.read", "project_calc": "calc.read_revisions",
                   "warehouse": "stock.read", "stock_item": "stock.read", "stock_movement": "stock.read",
-                  "stock_reservation": "stock.read", "procurement_need": "need.read",
+                  "stock_transfer": "stock.read", "stock_reservation": "stock.read", "procurement_need": "need.read",
                   "item_alias": "stock.read", "unit_conversion": "stock.read", "config": "config.publish"}.get(otype)
         if not action or not isinstance(oid, str):
             return {"status": "rejected", "code": "bad_history_request", "message_ru": "Укажите тип и id объекта."}
