@@ -31,7 +31,7 @@ from vector.core import money
 #        сопоставлении (D-25, A-27);
 #   v8 — перемещения между складами: связка двух движений журнала (A-28);
 #   v9 — перемещение со статусом «в пути»: отгрузка → приёмка получателем или возврат отправителю (D-29, A-29).
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -735,6 +735,76 @@ signatures = sa.Table("signatures", metadata,
     sa.CheckConstraint("method IN ('confirm','password','qes')", name="method"),
     sa.UniqueConstraint("object_type", "object_id", "purpose", name="one_signature"))
 
+# ---------------------------------------------------------------- v12: заказы поставщикам (С4 шаг 5, D-32)
+# Поставщики — справочник закупки (как номенклатура: правится офлайн через очередь, код уникален, отключение вместо
+# удаления). ИНН необязателен; если указан — 10 цифр (организация) или 12 (ИП), контрольные цифры проверяются.
+suppliers = sa.Table("suppliers", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("code", U(64), nullable=False, unique=True),
+    sa.Column("name", U(300), nullable=False),
+    sa.Column("inn", sa.String(12)),
+    sa.Column("contact", U(500)),
+    sa.Column("note", U(1000)),
+    sa.Column("active", sa.Boolean, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
+
+# Заказ поставщику. Статусы: draft (черновик — правится, можно офлайн) → placed (размещён у поставщика: строки
+# заморожены, их SHA-256 — в placed_hash) → closed (закрыт: больше не ждём) или cancelled (отменён: только пока по
+# заказу ничего не принято). «Поставлено частично / полностью» — не статус, а расчёт по фактам поставки
+# (purchase_receipts), поэтому сторно прихода честно возвращает заказ к «ждём». Номер — сквозной (order_no).
+# Валюта — одна на заказ (ISO 4217), обязательна, если указана хоть одна цена; курсов и НДС программа не считает.
+purchase_orders = sa.Table("purchase_orders", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("order_no", sa.Integer, nullable=False, unique=True),
+    sa.Column("supplier_id", ID, sa.ForeignKey("suppliers.id"), nullable=False, index=True),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("currency", sa.String(3)),
+    sa.Column("supplier_ref", U(200)),          # номер счёта / подтверждения поставщика
+    sa.Column("expected_on", sa.Date),          # ожидаемая дата поставки — для справки
+    sa.Column("note", U(2000)),
+    sa.Column("placed_hash", sa.String(64)),
+    sa.Column("placed_by", ID), sa.Column("placed_at", UtcDateTime),
+    sa.Column("closed_by", ID), sa.Column("closed_at", UtcDateTime),
+    sa.Column("close_reason", U(2000)),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("status IN ('draft','placed','closed','cancelled')", name="status"),
+    sa.CheckConstraint("(status = 'draft' AND placed_hash IS NULL) OR (status = 'cancelled') OR "
+                       "(status IN ('placed','closed') AND placed_hash IS NOT NULL AND placed_at IS NOT NULL)",
+                       name="placed_consistent"))
+
+# Строки заказа: позиция номенклатуры, количество в её единице, цена за единицу (необязательна: неизвестна ≠ 0),
+# ссылка на строку потребности (необязательна). Пока заказ — черновик, строки заменяются целиком при сохранении;
+# у размещённого сервер их не меняет (проверка по placed_hash).
+purchase_order_lines = sa.Table("purchase_order_lines", metadata,
+    sa.Column("order_id", ID, sa.ForeignKey("purchase_orders.id"), primary_key=True),
+    sa.Column("pos", sa.Integer, primary_key=True),
+    sa.Column("line_id", ID, nullable=False),
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id"), nullable=False),
+    sa.Column("qty", Qty, nullable=False),
+    sa.Column("unit_price", Money),
+    sa.Column("need_id", ID, sa.ForeignKey("procurement_needs.id")),
+    sa.Column("need_line_id", ID),
+    sa.Column("note", U(1000)),
+    sa.UniqueConstraint("order_id", "line_id", name="uq_purchase_order_lines_line"),
+    sa.CheckConstraint("qty > 0", name="qty_pos"),
+    sa.CheckConstraint("unit_price IS NULL OR unit_price >= 0", name="price_nonneg"),
+    sa.CheckConstraint("(need_id IS NULL AND need_line_id IS NULL) OR (need_id IS NOT NULL AND need_line_id IS NOT NULL)",
+                       name="need_pair"))
+
+# Факт поставки: приход на склад (stock_movements, kind = receipt) по строке заказа. Сколько поставлено по строке —
+# сумма таких приходов БЕЗ сторнированных (сторно прихода штатное, stock.reverse). Неизменяема; одно движение — не
+# больше одной строки заказа.
+purchase_receipts = sa.Table("purchase_receipts", metadata,
+    sa.Column("movement_id", ID, sa.ForeignKey("stock_movements.id"), primary_key=True),
+    sa.Column("order_id", ID, sa.ForeignKey("purchase_orders.id"), nullable=False, index=True),
+    sa.Column("line_id", ID, nullable=False),
+    sa.Column("qty", Qty, nullable=False),
+    sa.CheckConstraint("qty > 0", name="qty_pos"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -821,7 +891,7 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (procurement_need_line_matches, 50009), (config_versions, 50010),
                  (procurement_need_line_match_units, 50011), (stock_transfers, 50012),
                  (stock_transfer_acts, 50013), (stock_shipment_terms, 50014), (stock_shipment_losses, 50015),
-                 (signatures, 50016)):
+                 (signatures, 50016), (purchase_receipts, 50017)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

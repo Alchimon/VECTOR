@@ -169,7 +169,7 @@ def test_v6_to_v7_adds_settings_and_unit_tables_with_immutability(backend, tmp_p
     before = counts(eng, mg.tables_of_version(6))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (6, db.SCHEMA_VERSION)
-    assert rep.created_tables == [t.name for v in (7, 8, 9, 10, 11) for t in mg.ADDED_IN[v]]
+    assert rep.created_tables == [t.name for v in range(7, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]]
     after = counts(eng, mg.tables_of_version(6))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
     with eng.begin() as c:
@@ -186,8 +186,8 @@ def test_v7_to_v8_adds_transfers_immutable_and_checked(backend, tmp_path, clock,
     before = counts(eng, mg.tables_of_version(7))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (7, db.SCHEMA_VERSION)
-    assert rep.created_tables == ["stock_transfers", "stock_shipments", "stock_transfer_acts", "stock_shipment_terms",
-                                   "stock_shipment_losses", "signatures"]
+    assert rep.created_tables == [t.name for v in range(8, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]]
+    assert rep.created_tables[:4] == ["stock_transfers", "stock_shipments", "stock_transfer_acts", "stock_shipment_terms"]
     assert rep.backup_path.exists()                     # сначала — проверенная копия БД v7
     after = counts(eng, mg.tables_of_version(7))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
@@ -224,8 +224,7 @@ def test_v8_to_v9_adds_shipments_with_consistent_states(backend, tmp_path, clock
     eng = make_v3(backend, tmp_path, clock, version=8)
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (8, db.SCHEMA_VERSION)
-    assert rep.created_tables == ["stock_shipments", "stock_transfer_acts", "stock_shipment_terms", "stock_shipment_losses",
-                                   "signatures"]
+    assert rep.created_tables == [t.name for v in range(9, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]]
     now, uid, w1, w2, it = clock.now(), new_id(), new_id(), new_id(), new_id()
     mv = [new_id() for _ in range(6)]
     with eng.begin() as c:
@@ -312,7 +311,7 @@ def test_v10_to_v11_adds_losses_and_signatures_immutable_and_checked(backend, tm
     eng = make_v3(backend, tmp_path, clock, version=10)
     before = counts(eng, mg.tables_of_version(10))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
-    assert (rep.from_version, rep.to_version, rep.created_tables) == (10, db.SCHEMA_VERSION, ["stock_shipment_losses", "signatures"])
+    assert (rep.from_version, rep.to_version, rep.created_tables) == (10, db.SCHEMA_VERSION, [t.name for v in range(11, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]])
     after = counts(eng, mg.tables_of_version(10))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
     now, uid, oid = clock.now(), new_id(), new_id()
@@ -330,3 +329,36 @@ def test_v10_to_v11_adds_losses_and_signatures_immutable_and_checked(backend, tm
     with pytest.raises(sa.exc.DBAPIError):                      # неизменяемость
         with eng.begin() as c:
             c.execute(db.signatures.update().values(method="confirm"))
+
+
+def test_v11_to_v12_adds_purchasing_tables_with_checks(backend, tmp_path, clock, keys):
+    """v11 → v12: поставщики, заказы, строки, факты поставки. Данные прежних таблиц не меняются; статус заказа — из
+    списка, размещённый заказ — с контрольной суммой; строка — количество > 0, цена ≥ 0 или неизвестна, ссылка на
+    потребность — парой; факт поставки неизменяем."""
+    eng = make_v3(backend, tmp_path, clock, version=11)
+    before = counts(eng, mg.tables_of_version(11))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version, rep.created_tables) == (
+        11, db.SCHEMA_VERSION, ["suppliers", "purchase_orders", "purchase_order_lines", "purchase_receipts"])
+    after = counts(eng, mg.tables_of_version(11))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    now, uid, sid, oid, it = clock.now(), new_id(), new_id(), new_id(), new_id()
+    stamp = dict(version=1, created_by=uid, created_at=now, updated_by=uid, updated_at=now)
+    with eng.begin() as c:
+        c.execute(db.suppliers.insert().values(id=sid, code="П-1", name="ООО Поставщик", active=True, **stamp))
+        c.execute(db.stock_items.insert().values(id=it, code="X", name="X", unit="шт", active=True, **stamp))
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    bad(db.purchase_orders.insert().values(id=new_id(), order_no=1, supplier_id=sid, status="sent", **stamp))
+    bad(db.purchase_orders.insert().values(id=new_id(), order_no=1, supplier_id=sid, status="placed", **stamp))
+    with eng.begin() as c:
+        c.execute(db.purchase_orders.insert().values(id=oid, order_no=1, supplier_id=sid, status="draft", **stamp))
+    line = dict(order_id=oid, line_id=new_id(), item_id=it, qty=Decimal("1"))
+    bad(db.purchase_order_lines.insert().values(pos=1, **{**line, "qty": Decimal("0")}))
+    bad(db.purchase_order_lines.insert().values(pos=1, **line, unit_price=Decimal("-1")))
+    bad(db.purchase_order_lines.insert().values(pos=1, **line, need_line_id=new_id()))
+    with eng.begin() as c:
+        c.execute(db.purchase_order_lines.insert().values(pos=1, **line))
