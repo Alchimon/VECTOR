@@ -361,9 +361,17 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     o4 = po("КИП-КОМПЛЕКТ", [po_line("ДД", "8", None, vat=None)], currency=None)
     cmd(buyer, "po.cancel", {"id": o4["id"], "reason": "Дубль заказа № 3"}, ev=o4["version"])
     # № 5 — на согласовании у коммерческого директора: цены без НДС (так в счёте), НДС 22 % начислит программа.
+    # Суммы из счёта введены — сверка «совпадает» (D-34): 500 × 3,85 = 1 925,00 + НДС 423,50 = 2 348,50.
     o5 = submit(po("ЭЛЕКТРОСНАБ", [po_line("НШВИ-1.5", "500", "3.85")], supplier_ref="Счёт № 5602",
-                   vat_mode="excluded", contract_id=contracts["ЭЛЕКТРОСНАБ"]), comment="Под монтаж ШУ-1, нужно до конца месяца")
+                   vat_mode="excluded", contract_id=contracts["ЭЛЕКТРОСНАБ"], invoice_gross="2348.50",
+                   invoice_vat="423.50"), comment="Под монтаж ШУ-1, нужно до конца месяца")
+    # Замещение (D-34): руководитель отдела заранее передала свою роль ведущему инженеру на время отпуска —
+    # запланировано (начнётся через 10 дней), сейчас на права не влияет.
+    deleg = cmd(head, "delegation.create", {"to_user_id": people["m.lebedev"], "role": "dept_head",
+                                            "valid_from": (today + timedelta(days=10)).isoformat(),
+                                            "valid_until": (today + timedelta(days=23)).isoformat(),
+                                            "reason": "Отпуск (приказ № 112-о)"})["delegation"]
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
             "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
-            "suppliers": sups, "contracts": contracts,
+            "suppliers": sups, "contracts": contracts, "delegations": [deleg["id"]],
             "purchase_orders": [o1["id"], o2["id"], o3["id"], o4["id"], o5["id"]]}
