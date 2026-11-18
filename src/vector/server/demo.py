@@ -17,6 +17,9 @@
 _seed_worktime).
 
 Оргструктура (D-44): головной офис и филиал, дирекция, отделы, служба; руководители и сотрудники (см. _seed_org).
+
+Таймер рабочего дня (D-46): у d.kuznetsov сегодня день идёт (с перерывом) и запрос «фактическое начало» ждёт
+e.orlova; у m.lebedev вчерашний день завершён (см. _seed_workday).
 """
 from __future__ import annotations
 
@@ -410,6 +413,7 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     prod.update(_seed_quality(cmd, login, people, svc, prod["product_instances"][0], kits, prod["lifecycle_work_order"]))
     prod.update(_seed_org(cmd, adm, people))
     prod.update(_seed_worktime(cmd, login, people, svc, pid))
+    prod.update(_seed_workday(cmd, login, svc))
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
             "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
             "suppliers": sups, "contracts": contracts, "delegations": [deleg["id"], pdeleg["id"]],
@@ -594,6 +598,41 @@ def _seed_org(cmd, adm, people) -> dict:
                        ("o.nikitina", com, "Бухгалтер")):
         cmd(adm, "org.member_set", {"user_id": people[lg], "unit_id": u, "position": pos})
     return {"org_units": [ho, eng_dir, asu, shop, com, astr, service]}
+
+
+def _seed_workday(cmd, login, svc) -> dict:
+    """Таймер рабочего дня (D-46, ответы владельца на A-49) — через обычные команды, как нажатия на компьютере
+    сотрудника (время устройства — часы стенда в момент установки):
+
+    * d.kuznetsov: сегодня «Начать» нажато 3 часа назад, 40-минутный перерыв уже был — таймер идёт; запрос «я начал
+      на час раньше» (был на объекте) ждёт решения e.orlova — руководителя вышестоящей дирекции (D-44);
+    * m.lebedev: вчерашний день завершён — 08:02–17:05 с перерывом 45 минут (из него заполняется смена отчёта).
+    """
+    eng, lead = login("d.kuznetsov"), login("m.lebedev")
+    now = svc.now()
+
+    def mark(tok, wid, event, at, day=None):
+        """Нажатие кнопки таймера с временем устройства at."""
+        p = {"id": wid, "event": event, "device_time": at.isoformat()}
+        if day is not None:
+            p["work_date"] = day.isoformat()
+        return cmd(tok, "workday.mark", p)["workday"]
+
+    start = now - timedelta(hours=3)
+    d1 = str(uuid.uuid4())
+    mark(eng, d1, "start", start, start.date())
+    mark(eng, d1, "pause", start + timedelta(hours=1, minutes=30))
+    mark(eng, d1, "resume", start + timedelta(hours=2, minutes=10))
+    req = cmd(eng, "workday.start_request", {"id": str(uuid.uuid4()), "workday_id": d1,
+                                             "start_at": (start - timedelta(hours=1)).isoformat(),
+                                             "reason": "С утра был на объекте заказчика, «Начать» нажал по приезде"})
+    y = (now - timedelta(days=1)).replace(hour=8, minute=2, second=0, microsecond=0)
+    d2 = str(uuid.uuid4())
+    mark(lead, d2, "start", y, y.date())
+    mark(lead, d2, "pause", y + timedelta(hours=4, minutes=8))
+    mark(lead, d2, "resume", y + timedelta(hours=4, minutes=53))
+    mark(lead, d2, "finish", y + timedelta(hours=9, minutes=3))
+    return {"workdays": [d1, d2], "workday_requests": [req["workday_start_request"]["id"]]}
 
 
 def _seed_worktime(cmd, login, people, svc, pid) -> dict:

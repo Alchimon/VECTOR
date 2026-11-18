@@ -29,7 +29,9 @@ KIND_ICONS = {"po_submitted": "shield-check", "po_approved": "circle-check", "po
               # D-43: отчёт собран программой — пройти самопроверку.
               "report_assembled": "sparkles",
               # Оргструктура (D-44): назначен руководителем подразделения; включён в подразделение или переведён.
-              "org_head": "network", "org_member": "users"}
+              "org_head": "network", "org_member": "users",
+              # Таймер рабочего дня (D-46): фактическое начало дня — на согласование руководителю; решение сотруднику.
+              "workday_start_request": "sunrise", "workday_start_decided": "timer"}
 KIND_TONES = {"po_submitted": "warning", "po_approved": "success", "po_returned": "danger",
               "po_withdrawn": "neutral", "delegation_created": "info", "delegation_revoked": "neutral",
               "tp_approved": "success", "wo_assigned": "info", "wo_problem": "danger", "wo_completed": "success",
@@ -38,11 +40,12 @@ KIND_TONES = {"po_submitted": "warning", "po_approved": "success", "po_returned"
               "eco_approval": "warning", "eco_approved": "success", "eco_implemented": "primary", "eco_verified": "success",
               "claim_due_soon": "warning", "claim_overdue": "danger", "claim_critical": "danger",
               "report_submitted": "warning", "report_accepted": "success", "report_returned": "danger", "report_reopened": "info",
-              "report_assembled": "primary", "org_head": "info", "org_member": "info"}
+              "report_assembled": "primary", "org_head": "info", "org_member": "info",
+              "workday_start_request": "warning", "workday_start_decided": "info"}
 # Куда ведёт «Открыть»: раздел оболочки по типу объекта.
 TARGET_PAGES = {"purchase_order": "procurement", "delegation": "delegations", "tech_process": "production",
                 "work_order": "production", "claim": "quality", "change_request": "quality", "change_order": "quality",
-                "daily_report": "worktime", "org_unit": "org"}
+                "daily_report": "worktime", "org_unit": "org", "workday_start_request": "worktime"}
 
 
 def when_label(at: Optional[str], now: datetime, tz: Optional[tzinfo] = None) -> str:

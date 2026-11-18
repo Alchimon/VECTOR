@@ -49,7 +49,10 @@ from vector.core import money
 #   v22 — оргструктура (R-21, D-44 — ответ на A-48 п. 1): подразделения (филиалы, структуры, отделы) и связи «входит
 #         в» (org_units), сотрудник в подразделении с должностью (org_members), неизменяемый журнал изменений
 #         оргструктуры (org_events). Отчёт сотрудника проверяет руководитель его подразделения.
-SCHEMA_VERSION = 22
+#   v23 — таймер рабочего дня (D-46 — ответы на A-49 пп. 2–4): рабочий день сотрудника за дату (workdays),
+#         неизменяемый журнал нажатий «Начать / Перерыв / Продолжить / Завершить» со временем устройства
+#         (workday_events), запросы «фактическое начало дня» с решением руководителя (workday_start_requests).
+SCHEMA_VERSION = 23
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1446,6 +1449,56 @@ org_events = sa.Table("org_events", metadata,
     sa.Column("at", UtcDateTime, nullable=False),
     sa.CheckConstraint("object_type IN ('unit','member')", name="object_type"))
 
+# ---- таймер рабочего дня (D-46, ответы владельца на A-49 пп. 2–4) ----
+# Рабочий день сотрудника: одна строка на сотрудника и дату (дата — по часам его компьютера в момент «Начать», A-49
+# п. 5). Состояние — следствие журнала workday_events (хранится для быстрого чтения и проверки версии);
+# approved_start_at — согласованное руководителем фактическое начало (A-49 п. 4), если раньше нажатия «Начать».
+WORKDAY_STATUS_CHECK = "status IN ('working','paused','finished')"
+workdays = sa.Table("workdays", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("user_id", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("work_date", sa.Date, nullable=False),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("started_at", UtcDateTime, nullable=False),
+    sa.Column("finished_at", UtcDateTime),
+    sa.Column("approved_start_at", UtcDateTime),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("user_id", "work_date", name="uq_workdays_user_date"),
+    sa.CheckConstraint(WORKDAY_STATUS_CHECK, name="status"))
+
+# Нажатия кнопок таймера (неизменяемо): время устройства (как у таймера операций, A-44) и время приёма сервером.
+workday_events = sa.Table("workday_events", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("workday_id", ID, sa.ForeignKey("workdays.id"), nullable=False, index=True),
+    sa.Column("seq", sa.Integer, nullable=False),
+    sa.Column("event", U(16), nullable=False),
+    sa.Column("device_time", UtcDateTime, nullable=False),
+    sa.Column("server_time", UtcDateTime, nullable=False),
+    sa.Column("device_id", U(100)),
+    sa.Column("operation_id", ID, nullable=False, unique=True),
+    sa.UniqueConstraint("workday_id", "seq", name="uq_workday_events_seq"),
+    sa.CheckConstraint("event IN ('start','pause','resume','finish')", name="event"))
+
+# Запрос «фактическое начало дня» (A-49 п. 4): сотрудник пропустил «Начать» и просит считать день с более раннего
+# времени; решает руководитель его подразделения (по оргструктуре, D-44/D-45) или руководитель отдела (вне
+# оргструктуры). Решение и его основание (authority) остаются в строке; версия — против двойного решения.
+WORKDAY_REQUEST_STATUS_CHECK = "status IN ('pending','approved','rejected')"
+workday_start_requests = sa.Table("workday_start_requests", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("workday_id", ID, sa.ForeignKey("workdays.id"), nullable=False, index=True),
+    sa.Column("user_id", ID, sa.ForeignKey("users.id"), nullable=False, index=True),
+    sa.Column("requested_start_at", UtcDateTime, nullable=False),
+    sa.Column("reason", U(500), nullable=False),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("decided_by", ID, sa.ForeignKey("users.id")),
+    sa.Column("decided_at", UtcDateTime),
+    sa.Column("decision_comment", U(500)),
+    sa.Column("authority", U(120)),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.CheckConstraint(WORKDAY_REQUEST_STATUS_CHECK, name="status"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -1541,7 +1594,7 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (work_order_issues, 50026), (instance_compositions, 50027), (instance_events, 50028),
                  (passport_exports, 50029), (effectiveness_checks, 50030), (quality_decisions, 50031),
                  (claim_responses, 50032), (daily_report_events, 50033), (daily_report_auto, 50034),
-                 (org_events, 50035)):
+                 (org_events, 50035), (workday_events, 50036)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

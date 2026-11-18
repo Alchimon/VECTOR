@@ -34,6 +34,9 @@ def build_server(tmp: Path):
     eng = db.make_engine(f"sqlite:///{tmp / 'server.sqlite'}")
     db.create_schema(eng, str(uuid.uuid4()), datetime.now(timezone.utc))
     svc = Service(eng)
+    # Стенд интерфейса входит под разными демо-учётками много раз подряд с одного адреса; боевое ограничение
+    # (20 попыток входа в минуту с адреса) здесь только мешает снимать экраны — ограничение проверяют серверные тесты.
+    svc.rate.per_minute = 1000
     svc.bootstrap_admin("admin", PWD, "Администратор системы")
     return svc
 
@@ -559,6 +562,40 @@ def main():
         h.shot(out / f"{theme}-52-org-unit-form.png")
         uf.setProperty("visible", False)
         h.wait_idle()
+        h.backend.logout()
+        h.wait_idle()
+        # Таймер рабочего дня (D-46, A-49 пп. 2–4): инженер — день идёт, перерыв был, запрос на фактическое начало на
+        # согласовании; второй инженер — окно «Начните рабочий день» после входа; руководитель — запросы на решение.
+        h.login("d.kuznetsov")
+        h.go("worktime")
+        h.shot(out / f"{theme}-53-workday-timer.png")
+        h.backend.logout()
+        h.wait_idle()
+        h.backend.setWorkdayPromptAuto(True)                # на стенде интерфейса окно само не открывается
+        h.login("m.lebedev")
+        h.shot(out / f"{theme}-54-workday-prompt.png")
+        wp = next(o for o in h.win.findChildren(QObject) if o.objectName() == "workdayPrompt")
+        wp.setProperty("visible", False)
+        h.backend.setWorkdayPromptAuto(False)
+        h.backend.logout()
+        h.wait_idle()
+        h.login("e.orlova")
+        h.go("worktime")
+        h.wait_idle()
+        # Окно запросов — у карточки таймера на странице (у карточки в боковой панели — своё, «…Mini»).
+        rp = next((o for o in h.win.findChildren(QObject) if o.objectName() == "workdayRequestsPopup"), None)
+        if rp is None:
+            print("workdayRequestsPopup не найден; страница:", h.shell().property("page"),
+                  sorted({o.objectName() for o in h.win.findChildren(QObject) if o.objectName().startswith("workday")}))
+        if rp is not None:
+            rp.setProperty("visible", True)
+            h.wait_idle()
+            h.shot(out / f"{theme}-55-workday-requests.png")
+            rp.setProperty("visible", False)
+            h.wait_idle()
+        h.backend.logout()
+        h.wait_idle()
+        h.login("admin")
         # Настройки компании (D-26, A-26): администратор, вкладка «Настройки компании».
         h.go("admin")
         ap = next(i for i in h.items("sv") if i.isVisible())

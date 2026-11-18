@@ -26,7 +26,7 @@ Item {
                  : rs.some(r => r === "otk") ? "quality"
                  : backend.hint("stock.read", backend.permRevision) ? "stock" : "projects"
     }
-    Component.onCompleted: pickStart()
+    Component.onCompleted: { pickStart(); if (wantsWorkdayPrompt) workdayPrompt.open() }
     Connections { target: backend; function onChanged() { shellRoot.pickStart() } }
 
     Shortcut { sequence: "Ctrl+1"; onActivated: shellRoot.go("customers") }
@@ -87,46 +87,62 @@ Item {
                         Text { objectName: "shellTagline"; text: "Единая платформа\nдля инженеров и бизнеса"; color: Theme.textFaint; font.family: Theme.family
                                font.pixelSize: Theme.fsXs; lineHeight: 0.95 } }
                 }
-                Text { text: "РАБОТА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.bottomMargin: 4 }
-                NavItem { text: "Заказчики"; iconName: "building-2"; active: shellRoot.page === "customers"; onClicked: shellRoot.go("customers"); visible: backend.hint("customer.read", backend.permRevision) }
-                NavItem { text: "Тендеры и ТКП"; iconName: "gavel"; active: shellRoot.page === "tenders"; onClicked: shellRoot.go("tenders"); visible: backend.hint("tender.read", backend.permRevision) }
-                NavItem { text: "Проекты"; iconName: "folder-kanban"; active: shellRoot.page === "projects"; onClicked: shellRoot.go("projects") }
-                NavItem { text: "Итоги проектов"; iconName: "wallet"; active: shellRoot.page === "finance"; onClicked: shellRoot.go("finance")
-                          visible: (backend.me.roles || []).indexOf("accountant") >= 0 || backend.financeOverview.length > 0 }
-                // Рабочее время (D-42): свой дневной отчёт — всем; бейдж — руководителю отдела отчёты на проверке,
-                // остальным — возвращённые на исправление.
-                NavItem { objectName: "navWorktime"; text: "Рабочее время"; iconName: "clock"; active: shellRoot.page === "worktime"; onClicked: shellRoot.go("worktime")
-                          badge: ((backend.worktimeOverview.counts || {}).to_review || 0) + ((backend.worktimeOverview.counts || {}).returned || 0)
-                          badgeTone: ((backend.worktimeOverview.counts || {}).returned || 0) > 0 ? "danger" : "warning" }
-                Text { visible: shellRoot.seesStock || shellRoot.seesNeeds; text: "СНАБЖЕНИЕ"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
-                NavItem { objectName: "navStock"; text: "Склад"; iconName: "warehouse"; active: shellRoot.page === "stock"; onClicked: shellRoot.go("stock"); visible: shellRoot.seesStock }
-                NavItem { objectName: "navProcurement"; text: "Закупка"; iconName: "shopping-cart"; active: shellRoot.page === "procurement"; onClicked: shellRoot.go("procurement"); visible: shellRoot.seesNeeds
-                          badge: (backend.needsOverview.candidates || []).length; badgeTone: "warning" }
-                Text { visible: shellRoot.seesProduction || shellRoot.seesProducts || shellRoot.seesQuality; text: "ПРОИЗВОДСТВО"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
-                // Бейдж: исполнителю — операции в работе/на паузе, остальным — открытые наряды.
-                NavItem { objectName: "navProduction"; text: "Производство"; iconName: "factory"; active: shellRoot.page === "production"; onClicked: shellRoot.go("production"); visible: shellRoot.seesProduction
-                          badge: (backend.productionOverview.my_ops || []).length > 0 ? backend.productionOverview.my_ops.length : 0; badgeTone: "primary" }
-                // Изделия и паспорта (D-38): экземпляры с заводскими номерами, паспорт-черновик, эксплуатация.
-                NavItem { objectName: "navProducts"; text: "Изделия и паспорта"; iconName: "package-check"; active: shellRoot.page === "products"; onClicked: shellRoot.go("products"); visible: shellRoot.seesProducts }
-                // Качество (D-39): бейдж — что ждёт моего решения или отметки (проверки, решения, мои действия CAPA).
-                NavItem { objectName: "navQuality"; text: "Качество"; iconName: "shield-check"; active: shellRoot.page === "quality"; onClicked: shellRoot.go("quality"); visible: shellRoot.seesQuality
-                          badge: (backend.qualityOverview.counts || {}).to_me || 0; badgeTone: "primary" }
-                Text { text: "СИСТЕМА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
-                NavItem { text: "Синхронизация"; iconName: "refresh-cw"; active: shellRoot.page === "sync"; onClicked: shellRoot.go("sync")
-                          badge: backend.problemCount > 0 ? backend.problemCount : backend.pendingCount; badgeTone: backend.problemCount > 0 ? "danger" : "warning" }
-                // Уведомления (D-35): свои — заказы на согласовании, решения, замещения; бейдж — непрочитанные.
-                NavItem { objectName: "navNotifications"; text: "Уведомления"; iconName: "bell"; active: shellRoot.page === "notifications"
-                          onClicked: shellRoot.go("notifications"); badge: backend.notificationsOverview.unread || 0; badgeTone: "primary" }
-                // Замещения — всем: свою роль может передать каждый (D-34). Бейдж: руководителю — роли, которые заменить
-                // некем; остальным — сколько ролей коллег он сейчас замещает.
-                NavItem { objectName: "navDelegations"; text: "Замещения"; iconName: "user-check"; active: shellRoot.page === "delegations"; onClicked: shellRoot.go("delegations")
-                          badge: backend.delegationsOverview.manage ? backend.delegationsOverview.warnings : backend.delegationsOverview.active_received
-                          badgeTone: backend.delegationsOverview.manage ? "warning" : "primary" }
-                // Оргструктура (D-44) — всем: справочник компании и «кто проверяет мои отчёты»; правит администратор.
-                NavItem { objectName: "navOrg"; text: "Оргструктура"; iconName: "network"; active: shellRoot.page === "org"; onClicked: shellRoot.go("org") }
-                NavItem { objectName: "navHelp"; text: "Сокращения и подсказки"; iconName: "circle-help"; active: shellRoot.page === "help"; onClicked: shellRoot.go("help") }
-                NavItem { text: "Администрирование"; iconName: "shield-check"; active: shellRoot.page === "admin"; onClicked: shellRoot.go("admin"); visible: backend.hint("admin.list_users", backend.permRevision) }
-                Item { Layout.fillHeight: true }
+                // Меню прокручивается, если пунктов больше, чем помещается по высоте (D-46: под меню появился таймер
+                // рабочего дня) — таймер, состояние связи и пользователь с кнопкой «Выйти» всегда остаются видны внизу.
+                Flickable {
+                    id: navFlick
+                    objectName: "navScroll"
+                    Layout.fillWidth: true; Layout.fillHeight: true
+                    contentWidth: width; contentHeight: navCol.implicitHeight
+                    clip: true; boundsBehavior: Flickable.StopAtBounds
+                    ScrollBar.vertical: ScrollBar { policy: navFlick.contentHeight > navFlick.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+                    ColumnLayout {
+                        id: navCol
+                        width: navFlick.width
+                        spacing: 4
+                    Text { text: "РАБОТА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.bottomMargin: 4 }
+                    NavItem { text: "Заказчики"; iconName: "building-2"; active: shellRoot.page === "customers"; onClicked: shellRoot.go("customers"); visible: backend.hint("customer.read", backend.permRevision) }
+                    NavItem { text: "Тендеры и ТКП"; iconName: "gavel"; active: shellRoot.page === "tenders"; onClicked: shellRoot.go("tenders"); visible: backend.hint("tender.read", backend.permRevision) }
+                    NavItem { text: "Проекты"; iconName: "folder-kanban"; active: shellRoot.page === "projects"; onClicked: shellRoot.go("projects") }
+                    NavItem { text: "Итоги проектов"; iconName: "wallet"; active: shellRoot.page === "finance"; onClicked: shellRoot.go("finance")
+                              visible: (backend.me.roles || []).indexOf("accountant") >= 0 || backend.financeOverview.length > 0 }
+                    // Рабочее время (D-42): свой дневной отчёт — всем; бейдж — руководителю отдела отчёты на проверке,
+                    // остальным — возвращённые на исправление.
+                    NavItem { objectName: "navWorktime"; text: "Рабочее время"; iconName: "clock"; active: shellRoot.page === "worktime"; onClicked: shellRoot.go("worktime")
+                              badge: ((backend.worktimeOverview.counts || {}).to_review || 0) + ((backend.worktimeOverview.counts || {}).returned || 0)
+                              badgeTone: ((backend.worktimeOverview.counts || {}).returned || 0) > 0 ? "danger" : "warning" }
+                    Text { visible: shellRoot.seesStock || shellRoot.seesNeeds; text: "СНАБЖЕНИЕ"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
+                    NavItem { objectName: "navStock"; text: "Склад"; iconName: "warehouse"; active: shellRoot.page === "stock"; onClicked: shellRoot.go("stock"); visible: shellRoot.seesStock }
+                    NavItem { objectName: "navProcurement"; text: "Закупка"; iconName: "shopping-cart"; active: shellRoot.page === "procurement"; onClicked: shellRoot.go("procurement"); visible: shellRoot.seesNeeds
+                              badge: (backend.needsOverview.candidates || []).length; badgeTone: "warning" }
+                    Text { visible: shellRoot.seesProduction || shellRoot.seesProducts || shellRoot.seesQuality; text: "ПРОИЗВОДСТВО"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
+                    // Бейдж: исполнителю — операции в работе/на паузе, остальным — открытые наряды.
+                    NavItem { objectName: "navProduction"; text: "Производство"; iconName: "factory"; active: shellRoot.page === "production"; onClicked: shellRoot.go("production"); visible: shellRoot.seesProduction
+                              badge: (backend.productionOverview.my_ops || []).length > 0 ? backend.productionOverview.my_ops.length : 0; badgeTone: "primary" }
+                    // Изделия и паспорта (D-38): экземпляры с заводскими номерами, паспорт-черновик, эксплуатация.
+                    NavItem { objectName: "navProducts"; text: "Изделия и паспорта"; iconName: "package-check"; active: shellRoot.page === "products"; onClicked: shellRoot.go("products"); visible: shellRoot.seesProducts }
+                    // Качество (D-39): бейдж — что ждёт моего решения или отметки (проверки, решения, мои действия CAPA).
+                    NavItem { objectName: "navQuality"; text: "Качество"; iconName: "shield-check"; active: shellRoot.page === "quality"; onClicked: shellRoot.go("quality"); visible: shellRoot.seesQuality
+                              badge: (backend.qualityOverview.counts || {}).to_me || 0; badgeTone: "primary" }
+                    Text { text: "СИСТЕМА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
+                    NavItem { text: "Синхронизация"; iconName: "refresh-cw"; active: shellRoot.page === "sync"; onClicked: shellRoot.go("sync")
+                              badge: backend.problemCount > 0 ? backend.problemCount : backend.pendingCount; badgeTone: backend.problemCount > 0 ? "danger" : "warning" }
+                    // Уведомления (D-35): свои — заказы на согласовании, решения, замещения; бейдж — непрочитанные.
+                    NavItem { objectName: "navNotifications"; text: "Уведомления"; iconName: "bell"; active: shellRoot.page === "notifications"
+                              onClicked: shellRoot.go("notifications"); badge: backend.notificationsOverview.unread || 0; badgeTone: "primary" }
+                    // Замещения — всем: свою роль может передать каждый (D-34). Бейдж: руководителю — роли, которые заменить
+                    // некем; остальным — сколько ролей коллег он сейчас замещает.
+                    NavItem { objectName: "navDelegations"; text: "Замещения"; iconName: "user-check"; active: shellRoot.page === "delegations"; onClicked: shellRoot.go("delegations")
+                              badge: backend.delegationsOverview.manage ? backend.delegationsOverview.warnings : backend.delegationsOverview.active_received
+                              badgeTone: backend.delegationsOverview.manage ? "warning" : "primary" }
+                    // Оргструктура (D-44) — всем: справочник компании и «кто проверяет мои отчёты»; правит администратор.
+                    NavItem { objectName: "navOrg"; text: "Оргструктура"; iconName: "network"; active: shellRoot.page === "org"; onClicked: shellRoot.go("org") }
+                    NavItem { objectName: "navHelp"; text: "Сокращения и подсказки"; iconName: "circle-help"; active: shellRoot.page === "help"; onClicked: shellRoot.go("help") }
+                    NavItem { text: "Администрирование"; iconName: "shield-check"; active: shellRoot.page === "admin"; onClicked: shellRoot.go("admin"); visible: backend.hint("admin.list_users", backend.permRevision) }
+                    }
+                }
+                // Таймер рабочего дня (D-46) — всегда под рукой: состояние, «сколько натикало», кнопки.
+                WorkdayCard { compact: true; Layout.fillWidth: true; Layout.bottomMargin: 8 }
                 ConnectionPill {}
                 VButton { visible: backend.sessionMode === "offline"; text: "Подключиться"; kind: "soft"; iconName: "cloud"; Layout.fillWidth: true; onClicked: reconnect.open() }
                 Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border; Layout.topMargin: 10; Layout.bottomMargin: 10 }
@@ -182,6 +198,23 @@ Item {
     Component { id: helpC; HelpPage { shell: shellRoot } }
     Component { id: worktimeC; WorktimePage { shell: shellRoot } }
     Component { id: orgC; OrgPage { shell: shellRoot } }
+
+    // Окно «Начните рабочий день» (D-46, A-49 п. 4): сегодня таймер не запускали. «Позже» — до завтра не показывать;
+    // если начали работу раньше, после «Начать» можно указать фактическое начало («Я начал раньше» в «Рабочем времени»).
+    FormDialog {
+        id: workdayPrompt
+        objectName: "workdayPrompt"
+        title: "Начните рабочий день"
+        subtitle: "Таймер рабочего дня сегодня не запущен. Нажмите «Начать рабочий день», чтобы время считалось по часам этого компьютера."
+        note: "Начали работу раньше? После «Начать» укажите фактическое начало — «Я начал раньше» в разделе «Рабочее время»: руководитель согласует, и таймер посчитает день с него."
+        confirmText: "Начать рабочий день"
+        cancelText: "Позже"
+        onConfirmed: { close(); backend.workdayMark("workday-mark", "start") }
+        onDismissed: backend.workdayLater()
+    }
+    // Показать окно один раз, когда снимок говорит «пора» (и пользователь вошёл, пароль сменён).
+    readonly property bool wantsWorkdayPrompt: backend.workdayOverview.prompt === true
+    onWantsWorkdayPromptChanged: if (wantsWorkdayPrompt && !workdayPrompt.visible) workdayPrompt.open()
 
     FormDialog {
         id: reconnect

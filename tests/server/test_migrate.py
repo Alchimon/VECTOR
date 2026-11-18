@@ -4,7 +4,7 @@
 вносятся обычными командами сервиса (они не касаются таблиц расчётов).
 """
 import uuid
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 import pytest
@@ -736,7 +736,8 @@ def test_v21_to_v22_adds_org_structure(backend, tmp_path, clock, keys):
                                            password_changed_at=now, failed_attempts=0, active=True, created_at=now))
     before = counts(eng, mg.tables_of_version(21))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
-    assert (rep.from_version, rep.to_version, rep.created_tables) == (21, 22, ["org_units", "org_members", "org_events"])
+    assert (rep.from_version, rep.to_version) == (21, db.SCHEMA_VERSION)
+    assert rep.created_tables[:3] == ["org_units", "org_members", "org_events"]
     after = counts(eng, mg.tables_of_version(21))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
     unit = dict(kind="department", name="Отдел", active=True, version=1, created_by=uid, created_at=now, updated_by=uid,
@@ -757,5 +758,43 @@ def test_v21_to_v22_adds_org_structure(backend, tmp_path, clock, keys):
     bad(db.org_units.insert().values(id=x, parent_id=x, **unit))
     bad(db.org_events.update().values(event="x"))                                       # журнал неизменяем
     bad(db.org_members.insert().values(user_id=uid, unit_id=uid1, since=now, updated_by=uid))   # один на сотрудника
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
+
+
+def test_v22_to_v23_adds_workday_timer(backend, tmp_path, clock, keys):
+    """v22 → v23 (D-46, ответы на A-49 пп. 2–4): таблицы таймера рабочего дня и запросов на фактическое начало;
+    данные v22 не меняются; журнал нажатий неизменяем; один рабочий день на сотрудника и дату; статусы — из списка."""
+    eng = make_v3(backend, tmp_path, clock, version=22)
+    now, uid = clock.now(), new_id()
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x", must_change_password=False,
+                                           password_changed_at=now, failed_attempts=0, active=True, created_at=now))
+    before = counts(eng, mg.tables_of_version(22))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (22, db.SCHEMA_VERSION)
+    assert rep.created_tables[:3] == ["workdays", "workday_events", "workday_start_requests"]
+    after = counts(eng, mg.tables_of_version(22))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    day = dict(user_id=uid, work_date=now.date(), status="working", started_at=now, version=1, created_at=now,
+               updated_at=now)
+    wid = new_id()
+    with eng.begin() as c:
+        c.execute(db.workdays.insert().values(id=wid, **day))
+        c.execute(db.workday_events.insert().values(workday_id=wid, seq=1, event="start", device_time=now,
+                                                    server_time=now, operation_id=new_id()))
+        c.execute(db.workday_start_requests.insert().values(id=new_id(), workday_id=wid, user_id=uid,
+                                                            requested_start_at=now, reason="Забыл", status="pending",
+                                                            created_at=now, version=1))
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    bad(db.workdays.insert().values(id=new_id(), **day))                                  # один день на дату
+    bad(db.workdays.insert().values(id=new_id(), **{**day, "work_date": now.date() - timedelta(days=1), "status": "x"}))
+    bad(db.workday_events.update().values(event="pause"))                                 # журнал неизменяем
+    bad(db.workday_events.insert().values(workday_id=wid, seq=2, event="lunch", device_time=now, server_time=now,
+                                          operation_id=new_id()))
     assert db.check_schema(eng) == db.SCHEMA_VERSION
     assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []

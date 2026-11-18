@@ -89,7 +89,8 @@ def _core(r: dict) -> dict:
 
 
 def _assembled_label(a: Optional[dict]) -> str:
-    """«по 12 действиям в программе; по таймерам 1 ч 30 мин» — из чего программа собрала отчёт (D-43)."""
+    """«по 12 действиям в программе; по таймерам операций 1 ч 30 мин; смена — по таймеру рабочего дня, 8 ч» — из чего
+    программа собрала отчёт (D-43, D-46)."""
     if not a:
         return ""
     n = int(a.get("actions") or 0)
@@ -97,6 +98,9 @@ def _assembled_label(a: Optional[dict]) -> str:
     out = f"по {n} {word} в программе"
     if a.get("measured_minutes"):
         out += "; по таймерам операций " + wt.hours_label(a["measured_minutes"])
+    if a.get("workday_minutes"):
+        # D-46: смена и перерывы взяты из таймера рабочего дня — «сколько натикало», без округления.
+        out += "; смена — по таймеру рабочего дня, " + wt.hours_label(a["workday_minutes"])
     return out
 
 

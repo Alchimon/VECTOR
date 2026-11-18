@@ -1,4 +1,4 @@
-"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-19).
+"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-20).
 
 Запускается ПОСЛЕ установки, при запущенном сервере стенда, Python-ом из окружения стенда:
 
@@ -295,6 +295,8 @@ def main(argv: list[str] | None = None) -> int:
     check_worktime(rep, sessions)
     print("\n10. Оргструктура: подразделения, руководители и маршрут дневных отчётов (D-44, П-19)")
     check_org(rep, sessions)
+    print("\n11. Таймер рабочего дня и фактическое начало дня (D-46, П-20)")
+    check_workday(rep, sessions)
     return finish(rep, tmp)
 
 
@@ -362,6 +364,27 @@ def check_org(rep: Report, sessions: dict) -> None:
                      "версии? Обновите стенд (update.cmd) и повторите")
 
 
+def check_workday(rep: Report, sessions: dict) -> None:
+    """Раздел 11 (D-46): у d.kuznetsov есть рабочие дни по таймеру; запрос «фактическое начало дня» d.kuznetsov
+    видит e.orlova (тот, кто проверяет его отчёты). Только чтение: таймер на стенде никто не нажимает."""
+    eng, head = sessions.get("d.kuznetsov"), sessions.get("e.orlova")
+    if eng is None or head is None:
+        rep.warn("нет входа d.kuznetsov или e.orlova — таймер рабочего дня не проверить")
+        return
+    days = eng.list_local("workday")
+    if days:
+        rep.ok(f"d.kuznetsov: рабочих дней по таймеру — {len(days)} (последний — {max(d['work_date'] for d in days)})")
+    else:
+        rep.warn("у d.kuznetsov нет рабочих дней по таймеру (демо-день создаётся при установке и виден 31 день) — "
+                 "нажмите «Начать рабочий день» в боковой панели; если кнопки нет — обновите стенд (update.cmd)")
+    reqs = [r for r in head.list_local("workday_start_request") if r.get("user_id") == eng.user_id]
+    if reqs:
+        pending = sum(1 for r in reqs if r.get("status") == "pending")
+        rep.ok(f"e.orlova видит запросы d.kuznetsov на фактическое начало дня: {len(reqs)} (на согласовании — {pending})")
+    else:
+        rep.warn("e.orlova не видит запросов на фактическое начало дня — " + FRESH_HINT)
+
+
 def finish(rep: Report, tmp=None) -> int:
     """Удалить временный кэш и напечатать итог; код выхода — 1 при ошибках."""
     if tmp is not None:
@@ -374,7 +397,7 @@ def finish(rep: Report, tmp=None) -> int:
         print(f"ИТОГ: стенд работает; предупреждений {len(rep.warnings)} — часть сценариев на этих данных не проверить "
               "(см. выше).")
     else:
-        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-19; сценарии — test-pc.md § 6).")
+        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-20; сценарии — test-pc.md § 6).")
     return 0
 
 

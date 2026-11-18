@@ -36,6 +36,7 @@ from .lifecycle import LifecycleMixin
 from .quality import QualityMixin
 from .worktime import WorktimeMixin
 from .org import OrgMixin
+from .workday import WorkdayMixin
 from .production import ProductionMixin
 from .purchasing import PurchasingMixin
 from .stock import StockMixin
@@ -90,7 +91,7 @@ class Ctx:
 
 
 class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin, NotificationMixin,
-              ProductionMixin, LifecycleMixin, QualityMixin, WorktimeMixin, OrgMixin):
+              ProductionMixin, LifecycleMixin, QualityMixin, WorktimeMixin, OrgMixin, WorkdayMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
     склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py);
     замещение и основания решений — DelegationMixin (delegation.py, D-34/D-35); уведомления — NotificationMixin
@@ -98,7 +99,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
     (production.py, D-36); экземпляры изделий, паспорт, передача, сервис и замены — LifecycleMixin (lifecycle.py, D-38);
     рекламации, CAPA, запросы и извещения об изменении — QualityMixin (quality.py, D-39); рабочее время и дневные
     отчёты — WorktimeMixin (worktime.py, D-42); оргструктура (филиалы, структуры, отделы, руководители и сотрудники)
-    и маршрут проверки отчётов — OrgMixin (org.py, D-44).
+    и маршрут проверки отчётов — OrgMixin (org.py, D-44); таймер рабочего дня и фактическое начало дня —
+    WorkdayMixin (workday.py, D-46).
 
     Как устроен обработчик команды (все _xxx_yyy(ctx, p, ev) следуют одной схеме — так их легко проверять):
 
@@ -203,6 +205,9 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "org.unit_create": self._org_unit_create, "org.unit_update": self._org_unit_update,
             "org.unit_archive": self._org_unit_archive, "org.unit_restore": self._org_unit_restore,
             "org.member_set": self._org_member_set,
+            # Таймер рабочего дня и фактическое начало дня (workday.py, D-46).
+            "workday.mark": self._workday_mark, "workday.start_request": self._workday_start_request,
+            "workday.start_decide": self._workday_start_decide,
         }
         diff = set(self.contracts.catalog["commands"]) ^ set(self.handlers)
         if diff:
@@ -1170,6 +1175,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         out.update(self._pull_worktime(conn, uid, now))
         # Оргструктура — всем вошедшим (справочник компании), своё подразделение и кто проверяет мои отчёты (D-44).
         out.update(self._pull_org(conn, uid, now))
+        # Таймер рабочего дня: свои дни и запросы; руководителю — запросы на фактическое начало (D-46).
+        out.update(self._pull_workday(conn, uid, now))
         me_roles = self._me_roles(conn, uid, now)
         # Справочник людей нужен и для выбора замещающего — поэтому он приходит всем, у кого есть хоть одна роль.
         if (out["tenders"] or out["projects"] or out["calc_revisions"] or out["warehouses"] or out["needs"]

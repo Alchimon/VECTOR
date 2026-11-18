@@ -61,9 +61,10 @@ def test_self_check_requires_every_item():
 
 
 def test_assemble_day_shift_break_measured_and_estimated_lines():
-    """Смена — от первого до последнего действия (округление 15 мин), перерыв — самый долгий промежуток (не больше
-    часа), таймер — строка «по таймеру», остальное время — «оценка программы» по числу действий; сумма = смена без
-    перерыва; результат проходит правила сервера."""
+    """Без таймера рабочего дня: смена — от первого до последнего действия минута в минуту (без округления, D-46 —
+    A-49 п. 2), перерыв не угадывается (только по кнопке, A-49 п. 3); таймер операции — строка «по таймеру»,
+    остальное время — «оценка программы» по числу действий; сумма = смена без перерыва; результат проходит правила
+    сервера."""
     activity = {
         "actions": [{"at": at("08:52"), "command": "auth.login", "label": "Вход"},
                     act("09:05"), act("09:40"), act("11:10", command="document.add_version", label="Добавить версию",
@@ -74,9 +75,9 @@ def test_assemble_day_shift_break_measured_and_estimated_lines():
         "timers": [{"start": at("15:00"), "end": at("16:30"), "project_id": P1, "project_code": "П-1",
                     "label": "Наряд № 3 · Сборка"}]}
     r = wt.assemble_report(DAY, activity, [P1], NOW)
-    assert (r["shift_start"], r["shift_end"], r["break_minutes"]) == (8 * 60 + 45, 17 * 60 + 45, 60)
+    assert (r["shift_start"], r["shift_end"], r["break_minutes"]) == (8 * 60 + 52, 17 * 60 + 31, 0)
     net = r["shift_end"] - r["shift_start"] - r["break_minutes"]
-    assert sum(ln["minutes"] for ln in r["lines"]) == net == 480
+    assert sum(ln["minutes"] for ln in r["lines"]) == net == 519
     timer = next(ln for ln in r["lines"] if ln["source"] == "measured")
     assert (timer["minutes"], timer["project_id"], timer["note"]) == (90, P1, "Наряд № 3 · Сборка")
     est = [ln for ln in r["lines"] if ln["source"] == "estimated"]
@@ -85,7 +86,7 @@ def test_assemble_day_shift_break_measured_and_estimated_lines():
     assert any(ln["project_id"] is None and "П-2: Изменить проект" in ln["note"] for ln in est)
     two = next(ln for ln in est if ln["task_id"] == T1)
     assert "Изменить задачу: «Схема» (×2)" in two["note"]
-    assert r["summary"] == {"actions": 5, "measured_minutes": 90, "lines": len(r["lines"])}
+    assert r["summary"] == {"actions": 5, "measured_minutes": 90, "lines": len(r["lines"]), "workday_minutes": 0}
     assert [ln["line_no"] for ln in r["lines"]] == list(range(1, len(r["lines"]) + 1))
     parsed = wt.parse_report({"shift_start": wt.time_label(r["shift_start"]), "shift_end": wt.time_label(r["shift_end"]),
                               "break_minutes": r["break_minutes"], "lines": [{k: ln[k] for k in (
@@ -99,7 +100,7 @@ def test_assemble_uses_local_time_of_offline_actions_and_skips_empty_days():
     synced_next_day = {"actions": [{**act("10:00"), "at": at("08:00", date(2026, 11, 17)), "operation_id": "op-1"}]}
     assert wt.assemble_report(DAY, synced_next_day, [P1], NOW) is None
     r = wt.assemble_report(DAY, synced_next_day, [P1], NOW, local_times={"op-1": at("10:00")})
-    assert r["shift_start"] == 600 and r["lines"][0]["minutes"] == 15
+    assert (r["shift_start"], r["shift_end"]) == (600, 601) and r["lines"][0]["minutes"] == 1
     assert wt.assemble_report(DAY, {"actions": [], "timers": []}, [P1], NOW) is None
     only_login = wt.assemble_report(DAY, {"actions": [{"at": at("09:00"), "command": "auth.login"}]}, [P1], NOW)
     assert only_login["lines"] == [] and only_login["summary"]["actions"] == 0
@@ -114,3 +115,20 @@ def test_assemble_merges_too_many_groups_into_other_line():
     r = wt.assemble_report(DAY, {"actions": acts}, [P1], NOW)
     assert len(r["lines"]) <= wt.MAX_LINES
     assert sum(ln["minutes"] for ln in r["lines"]) <= r["shift_end"] - r["shift_start"] - r["break_minutes"]
+
+
+def test_assemble_takes_shift_and_breaks_from_workday_timer():
+    """D-46: день отмечен таймером рабочего дня — смена и перерыв из него точно («сколько натикало»), строки делятся
+    по минуте (без кратности 15), сумма строк = рабочее время по таймеру; сводка помнит минуты таймера."""
+    from vector.core import workday as wdy
+    ev = [{"seq": 1, "event": "start", "device_time": "2026-11-16T08:03:20+00:00"},
+          {"seq": 2, "event": "pause", "device_time": "2026-11-16T12:10:00+00:00"},
+          {"seq": 3, "event": "resume", "device_time": "2026-11-16T12:47:30+00:00"},
+          {"seq": 4, "event": "finish", "device_time": "2026-11-16T17:01:59+00:00"}]
+    shift = wdy.shift_from_day(wdy.day_state(ev, NOW), DAY, timezone.utc)
+    assert shift == {"shift_start": 8 * 60 + 3, "shift_end": 17 * 60 + 1, "break_minutes": 37}
+    acts = {"actions": [act("09:00"), act("10:00", tid=None, label="Добавить версию"), act("16:00", pid=None, tid=None)]}
+    r = wt.assemble_report(DAY, acts, [P1], NOW, tz=timezone.utc, shift=shift)
+    assert (r["shift_start"], r["shift_end"], r["break_minutes"]) == (483, 1021, 37)
+    assert sum(ln["minutes"] for ln in r["lines"]) == 1021 - 483 - 37 == r["summary"]["workday_minutes"] == 501
+    assert any(ln["minutes"] % 15 for ln in r["lines"])                   # без кратности 15 минутам

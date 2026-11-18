@@ -348,9 +348,8 @@ def date_label(iso_d: Optional[str]) -> str:
 
 # ---------------------------------------------------------------- отчёт, собранный программой (D-43, A-48 п. 3)
 AUTO_LOOKBACK_DAYS = 7    # за сколько прошедших дней программа сама собирает отчёт, если его нет (день с действиями)
-ROUND_TO = 15             # смена округляется до 15 минут (начало — вниз, конец — вверх)
-BREAK_MIN_GAP = 30        # самый долгий промежуток без действий от 30 минут считается перерывом…
-BREAK_MAX = 60            # …но не больше часа (остальное — работа без записей в программе: чертёж, совещание)
+# D-46 (ответы владельца на A-49 пп. 2–3): округления смены до 15 минут и «угаданного» перерыва больше нет —
+# «сколько натикало, столько натикало», перерыв — только по кнопке «Перерыв» таймера рабочего дня.
 
 
 def _local(v: Any, tz: Optional[tzinfo]) -> Optional[datetime]:
@@ -374,19 +373,16 @@ def _minute_of(dt: datetime, day: date) -> float:
 
 
 def _spread(total: int, weights: list[int]) -> list[int]:
-    """Разделить total минут пропорционально весам: квантами по ROUND_TO (если хватает каждому, иначе по минуте),
-    методом наибольшего остатка; остаток меньше кванта — самой «тяжёлой» строке. Сумма — ровно total."""
+    """Разделить total минут пропорционально весам по минуте (без кратности 15 — D-46, A-49 п. 2) методом
+    наибольшего остатка. Сумма — ровно total."""
     n = len(weights)
     if n == 0 or total <= 0:
         return [0] * n
-    q = ROUND_TO if total >= ROUND_TO * n else 1
-    units, wsum = total // q, sum(weights) or n
-    raw = [units * (w or 1) / wsum for w in weights]
+    wsum = sum(w or 1 for w in weights)
+    raw = [total * (w or 1) / wsum for w in weights]
     out = [int(x) for x in raw]
-    for i in sorted(range(n), key=lambda i: raw[i] - out[i], reverse=True)[:units - sum(out)]:
+    for i in sorted(range(n), key=lambda i: raw[i] - out[i], reverse=True)[:total - sum(out)]:
         out[i] += 1
-    out = [x * q for x in out]
-    out[max(range(n), key=lambda i: weights[i])] += total - sum(out)
     return out
 
 
@@ -396,7 +392,8 @@ def _cut(text: str, n: int = MAX_NOTE) -> str:
 
 
 def assemble_report(day: date, activity: dict, member_projects: Iterable[str], now: datetime,
-                    tz: Optional[tzinfo] = None, local_times: Optional[dict] = None) -> Optional[dict]:
+                    tz: Optional[tzinfo] = None, local_times: Optional[dict] = None,
+                    shift: Optional[dict] = None) -> Optional[dict]:
     """Собрать дневной отчёт за день day по тому, что сотрудник делал в программе (A-48 п. 3).
 
     activity — данные pull «worktime_activity» (сервер, только свои записи):
@@ -409,24 +406,28 @@ def assemble_report(day: date, activity: dict, member_projects: Iterable[str], n
     local_times — {operation_id: ISO} — когда действие на самом деле сделано на этом компьютере (очередь клиента):
     сделанное без связи сервер записал при синхронизации, а в отчёт оно должно попасть днём, когда сделано.
 
+    shift — смена из таймера рабочего дня ({shift_start, shift_end, break_minutes} из
+    vector.core.workday.shift_from_day, D-46): если день отмечен таймером и завершён, смена и перерыв — из него.
+
     Правила (каждое видно сотруднику при самопроверке; ничего не отправляется без неё):
 
-    * границы смены — первое и последнее действие / интервал таймера дня (начало — вниз, конец — вверх до 15 мин);
-    * перерыв — самый долгий промежуток без действий, если он от 30 минут, но не больше часа;
+    * смена — по таймеру рабочего дня (shift); без таймера — от первого до последнего действие / интервала таймера
+      операций, без округления (A-49 п. 2: «сколько натикало, столько натикало»);
+    * перерыв — только нажатые «Перерыв» таймера рабочего дня (A-49 п. 3); без таймера — 0;
     * строки «по таймеру» (source = measured) — фактическое время операций, по проекту и операции;
     * остальное время смены делится между остальными работами (по проекту и задаче) пропорционально числу действий —
       строки «оценка программы» (source = estimated); сумма строк не больше смены без перерыва;
     * проект строки — только тот, где сотрудник участник (member_projects); иначе строка «не по проекту» с кодом
       проекта в тексте (сервер не примет чужой проект).
 
-    Возвращает {shift_start, shift_end (минуты, ночная — больше 1440), break_minutes, lines, comment, summary} или
+    Возвращает {shift_start, shift_end (минуты, ночная — больше 1440), break_minutes, lines, comment, summary
+    ({actions, measured_minutes, lines, workday_minutes — рабочих минут по таймеру дня, 0 — таймера не было})} или
     None, если за день нет ни одного действия.
     """
     members = set(member_projects or [])
     local_times = local_times or {}
     day_end = datetime.combine(day + timedelta(days=1), datetime.min.time())
     points: list[float] = []
-    busy: list[tuple[float, float]] = []
     groups: dict[tuple, dict] = {}
     measured: dict[tuple, dict] = {}
     n_actions = 0
@@ -443,7 +444,6 @@ def assemble_report(day: date, activity: dict, member_projects: Iterable[str], n
             continue
         m = _minute_of(dt, day)
         points.append(m)
-        busy.append((m, m))
         if a.get("command") == "auth.login":
             continue
         n_actions += 1
@@ -468,7 +468,6 @@ def assemble_report(day: date, activity: dict, member_projects: Iterable[str], n
             continue
         a_m, b_m = _minute_of(lo, day), _minute_of(hi, day)
         points += [a_m, b_m]
-        busy.append((a_m, b_m))
         pid, prefix = proj(t.get("project_id"), t.get("project_code"))
         key = (pid, prefix + (t.get("label") or "Операция наряда"))
         g = measured.setdefault(key, {"first": a_m, "seconds": 0.0})
@@ -476,22 +475,20 @@ def assemble_report(day: date, activity: dict, member_projects: Iterable[str], n
 
     if not points:
         return None
-    start = int(min(points) // ROUND_TO * ROUND_TO)
-    end = int(-(-max(points) // ROUND_TO) * ROUND_TO)
-    end = min(max(end, start + ROUND_TO), DAY_MINUTES)
-    start = min(start, end - ROUND_TO)
-
-    # Перерыв — самый долгий промежуток между занятыми отрезками (таймер — сплошная работа).
-    gap = 0.0
-    edge = None
-    for a_m, b_m in sorted(busy):
-        if edge is not None and a_m > edge:
-            gap = max(gap, a_m - edge)
-        edge = b_m if edge is None else max(edge, b_m)
-    brk = min(int(gap // ROUND_TO * ROUND_TO), BREAK_MAX) if gap >= BREAK_MIN_GAP else 0
-    if brk >= end - start:
+    if shift:
+        # Смена и перерыв — из таймера рабочего дня (D-46): точно как «натикало», перерыв — только по кнопке.
+        start, end = int(shift["shift_start"]), int(shift["shift_end"])
+        brk = int(shift.get("break_minutes") or 0)
+        timer = True                                   # сводка покажет: смена — по таймеру рабочего дня
+    else:
+        # Без таймера: от первой до последней отметки, минута в минуту (секунды начала отбрасываются, конец —
+        # до следующей целой минуты, чтобы последняя отметка попала в смену); перерыв не угадывается.
+        start = int(min(points))
+        end = min(max(int(-(-max(points) // 1)), start + 1), DAY_MINUTES)
+        start = min(start, end - 1)
         brk = 0
-    net = end - start - brk
+        timer = False
+    net = max(end - start - brk, 0)
 
     lines: list[dict] = []
     for (pid, label), g in sorted(measured.items(), key=lambda kv: kv[1]["first"]):
@@ -527,4 +524,5 @@ def assemble_report(day: date, activity: dict, member_projects: Iterable[str], n
         ln["line_no"] = i
     comment = _cut("Также в программе: " + "; ".join(extra_note), MAX_COMMENT) if extra_note else None
     return {"shift_start": start, "shift_end": end, "break_minutes": brk, "lines": lines, "comment": comment,
-            "summary": {"actions": n_actions, "measured_minutes": measured_total, "lines": len(lines)}}
+            "summary": {"actions": n_actions, "measured_minutes": measured_total, "lines": len(lines),
+                        "workday_minutes": net if timer else 0}}

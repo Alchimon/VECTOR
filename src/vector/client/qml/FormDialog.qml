@@ -16,6 +16,10 @@ Popup {
     property string note: ""
     property bool working: false
     property bool canConfirm: true
+    // Текст второй кнопки: «Отмена» (по умолчанию) или своё — например «Позже» в окне «Начните рабочий день» (D-46);
+    // нажатие сообщается сигналом dismissed (крестик и Esc просто закрывают форму — окно покажется снова позже).
+    property string cancelText: "Отмена"
+    signal dismissed()
     // Ширина формы: обычные формы — 520; формы с полями в две колонки (реквизиты поставщика) — шире.
     property int formWidth: 520
     default property alias content: body.data
@@ -57,7 +61,7 @@ Popup {
             Layout.fillWidth: true; Layout.margins: 16; Layout.leftMargin: Theme.padL; Layout.rightMargin: Theme.padL
             spacing: 8
             Item { Layout.fillWidth: true }
-            VButton { text: "Отмена"; kind: "ghost"; onClicked: d.close() }
+            VButton { text: d.cancelText; kind: "ghost"; onClicked: { d.dismissed(); d.close() } }
             VButton { text: d.working ? "Выполняется…" : d.confirmText; kind: d.confirmKind; enabled: d.canConfirm && !d.working; onClicked: d.confirmed()
                       tip: d.confirmTip !== "" ? d.confirmTip : backend.tip(text) }
         }

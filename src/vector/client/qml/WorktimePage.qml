@@ -17,6 +17,9 @@ import QtQuick.Layouts
 // Ночная смена: конец раньше начала — до утра следующего дня.
 //
 // Часы в строках вводятся как удобно: «2», «1,5» или «1:30». Кнопки — подсказка; решает сервер.
+//
+// D-46 (ответы владельца на A-49): над списком — таймер рабочего дня (WorkdayCard). Новый отчёт берёт смену из
+// таймера — без округления, перерыв — только нажатые «Перерыв».
 MasterDetail {
     id: page
     objectName: "worktimePage"
@@ -37,6 +40,8 @@ MasterDetail {
                   function onNavTargetChanged() { if (shell.navTarget.page === "worktime" && shell.navTarget.id) page.openObject(shell.navTarget.id) } }
     tab: "mine"
     tabsName: "worktimeTabs"
+    // Таймер рабочего дня (D-46): подробности дня, «Я начал раньше», руководителю — запросы на начало дня.
+    topContent: [ WorkdayCard { Layout.fillWidth: true } ]
     tabs: wv.tabs || []
     onTabPicked: id => { tab = id; selectedId = "" }
     title: "Рабочее время"
@@ -242,6 +247,7 @@ MasterDetail {
         property var rep: null           // null — новый отчёт
         property string repId: ""
         property string workDate: ""
+        property string timerNote: ""    // «смена — по таймеру рабочего дня…» (D-46) для нового отчёта
         property int editRev: 0
         property bool working: false
         property string error: ""
@@ -264,9 +270,13 @@ MasterDetail {
             rep = r || null; error = ""; working = false
             repId = r ? r.id : backend.newId()
             workDate = r ? r.work_date : day
-            startField.text = r && r.shift_start ? r.shift_start : "09:00"
-            endField.text = r && r.shift_end ? r.shift_end : "18:00"
-            breakField.text = r ? String(r.break_minutes) : "60"
+            // Новый отчёт: смена — из таймера рабочего дня, если день им отмечен (D-46: без округления, перерыв —
+            // только нажатые «Перерыв»); иначе — обычные 09:00–18:00, сотрудник поправит.
+            var t = r ? ({ from_timer: false }) : backend.workdayReportDefaults(workDate)
+            timerNote = t.from_timer ? t.note : ""
+            startField.text = r && r.shift_start ? r.shift_start : (t.from_timer ? t.shift_start : "09:00")
+            endField.text = r && r.shift_end ? r.shift_end : (t.from_timer ? t.shift_end : "18:00")
+            breakField.text = r ? String(r.break_minutes) : (t.from_timer ? String(t.break_minutes) : "60")
             commentField.text = r ? r.comment : ""
             lm.clear()
             var ls = r ? r.lines : []
@@ -329,6 +339,8 @@ MasterDetail {
                          onTextChanged: editor.editRev++ }
                 VField { id: commentField; objectName: "reportComment"; label: "Комментарий к отчёту"; placeholder: "Необязательно"; Layout.fillWidth: true; Layout.preferredWidth: 2 }
             }
+            Banner { objectName: "reportTimerNote"; tone: "info"; text: editor.timerNote
+                     Layout.leftMargin: Theme.padL; Layout.rightMargin: Theme.padL; Layout.topMargin: 10; Layout.fillWidth: true }
             Rectangle {
                 Layout.fillWidth: true; Layout.leftMargin: Theme.padL; Layout.rightMargin: Theme.padL; Layout.topMargin: 12
                 implicitHeight: 30; radius: Theme.radiusS; color: Theme.surfaceAlt

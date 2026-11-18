@@ -211,14 +211,15 @@ class WorktimeMixin:
         свой отчёт за день. Один отчёт на сотрудника за день; день — не в будущем и не старше 31 дня.
 
         origin «auto» — отчёт собрала программа по действиям за день (D-43): статус «На самопроверке», отметка
-        daily_report_auto со сводкой summary ({actions, measured_minutes, lines} — целые) и уведомление автору
+        daily_report_auto со сводкой summary ({actions, measured_minutes, lines, workday_minutes?} — целые;
+        workday_minutes — минут по таймеру рабочего дня, D-46) и уведомление автору
         «проверьте». Без origin — «Черновик», который сотрудник заполняет сам."""
         only_keys(p, {"id", "work_date", "origin", "summary", *CONTENT_KEYS})
         origin = p.get("origin") or "manual"
         if origin not in ("manual", "auto"):
             raise Rejected("invalid_origin", "Источник отчёта — «manual» или «auto».", {"field": "origin"})
         summary = p.get("summary") or {}
-        if not isinstance(summary, dict) or set(summary) - {"actions", "measured_minutes", "lines"} or \
+        if not isinstance(summary, dict) or set(summary) - {"actions", "measured_minutes", "lines", "workday_minutes"} or \
                 any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in summary.values()):
             raise Rejected("invalid_summary", "Сводка собранного отчёта — целые числа actions, measured_minutes, lines.",
                            {"field": "summary"})

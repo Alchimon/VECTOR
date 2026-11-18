@@ -89,7 +89,10 @@ OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp")
                 ("claim", "claims"), ("change_request", "change_requests"), ("change_order", "change_orders"),
                 # Рабочее время (D-42): свои дневные отчёты (создание, правка, отправка — офлайн через очередь) и —
                 # руководителю отдела — отправленные чужие (принять / вернуть — онлайн-командой).
-                ("daily_report", "daily_reports"))
+                ("daily_report", "daily_reports"),
+                # Таймер рабочего дня (D-46): свои рабочие дни (нажатия — офлайн через очередь) и запросы на
+                # фактическое начало дня — свои (офлайн через очередь) и, руководителю, сотрудников (решение — онлайн).
+                ("workday", "workdays"), ("workday_start_request", "workday_start_requests"))
 # Объекты из результата команды → список в meta (ключ результата, ключ meta); заменяются по id.
 # Движения склада, резервы и потребности меняются ТОЛЬКО онлайн-командами (online_required): в кэше это
 # снимок «на момент последнего обновления», офлайн он только читается.
@@ -650,7 +653,9 @@ class SyncClient:
             day = today - timedelta(days=back)
             if day.isoformat() in have:
                 continue
-            r = wt.assemble_report(day, act, members, self.now(), tz=tz, local_times=local_times)
+            # Смена и перерыв — из таймера рабочего дня, если день им отмечен и завершён (D-46, A-49 пп. 2–3).
+            r = wt.assemble_report(day, act, members, self.now(), tz=tz, local_times=local_times,
+                                   shift=self.workday_shift(day, tz))
             if r is None or not r["lines"]:
                 continue
             payload = {"id": str(uuid.uuid4()), "work_date": day.isoformat(), "origin": "auto", "summary": r["summary"],
@@ -680,6 +685,93 @@ class SyncClient:
         return self.db.execute("SELECT expected_version FROM outbox WHERE command IN ('report.create','report.save',"
                                "'report.submit') AND object_id=? AND state IN ('pending','conflict','rejected') "
                                "ORDER BY seq DESC LIMIT 1", (oid,)).fetchone()
+
+    # ------------------------------------------------------------ таймер рабочего дня (D-46, A-49 пп. 2–5)
+    def workday_of(self, day: date) -> Optional[dict]:
+        """Свой рабочий день за дату day из локального кэша (с неотправленными нажатиями) или None."""
+        iso_d = day.isoformat()
+        return next((d for d in self.list_local("workday")
+                     if d.get("work_date") == iso_d and d.get("user_id") in (None, self.user_id)), None)
+
+    def workday_shift(self, day: date, tz=None) -> Optional[dict]:
+        """Смена дневного отчёта за day из таймера рабочего дня ({shift_start, shift_end, break_minutes}) или None —
+        день не отмечен таймером или не завершён."""
+        from vector.core import workday as wdy
+        d = self.workday_of(day) if self.db is not None else None
+        if not d:
+            return None
+        return wdy.shift_from_day(wdy.day_state(d.get("events") or [], self.now(), d.get("approved_start_at")), day, tz)
+
+    def workday_mark(self, event: str, tz=None) -> LocalResult:
+        """Кнопка таймера рабочего дня: «Начать рабочий день» (start), «Перерыв» (pause), «Продолжить» (resume),
+        «Завершить день» (finish) — офлайн через очередь (D-46).
+
+        Время — часы ЭТОГО компьютера в момент нажатия (A-49 п. 5, как у таймера операций наряда): таймер честен и без
+        связи. День — дата по часам компьютера (tz — для тестов). Сначала нажатие проверяется по локальной копии теми
+        же правилами ядра, что на сервере: заведомо недопустимое (второй «Перерыв») в очередь не ставится."""
+        from vector.core import workday as wdy
+        if self.db is None:
+            return LocalResult("unauthenticated", message_ru="Войдите в систему.")
+        now = self.now()
+        today = now.astimezone(tz).date()
+        cur = self.workday_of(today)
+        if event != "start" and cur is None:
+            # После полуночи ночной смены день — вчерашний (если он не завершён).
+            prev = self.workday_of(today - timedelta(days=1))
+            cur = prev if prev and prev.get("status") != "finished" else None
+            if cur is None:
+                return LocalResult("rejected", message_ru="Рабочий день сегодня ещё не начат — нажмите «Начать рабочий день».",
+                                   response={"code": "not_started"})
+        try:
+            wdy.check_event((cur or {}).get("events") or [], event, now)
+        except wdy.WorkdayError as e:
+            return LocalResult("rejected", message_ru=e.message_ru, response={"code": e.code})
+        payload: dict[str, Any] = {"id": cur["id"] if cur else str(uuid.uuid4()), "event": event,
+                                   "device_time": now.astimezone(tz).isoformat()}
+        if event == "start":
+            payload["work_date"] = today.isoformat()
+        return self.execute("workday.mark", payload)
+
+    def workday_start_request(self, workday_id: str, start_at: datetime, reason: str) -> LocalResult:
+        """«Я начал раньше» — фактическое начало своего сегодняшнего дня на согласование руководителю (A-49 п. 4),
+        офлайн через очередь. Те же проверки, что на сервере (раньше нажатия «Начать», не раньше чем за 16 часов,
+        причина), — до постановки в очередь."""
+        from vector.core import workday as wdy
+        if self.db is None:
+            return LocalResult("unauthenticated", message_ru="Войдите в систему.")
+        d = self.get_local("workday", workday_id)
+        if d is None:
+            return LocalResult("rejected", message_ru="Рабочий день не найден на этом компьютере — обновите данные.")
+        st = wdy.day_state(d.get("events") or [], self.now())
+        try:
+            text = wdy.parse_reason(reason)
+            wdy.check_start_request(st["pressed_at"], wdy.parse_dt(start_at, "start_at"), self.now())
+        except wdy.WorkdayError as e:
+            return LocalResult("rejected", message_ru=e.message_ru, response={"code": e.code, "details": e.details})
+        if any(r.get("workday_id") == workday_id and r.get("status") == "pending" for r in self.list_local("workday_start_request")):
+            return LocalResult("rejected", message_ru="Запрос на фактическое начало этого дня уже на согласовании.",
+                               response={"code": "already_pending"})
+        return self.execute("workday.start_request", {"id": str(uuid.uuid4()), "workday_id": workday_id,
+                                                      "start_at": start_at.isoformat(), "reason": text})
+
+    def workday_prompt_needed(self, tz=None) -> bool:
+        """Показать ли окно «Начните рабочий день» (A-49 п. 4): сегодня таймер не запускали и окно сегодня не
+        отложено кнопкой «Позже»."""
+        from vector.core import workday as wdy
+        if self.db is None or not self.user_id:
+            return False
+        today = self.now().astimezone(tz).date()
+        cur = self.workday_of(today)
+        prev = self.workday_of(today - timedelta(days=1))
+        if prev and prev.get("status") != "finished":
+            return False                                  # идёт ночная смена со вчерашнего дня
+        return wdy.need_start_prompt((cur or {}).get("events") or [],
+                                     self.get_meta("workday_prompt_later") == today.isoformat())
+
+    def workday_prompt_later(self, tz=None) -> None:
+        """«Позже» в окне «Начните рабочий день»: сегодня окно больше не показывать (только на этом компьютере)."""
+        if self.db is not None:
+            self._set_meta("workday_prompt_later", self.now().astimezone(tz).date().isoformat())
 
     def op_event(self, op_id: str, kind: str, qty_done: Optional[int] = None, note: Optional[str] = None) -> LocalResult:
         """Событие исполнителя по операции наряда (старт / пауза / продолжить / завершить / проблема) — офлайн (D-36).
@@ -1143,6 +1235,16 @@ class SyncClient:
                 self.db.execute("UPDATE cache SET data_enc=?, pending=1 WHERE object_type=? AND id=?", (enc, otype, oid))
             else:
                 self.db.execute("INSERT INTO cache VALUES (?,?,?,NULL,NULL,1)", (otype, oid, enc))
+        elif otype in ("workday", "workday_start_request"):
+            # Таймер рабочего дня (D-46): нажатие добавляется в журнал дня, запрос — «На согласовании».
+            old = json.loads(self._open("cache", f"{otype}/{oid}/d", row[0])) if row else None
+            data = (_workday_overlay(old, payload, self.user_id) if otype == "workday"
+                    else _start_request_overlay(old, payload, self.user_id, self.get_local("workday", payload.get("workday_id") or "")))
+            enc = self._seal("cache", f"{otype}/{oid}/d", json.dumps(data, ensure_ascii=False))
+            if row:
+                self.db.execute("UPDATE cache SET data_enc=?, pending=1 WHERE object_type=? AND id=?", (enc, otype, oid))
+            else:
+                self.db.execute("INSERT INTO cache VALUES (?,?,?,NULL,NULL,1)", (otype, oid, enc))
         elif row and otype == "wo_operation" and "kind" in payload:
             data = _op_event_overlay(json.loads(self._open("cache", f"{otype}/{oid}/d", row[0])), payload)
             self.db.execute("UPDATE cache SET data_enc=?, pending=1 WHERE object_type=? AND id=?",
@@ -1192,6 +1294,31 @@ def _report_overlay(old: Optional[dict], command: str, payload: dict, user_id: O
         data["break_minutes"] = int(data.get("break_minutes") or 0)
     data["status_label"] = wt.STATUS_LABELS_RU.get(data["status"], data["status"])
     data["total_minutes"] = sum(int(ln.get("minutes") or 0) for ln in data.get("lines") or [])
+    return data
+
+
+def _workday_overlay(old: Optional[dict], payload: dict, user_id: Optional[str]) -> dict:
+    """Локальная копия рабочего дня после нажатия кнопки таймера (офлайн, D-46): событие — в журнал дня (с пометкой
+    «не отправлено»), состояние — по правилам ядра. Сервер проверит порядок и время ещё раз."""
+    from vector.core import workday as wdy
+    data = dict(old or {"id": payload.get("id"), "user_id": user_id, "work_date": payload.get("work_date"),
+                        "events": [], "approved_start_at": None, "version": None, "finished_at": None,
+                        "started_at": payload.get("device_time")})
+    events = list(data.get("events") or [])
+    events.append({"seq": len(events) + 1, "event": payload.get("event"), "device_time": payload.get("device_time"),
+                   "local": True})
+    data["events"] = events
+    data["status"] = wdy.status_of(events)
+    data["finished_at"] = payload.get("device_time") if payload.get("event") == "finish" else None
+    return data
+
+
+def _start_request_overlay(old: Optional[dict], payload: dict, user_id: Optional[str], day: Optional[dict]) -> dict:
+    """Локальная копия запроса «фактическое начало дня» (офлайн, D-46): «На согласовании» до ответа сервера."""
+    data = dict(old or {"status": "pending", "user_id": user_id, "decided_by": None, "decided_at": None,
+                        "decision_comment": None, "authority": None, "version": None})
+    data.update(id=payload.get("id"), workday_id=payload.get("workday_id"), requested_start_at=payload.get("start_at"),
+                reason=payload.get("reason"), work_date=(day or {}).get("work_date"))
     return data
 
 

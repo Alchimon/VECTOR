@@ -24,7 +24,7 @@ from vector.core import stock
 from vector.core.contracts import Contracts
 
 from . import (calc_view, delegation_view, hints, lifecycle_view, notification_view, production_view, purchasing_view,
-               org_view, quality_view, stock_view, worktime_view)
+               org_view, quality_view, stock_view, workday_view, worktime_view)
 from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
 from .vault import KeyringStore, MemoryStore, VaultError
@@ -222,7 +222,14 @@ class Backend(QObject):
                                        "product_instance": [], "passport": [],
                                        "claim": [], "change_request": [], "change_order": [],
                                        # Рабочее время (D-42): дневные отчёты (свои и — руководителю отдела — отправленные).
-                                       "daily_report": []}
+                                       "daily_report": [],
+                                       # Таймер рабочего дня (D-46): свои дни и запросы на фактическое начало дня.
+                                       "workday": [], "workday_start_request": []}
+        # Показать ли окно «Начните рабочий день» (D-46, A-49 п. 4) — считается в рабочем потоке со снимком. В тестах и
+        # на стенде интерфейса (auto_timers=False) окно само не открывается, чтобы не закрывать экраны; включается
+        # setWorkdayPromptAuto(True).
+        self._workday_prompt = False
+        self._workday_prompt_auto = auto_timers
         # Фильтр вкладки «Заказы поставщикам» (active / approval / draft / placed / closed / all) — состояние экрана.
         self._po_filter = "active"
         # Строка поиска раздела «Оргструктура» (D-44) — состояние экрана; новые данные тоже перестраивают раздел.
@@ -896,6 +903,73 @@ class Backend(QObject):
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, "report.submit", res))
 
+    # ------------------------------------------------------------ таймер рабочего дня (D-46, A-49 пп. 2–5)
+    _WORKDAY_OK = {"start": "Рабочий день начат — таймер идёт.", "pause": "Перерыв — таймер остановлен.",
+                   "resume": "Работа продолжается — таймер идёт.", "finish": "Рабочий день завершён."}
+
+    @Property("QVariantMap", notify=dataChanged)
+    def workdayOverview(self):
+        """Таймер рабочего дня (боковая панель, раздел «Рабочее время»): состояние, «сколько натикало», кнопки, окно
+        «Начните рабочий день», «Я начал раньше», запросы на фактическое начало — свои и на решение руководителю."""
+        days = [{**o, "_pending": bool(o.get("_pending"))} for o in self._data.get("workday", [])]
+        return qml_safe(workday_view.workday_view(
+            days, self._data.get("workday_start_request", []), self._me.get("user_id") or "", self._people,
+            self._online and self._session_mode == "online", datetime.now(timezone.utc), self._workday_prompt))
+
+    @Slot(str, str)
+    def workdayMark(self, tag: str, event: str):
+        """Кнопка таймера: start / pause / resume / finish — через очередь (можно без связи); время — часы этого
+        компьютера в момент нажатия (SyncClient.workday_mark)."""
+        def job():
+            """Нажатие в рабочем потоке и снимок данных."""
+            r = self.client.workday_mark(event)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "workday.mark", res, self._WORKDAY_OK.get(event, "")))
+
+    @Slot(bool)
+    def setWorkdayPromptAuto(self, on: bool):
+        """Разрешить окну «Начните рабочий день» открываться само (в боевом режиме — всегда; тесты и стенд интерфейса
+        включают его, когда проверяют само окно). Применится со следующим снимком данных."""
+        self._workday_prompt_auto = bool(on)
+
+    @Slot()
+    def workdayLater(self):
+        """«Позже» в окне «Начните рабочий день»: сегодня окно больше не показывать."""
+        def job():
+            """Запомнить «позже» в рабочем потоке и снять снимок."""
+            self.client.workday_prompt_later()
+            return self._snapshot(False)
+        self._run(job, self._apply_snapshot)
+
+    @Slot(str, result="QVariantMap")
+    def workdayReportDefaults(self, work_date: str) -> dict:
+        """Смена нового дневного отчёта за work_date из таймера рабочего дня (D-46): {from_timer, shift_start, shift_end,
+        break_minutes, note}; таймера за день нет — from_timer = false."""
+        return qml_safe(workday_view.report_defaults(self._data.get("workday", []), self._me.get("user_id") or "",
+                                                     work_date or "", datetime.now(timezone.utc)))
+
+    @Slot(str, result="QVariantMap")
+    def workdayStartCheck(self, text: str) -> dict:
+        """Проверка поля «Фактическое начало» формы «Я начал раньше» без сервера (правила ядра): {ok, start_at, message}."""
+        days = self._data.get("workday", [])
+        cur = next((d for d in days if d.get("id") == self.workdayOverview.get("id")), None) or {}
+        return qml_safe(workday_view.parse_start_time(text, cur, datetime.now(timezone.utc)))
+
+    @Slot(str, str, str, str)
+    def workdayStartRequest(self, tag: str, workday_id: str, start_at: str, reason: str):
+        """«Я начал раньше» → workday.start_request через очередь (можно без связи); решает руководитель."""
+        def job():
+            """Запрос в рабочем потоке и снимок данных."""
+            try:
+                at = datetime.fromisoformat(start_at)
+            except ValueError:
+                return {"result": {"status": "rejected", "message_ru": "Время — ЧЧ:ММ.", "response": None,
+                                   "operation_id": None}, "snap": self._snapshot(False)}
+            r = self.client.workday_start_request(workday_id, at, reason)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "workday.start_request", res,
+                                                        "Запрос отправлен руководителю на согласование."))
+
     # ------------------------------------------------------------ оргструктура (D-44)
     @Property("QVariantMap", notify=orgChanged)
     def orgOverview(self):
@@ -1171,6 +1245,9 @@ class Backend(QObject):
             self._data = {k: [] for k in self._data}
             # Снимки из кэша тоже убираются из памяти: после выхода на экране входа не должно оставаться данных.
             self._stock, self._calc_versions, self._calc_revisions, self._doc_versions = {}, [], [], []
+            # Окно «Начните рабочий день» (D-46) — решение для вышедшего пользователя: следующему не показывать
+            # по чужому состоянию (для него посчитается со своим снимком).
+            self._workday_prompt = False
             self.changed.emit()
             self.dataChanged.emit()
         self._run(lambda: self.client.logout() if self.client else None, done)
@@ -1189,7 +1266,8 @@ class Backend(QObject):
                 "calc_versions": c.get_meta("calc_versions") or [], "calc_revisions": c.get_meta("calc_revisions") or [],
                 "stock": {k: c.get_meta(k) for k in STOCK_META}, "me": c.get_meta("me") or c.get_meta("session") or {}, "people": c.get_meta("people") or [], "assignments": c.get_meta("assignments") or [],
                 "pending": c.pending_count(), "problems": c.problem_count(), "last_pull": c.get_meta("last_pull") or "",
-                "online": c.t.online and c.token is not None, "token": c.token is not None, "rep": rep.__dict__ if rep else None}
+                "online": c.t.online and c.token is not None, "token": c.token is not None, "rep": rep.__dict__ if rep else None,
+                "workday_prompt": c.workday_prompt_needed()}
 
     def _apply_snapshot(self, s):
         """Применить снимок в потоке интерфейса и разослать changed/dataChanged. Если сеанс с сервером пропал — перейти
@@ -1211,6 +1289,7 @@ class Backend(QObject):
         self._people = {p["id"]: p["display_name"] for p in s["people"]}
         self._assignments = s.get("assignments", [])
         self._pending, self._problems, self._last_pull = s["pending"], s["problems"], s["last_pull"]
+        self._workday_prompt = bool(s.get("workday_prompt")) and self._workday_prompt_auto
         self._online = s["online"]
         if not s["token"] and self._session_mode == "online":
             self._session_mode = "offline"
@@ -1314,10 +1393,14 @@ class Backend(QObject):
     # (D-35) — список уведомлений и бейдж.
     # Наряды (D-36): после выпуска, замены, закрытия — свежие материалы и статусы с сервера.
     _STOCK_PREFIXES = frozenset({"stock", "need", "item_alias", "unit_conversion", "config", "po", "delegation",
-                                 "notification", "wo", "tp", "org"})
+                                 "notification", "wo", "tp", "org",
+                                 # D-46: решение по фактическому началу дня меняет рабочий день сотрудника на сервере
+                                 # (подтверждённое начало) и рассылает уведомления — сразу перечитываем снимок.
+                                 "workday"})
 
-    def _finish_command(self, tag: str, command: str, res: dict):
-        """Общий разбор результата команды: снимок данных, уведомление, сигнал commandDone для формы."""
+    def _finish_command(self, tag: str, command: str, res: dict, ok_text: str = ""):
+        """Общий разбор результата команды: снимок данных, уведомление, сигнал commandDone для формы. ok_text — своё
+        сообщение об успехе (кнопки таймера рабочего дня: «Рабочий день начат» понятнее названия команды)."""
         if "result" not in res:
             self.toast.emit("error", res.get("message_ru", "Ошибка"))
             self._command_done(tag, res)
@@ -1328,7 +1411,7 @@ class Backend(QObject):
         if st == "accepted" and (r.get("response") or {}).get("unchanged"):
             self.toast.emit("info", r.get("message_ru") or "Изменений нет.")
         elif st == "accepted":
-            self.toast.emit("success", "Готово: " + self.contracts.label(command).lower() + ".")
+            self.toast.emit("success", ok_text or "Готово: " + self.contracts.label(command).lower() + ".")
         elif st == "queued":
             self.toast.emit("info", r["message_ru"])
         elif st == "conflict":

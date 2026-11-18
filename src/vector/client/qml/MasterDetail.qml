@@ -24,6 +24,8 @@ Item {
     property string tab: ""
     property string tabsName: "sectionTabs"
     signal tabPicked(string id)
+    // Необязательная полоса над списком и карточкой (D-46: таймер рабочего дня в разделе «Рабочее время»).
+    property alias topContent: topHost.data
 
     ColumnLayout {
         anchors.fill: parent; anchors.margins: 28; anchors.bottomMargin: 20
@@ -31,6 +33,7 @@ Item {
         PageHeader { id: hdr; title: md.title; subtitle: md.subtitle }
         VSegmented { visible: md.tabs.length > 0; objectName: md.tabsName; model: md.tabs; current: md.tab
                      onPicked: id => md.tabPicked(id) }
+        ColumnLayout { id: topHost; Layout.fillWidth: true; spacing: 12; visible: children.length > 0 }
         RowLayout {
             Layout.fillWidth: true; Layout.fillHeight: true
             spacing: 20
