@@ -71,6 +71,8 @@ ADDED_IN: dict[int, list[sa.Table]] = {
          db.wo_operations, db.wo_timer_events, db.wo_substitutions, db.work_order_issues],
     # Экземпляры изделий, паспорт, история эксплуатации (этап 6, D-38). Порядок — по внешним ключам.
     17: [db.product_instances, db.instance_compositions, db.instance_events, db.passports, db.passport_exports],
+    # Качество: рекламации, CAPA, проверки эффективности, ECR, ECO, журнал решений (этап 6, D-39).
+    18: [db.claims, db.claim_actions, db.effectiveness_checks, db.change_requests, db.change_orders, db.quality_decisions],
 }
 
 
@@ -106,7 +108,7 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               9: _create_tables(ADDED_IN[10]), 10: _create_tables(ADDED_IN[11]), 11: _create_tables(ADDED_IN[12]),
                               12: _create_tables(ADDED_IN[13]), 13: _create_tables(ADDED_IN[14]),
                               14: _create_tables(ADDED_IN[15]), 15: _create_tables(ADDED_IN[16]),
-                              16: _create_tables(ADDED_IN[17])}
+                              16: _create_tables(ADDED_IN[17]), 17: _create_tables(ADDED_IN[18])}
 
 
 @dataclass

@@ -33,6 +33,7 @@ from .config_store import ConfigMixin
 from .delegation import DelegationMixin
 from .notify import NotificationMixin
 from .lifecycle import LifecycleMixin
+from .quality import QualityMixin
 from .production import ProductionMixin
 from .purchasing import PurchasingMixin
 from .stock import StockMixin
@@ -87,12 +88,13 @@ class Ctx:
 
 
 class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin, NotificationMixin,
-              ProductionMixin, LifecycleMixin):
+              ProductionMixin, LifecycleMixin, QualityMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
     склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py);
     замещение и основания решений — DelegationMixin (delegation.py, D-34/D-35); уведомления — NotificationMixin
     (notify.py, D-35); технология и производство (ТП, наряды, снимок, исполнение операций) — ProductionMixin
-    (production.py, D-36); экземпляры изделий, паспорт, передача, сервис и замены — LifecycleMixin (lifecycle.py, D-38).
+    (production.py, D-36); экземпляры изделий, паспорт, передача, сервис и замены — LifecycleMixin (lifecycle.py, D-38);
+    рекламации, CAPA, запросы и извещения об изменении — QualityMixin (quality.py, D-39).
 
     Как устроен обработчик команды (все _xxx_yyy(ctx, p, ev) следуют одной схеме — так их легко проверять):
 
@@ -181,6 +183,13 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "instance.service": self._instance_service, "instance.replace": self._instance_replace,
             "passport.create": self._passport_create, "passport.save": self._passport_save,
             "passport.export_draft": self._passport_export_draft,
+            # Качество: рекламации, CAPA, ECR, ECO (quality.py, D-39).
+            "claim.register": self._claim_register, "claim.start_analysis": self._claim_start_analysis,
+            "claim.plan": self._claim_plan, "claim.action_done": self._claim_action_done,
+            "claim.submit_check": self._claim_submit_check, "claim.check": self._claim_check,
+            "ecr.submit": self._ecr_submit, "ecr.assess": self._ecr_assess, "ecr.decide": self._ecr_decide,
+            "eco.create": self._eco_create, "eco.save": self._eco_save, "eco.approve": self._eco_approve,
+            "eco.implement": self._eco_implement, "eco.verify": self._eco_verify,
         }
         diff = set(self.contracts.catalog["commands"]) ^ set(self.handlers)
         if diff:
@@ -1140,11 +1149,13 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         out.update(self._pull_production(conn, uid, now))
         # Экземпляры изделий, паспорта, наряды для регистрации, документы для паспорта (D-38).
         out.update(self._pull_lifecycle(conn, uid, now))
+        # Рекламации, CAPA, запросы и извещения об изменении; справочник версий для извещений (D-39).
+        out.update(self._pull_quality(conn, uid, now))
         me_roles = self._me_roles(conn, uid, now)
         # Справочник людей нужен и для выбора замещающего — поэтому он приходит всем, у кого есть хоть одна роль.
         if (out["tenders"] or out["projects"] or out["calc_revisions"] or out["warehouses"] or out["needs"]
                 or out["purchase_orders"] or me_roles["roles"] or out["delegations"] or out["work_orders"]
-                or out["product_instances"]):
+                or out["product_instances"] or out["claims"] or out["change_requests"]):
             # Минимальный справочник людей (имя для отображения ответственного) — без логинов и контактов.
             out["people"] = [{"id": r["id"], "display_name": r["display_name"]} for r in
                              self._rows(conn, sa.select(users.c.id, users.c.display_name).where(users.c.active == sa.true()))]
@@ -1181,7 +1192,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
                   "item_alias": "stock.read", "unit_conversion": "stock.read", "config": "config.publish",
                   "supplier": "supplier.read", "supplier_contract": "supplier.read", "purchase_order": "po.read",
                   "tech_process": "tp.read", "work_order": "wo.read", "wo_operation": "wo.read",
-                  "product_instance": "instance.read", "passport": "passport.read"}.get(otype)
+                  "product_instance": "instance.read", "passport": "passport.read",
+                  "claim": "quality.read", "change_request": "quality.read", "change_order": "quality.read"}.get(otype)
         if not action or not isinstance(oid, str):
             return {"status": "rejected", "code": "bad_history_request", "message_ru": "Укажите тип и id объекта."}
         pid = oid if otype in ("project", "project_calc") else None
@@ -1191,6 +1203,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         if otype in ("tech_process", "work_order"):
             t = self._get(conn, db.tech_processes if otype == "tech_process" else db.work_orders, oid)
             pid = t["project_id"] if t else None
+        if otype in ("claim", "change_request", "change_order"):
+            pid = self._quality_project(conn, otype, oid)
         if otype in ("product_instance", "passport"):
             t = self._get(conn, db.product_instances if otype == "product_instance" else db.passports, oid)
             pid = t["project_id"] if t else None

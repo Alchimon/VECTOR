@@ -254,4 +254,4 @@ def test_lifecycle_tables_added_in_v17():
     from vector.server import migrate as mg
     assert [t.name for t in mg.ADDED_IN[17]] == ["product_instances", "instance_compositions", "instance_events",
                                                  "passports", "passport_exports"]
-    assert db.SCHEMA_VERSION == 17 and 16 in mg.STEPS
+    assert db.SCHEMA_VERSION >= 17 and 16 in mg.STEPS

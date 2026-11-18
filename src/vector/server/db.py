@@ -36,8 +36,10 @@ from vector.core import money
 #   v15 — замещение роли в проекте и уведомления (D-35);
 #   v16 — технология и производство: ТП, наряды, неизменяемый снимок, исполнение операций, замены, выдача
 #         материалов на наряд (этап 5, D-36);
-#   v17 — экземпляры изделий, их состав и история эксплуатации, паспорт и журнал черновых экспортов (этап 6, D-38).
-SCHEMA_VERSION = 17
+#   v17 — экземпляры изделий, их состав и история эксплуатации, паспорт и журнал черновых экспортов (этап 6, D-38);
+#   v18 — качество: рекламации, действия CAPA, проверки эффективности, запросы (ECR) и извещения (ECO) об изменении,
+#         журнал решений по качеству (этап 6, D-39).
+SCHEMA_VERSION = 18
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1160,6 +1162,118 @@ passport_exports = sa.Table("passport_exports", metadata,
     sa.Column("exported_at", UtcDateTime, nullable=False),
     sa.UniqueConstraint("passport_id", "export_no", name="uq_passport_exports_no"))
 
+# ------------------------------------------------------------ D-39 (схема v18): качество — рекламации, CAPA, ECR, ECO
+# Правила — vector.core.quality (общие с клиентом). Рекламация относится к экземпляру изделия (точная связь с
+# проектом, нарядом, составом и версиями — через экземпляр). Статусы: registered → analysis → action →
+# effectiveness_check → closed (проверка «не помогло» возвращает в action).
+claims = sa.Table("claims", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("claim_no", sa.Integer, nullable=False, unique=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("instance_id", ID, sa.ForeignKey("product_instances.id"), nullable=False, index=True),
+    sa.Column("received_date", sa.Date, nullable=False),
+    sa.Column("source", U(16), nullable=False),
+    sa.Column("reference", U(300)),                       # номер письма / акта заказчика
+    sa.Column("description", T, nullable=False),
+    sa.Column("status", U(24), nullable=False),
+    sa.Column("responsible_id", ID, sa.ForeignKey("users.id")),   # кто ведёт анализ причины
+    sa.Column("cause", T),                                # найденная причина (при составлении плана)
+    sa.Column("submitted_by", ID, sa.ForeignKey("users.id")),     # кто отправил на проверку эффективности
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("status IN ('registered','analysis','action','effectiveness_check','closed')", name="status"),
+    sa.CheckConstraint("source IN ('customer','internal')", name="source"))
+
+# Действия CAPA (корректирующие и предупреждающие) по рекламации: кто, что, к какому сроку; отметка «выполнено» с
+# результатом. Кто составил действие (planned_by) и кто выполнил (done_by) — для независимости проверяющего.
+claim_actions = sa.Table("claim_actions", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("claim_id", ID, sa.ForeignKey("claims.id"), nullable=False, index=True),
+    sa.Column("seq", sa.Integer, nullable=False),
+    sa.Column("kind", U(16), nullable=False),
+    sa.Column("description", U(2000), nullable=False),
+    sa.Column("owner_id", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("due_date", sa.Date, nullable=False),
+    sa.Column("status", U(8), nullable=False),
+    sa.Column("result", U(2000)),
+    sa.Column("done_by", ID, sa.ForeignKey("users.id")), sa.Column("done_at", UtcDateTime),
+    sa.Column("planned_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("planned_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("claim_id", "seq", name="uq_claim_actions_seq"),
+    sa.CheckConstraint("kind IN ('corrective','preventive')", name="kind"),
+    sa.CheckConstraint("status IN ('open','done')", name="status"))
+
+# Проверка эффективности (неизменяемо): отдельная запись независимого проверяющего (03 § 4). Только по ней
+# рекламация закрывается; «не помогло» — тоже запись, рекламация возвращается к действиям.
+effectiveness_checks = sa.Table("effectiveness_checks", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("claim_id", ID, sa.ForeignKey("claims.id"), nullable=False, index=True),
+    sa.Column("seq", sa.Integer, nullable=False),
+    sa.Column("effective", sa.Boolean, nullable=False),
+    sa.Column("evidence", T, nullable=False),
+    sa.Column("authority", U(120), nullable=False),
+    sa.Column("checked_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("checked_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("claim_id", "seq", name="uq_effectiveness_checks_seq"))
+
+# Запрос на изменение (ECR): submitted → assessed → accepted | rejected. Может ссылаться на рекламацию и изделие.
+change_requests = sa.Table("change_requests", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("ecr_no", sa.Integer, nullable=False, unique=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id")),
+    sa.Column("claim_id", ID, sa.ForeignKey("claims.id")),
+    sa.Column("title", U(300), nullable=False),
+    sa.Column("reason", T, nullable=False),
+    sa.Column("proposal", T, nullable=False),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("impact", T),                               # оценка влияния (что затронет, сроки, стоимость словами)
+    sa.Column("assessed_by", ID, sa.ForeignKey("users.id")), sa.Column("assessed_at", UtcDateTime),
+    sa.Column("decision_reason", T),
+    sa.Column("decided_by", ID, sa.ForeignKey("users.id")), sa.Column("decided_at", UtcDateTime),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("status IN ('submitted','assessed','accepted','rejected')", name="status"))
+
+# Извещение об изменении (ECO) по принятому ECR (одно на запрос): draft → approved → implemented → verified.
+# items_json — затронутые ТОЧНЫЕ версии (документ + номер версии, техпроцесс + редакция) на момент составления;
+# results_json — на какие версии заменены при внедрении. После утверждения строки не меняются (проверка сервиса).
+change_orders = sa.Table("change_orders", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("eco_no", sa.Integer, nullable=False, unique=True),
+    sa.Column("ecr_id", ID, sa.ForeignKey("change_requests.id"), nullable=False, unique=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("title", U(300), nullable=False),
+    sa.Column("description", T, nullable=False),
+    sa.Column("items_json", T, nullable=False),
+    sa.Column("results_json", T),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("approved_by", ID, sa.ForeignKey("users.id")), sa.Column("approved_at", UtcDateTime),
+    sa.Column("implemented_by", ID, sa.ForeignKey("users.id")), sa.Column("implemented_at", UtcDateTime),
+    sa.Column("verified_by", ID, sa.ForeignKey("users.id")), sa.Column("verified_at", UtcDateTime),
+    sa.Column("verify_note", T),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("status IN ('draft','approved','implemented','verified')", name="status"))
+
+# Журнал решений по качеству (неизменяемо): каждый шаг рекламации, ECR и ECO — кто, когда, на каком основании и с
+# какими подробностями. По нему карточка показывает историю, а проверка независимости — кто участвовал.
+quality_decisions = sa.Table("quality_decisions", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("object_type", U(16), nullable=False),
+    sa.Column("object_id", ID, nullable=False),
+    sa.Column("seq", sa.Integer, nullable=False),
+    sa.Column("decision", U(24), nullable=False),
+    sa.Column("details_json", T, nullable=False),
+    sa.Column("authority", U(120), nullable=False),
+    sa.Column("decided_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("decided_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("object_type", "object_id", "seq", name="uq_quality_decisions_seq"),
+    sa.CheckConstraint("object_type IN ('claim','ecr','eco')", name="object_type"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -1251,7 +1365,7 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (role_delegation_projects, 50021), (tech_process_approvals, 50022),
                  (work_order_snapshots, 50023), (wo_timer_events, 50024), (wo_substitutions, 50025),
                  (work_order_issues, 50026), (instance_compositions, 50027), (instance_events, 50028),
-                 (passport_exports, 50029)):
+                 (passport_exports, 50029), (effectiveness_checks, 50030), (quality_decisions, 50031)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):
