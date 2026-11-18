@@ -35,6 +35,7 @@ from .notify import NotificationMixin
 from .lifecycle import LifecycleMixin
 from .quality import QualityMixin
 from .worktime import WorktimeMixin
+from .org import OrgMixin
 from .production import ProductionMixin
 from .purchasing import PurchasingMixin
 from .stock import StockMixin
@@ -89,14 +90,15 @@ class Ctx:
 
 
 class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin, NotificationMixin,
-              ProductionMixin, LifecycleMixin, QualityMixin, WorktimeMixin):
+              ProductionMixin, LifecycleMixin, QualityMixin, WorktimeMixin, OrgMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
     склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py);
     замещение и основания решений — DelegationMixin (delegation.py, D-34/D-35); уведомления — NotificationMixin
     (notify.py, D-35); технология и производство (ТП, наряды, снимок, исполнение операций) — ProductionMixin
     (production.py, D-36); экземпляры изделий, паспорт, передача, сервис и замены — LifecycleMixin (lifecycle.py, D-38);
     рекламации, CAPA, запросы и извещения об изменении — QualityMixin (quality.py, D-39); рабочее время и дневные
-    отчёты — WorktimeMixin (worktime.py, D-42).
+    отчёты — WorktimeMixin (worktime.py, D-42); оргструктура (филиалы, структуры, отделы, руководители и сотрудники)
+    и маршрут проверки отчётов — OrgMixin (org.py, D-44).
 
     Как устроен обработчик команды (все _xxx_yyy(ctx, p, ev) следуют одной схеме — так их легко проверять):
 
@@ -197,6 +199,10 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             # Рабочее время и дневной отчёт (worktime.py, D-42).
             "report.create": self._report_create, "report.save": self._report_save, "report.submit": self._report_submit,
             "report.reopen": self._report_reopen, "report.review": self._report_review,
+            # Оргструктура: подразделения и сотрудники в них (org.py, D-44).
+            "org.unit_create": self._org_unit_create, "org.unit_update": self._org_unit_update,
+            "org.unit_archive": self._org_unit_archive, "org.unit_restore": self._org_unit_restore,
+            "org.member_set": self._org_member_set,
         }
         diff = set(self.contracts.catalog["commands"]) ^ set(self.handlers)
         if diff:
@@ -1162,11 +1168,14 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         out.update(self._pull_quality(conn, uid, now))
         # Дневные отчёты: свои; руководителю отдела — отправленные чужие; проекты для строк отчёта (D-42).
         out.update(self._pull_worktime(conn, uid, now))
+        # Оргструктура — всем вошедшим (справочник компании), своё подразделение и кто проверяет мои отчёты (D-44).
+        out.update(self._pull_org(conn, uid, now))
         me_roles = self._me_roles(conn, uid, now)
         # Справочник людей нужен и для выбора замещающего — поэтому он приходит всем, у кого есть хоть одна роль.
         if (out["tenders"] or out["projects"] or out["calc_revisions"] or out["warehouses"] or out["needs"]
                 or out["purchase_orders"] or me_roles["roles"] or out["delegations"] or out["work_orders"]
-                or out["product_instances"] or out["claims"] or out["change_requests"] or out["daily_reports"]):
+                or out["product_instances"] or out["claims"] or out["change_requests"] or out["daily_reports"]
+                or out["org_units"]):
             # Минимальный справочник людей (имя для отображения ответственного) — без логинов и контактов.
             out["people"] = [{"id": r["id"], "display_name": r["display_name"]} for r in
                              self._rows(conn, sa.select(users.c.id, users.c.display_name).where(users.c.active == sa.true()))]

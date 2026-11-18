@@ -208,7 +208,7 @@ def _plain(v):
 
 
 def main():
-    """Снять скриншоты 01–50 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
+    """Снять скриншоты 01–52 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
     args = ap.parse_args()
@@ -543,8 +543,23 @@ def main():
         h.wait_idle()
         h.backend.logout()
         h.wait_idle()
-        # Настройки компании (D-26, A-26): администратор, вкладка «Настройки компании».
+        # Оргструктура (D-44): инженер — дерево и «кто проверяет мои отчёты»; администратор — форма подразделения.
+        h.login("d.kuznetsov")
+        h.go("org", h.ids["org_units"][2])
+        h.shot(out / f"{theme}-51-org-structure.png")
+        h.backend.logout()
+        h.wait_idle()
         h.login("admin")
+        h.go("org", h.ids["org_units"][1])
+        uf = next(o for o in h.win.findChildren(QObject) if o.objectName() == "orgUnitForm")
+        ov = h.backend.property("orgOverview")
+        ov = ov.toVariant() if hasattr(ov, "toVariant") else ov
+        QMetaObject.invokeMethod(uf, "openFor", Q_ARG("QVariant", ov["cards"][h.ids["org_units"][1]]), Q_ARG("QVariant", ""))
+        h.wait_idle()
+        h.shot(out / f"{theme}-52-org-unit-form.png")
+        uf.setProperty("visible", False)
+        h.wait_idle()
+        # Настройки компании (D-26, A-26): администратор, вкладка «Настройки компании».
         h.go("admin")
         ap = next(i for i in h.items("sv") if i.isVisible())
         ap.setProperty("tab", "settings")

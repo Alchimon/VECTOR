@@ -46,7 +46,10 @@ from vector.core import money
 #   v21 — ответы на A-48 (D-43): отчёт собирает программа (daily_report_auto, источник времени строк
 #         daily_report_line_sources), статус «на самопроверке», ночная смена (ослаблены ограничения daily_reports),
 #         индекс журнала аудита по сотруднику и времени.
-SCHEMA_VERSION = 21
+#   v22 — оргструктура (R-21, D-44 — ответ на A-48 п. 1): подразделения (филиалы, структуры, отделы) и связи «входит
+#         в» (org_units), сотрудник в подразделении с должностью (org_members), неизменяемый журнал изменений
+#         оргструктуры (org_events). Отчёт сотрудника проверяет руководитель его подразделения.
+SCHEMA_VERSION = 22
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1397,6 +1400,52 @@ daily_report_line_sources = sa.Table("daily_report_line_sources", metadata,
     sa.Column("source", U(16), nullable=False),
     sa.CheckConstraint("source IN ('measured','estimated')", name="source"))
 
+# ------------------------------------------------------------ D-44 (схема v22): оргструктура
+# Подразделение: филиал (branch), структура (structure — дирекция, управление, служба) или отдел (department).
+# parent_id — «входит в» (дерево; существование родителя, цикл и глубина проверяются в vector.core.org).
+# head_user_id — руководитель (прав не даёт: права — роли; руководителю нужна роль «Руководитель отдела», чтобы
+# проверять отчёты). Код не обязателен;
+# единственность кода проверяет сервер (уникальность по столбцу с NULL в MS SQL работает иначе). Удаления нет —
+# только архив (active = false), чтобы история и старые отчёты не теряли ссылку.
+ORG_KIND_CHECK = "kind IN ('branch','structure','department')"
+org_units = sa.Table("org_units", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("kind", U(16), nullable=False),
+    sa.Column("name", U(200), nullable=False),
+    sa.Column("code", U(32)),
+    # Без внешнего ключа на себя: резервная копия пишет строки по id (UUID — случайный порядок), и при
+    # восстановлении в PostgreSQL / MS SQL «дочернее» могло бы прийти раньше родителя. Ссылку проверяет сервер.
+    sa.Column("parent_id", ID, index=True),
+    sa.Column("head_user_id", ID, sa.ForeignKey("users.id"), index=True),
+    sa.Column("active", sa.Boolean, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint(ORG_KIND_CHECK, name="kind"),
+    sa.CheckConstraint("parent_id IS NULL OR parent_id <> id", name="not_own_parent"))
+
+# Сотрудник в подразделении (основное место работы): одна строка на сотрудника; перевод заменяет строку, история —
+# в org_events. Должность — подпись (прав не даёт: роль доступа ≠ должность ≠ подразделение).
+org_members = sa.Table("org_members", metadata,
+    sa.Column("user_id", ID, sa.ForeignKey("users.id"), primary_key=True),
+    sa.Column("unit_id", ID, sa.ForeignKey("org_units.id"), nullable=False, index=True),
+    sa.Column("position", U(120)),
+    sa.Column("since", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False))
+
+# Журнал изменений оргструктуры (неизменяемо): создано / изменено / в архив / из архива подразделение, сотрудник
+# переведён или выведен из оргструктуры — кто, когда, на каком основании, что было и что стало.
+org_events = sa.Table("org_events", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("object_type", U(16), nullable=False),
+    sa.Column("object_id", ID, nullable=False, index=True),
+    sa.Column("event", U(24), nullable=False),
+    sa.Column("details_json", T, nullable=False),
+    sa.Column("authority", U(120), nullable=False),
+    sa.Column("actor_id", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("object_type IN ('unit','member')", name="object_type"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -1491,7 +1540,8 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (work_order_snapshots, 50023), (wo_timer_events, 50024), (wo_substitutions, 50025),
                  (work_order_issues, 50026), (instance_compositions, 50027), (instance_events, 50028),
                  (passport_exports, 50029), (effectiveness_checks, 50030), (quality_decisions, 50031),
-                 (claim_responses, 50032), (daily_report_events, 50033), (daily_report_auto, 50034)):
+                 (claim_responses, 50032), (daily_report_events, 50033), (daily_report_auto, 50034),
+                 (org_events, 50035)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

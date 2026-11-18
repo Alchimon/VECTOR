@@ -1,4 +1,4 @@
-"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-18).
+"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-19).
 
 Запускается ПОСЛЕ установки, при запущенном сервере стенда, Python-ом из окружения стенда:
 
@@ -293,6 +293,8 @@ def main(argv: list[str] | None = None) -> int:
 
     print("\n9. Рабочее время: дневные отчёты, собранный программой отчёт и проверка руководителем отдела (D-42, D-43, П-17)")
     check_worktime(rep, sessions)
+    print("\n10. Оргструктура: подразделения, руководители и маршрут дневных отчётов (D-44, П-19)")
+    check_org(rep, sessions)
     return finish(rep, tmp)
 
 
@@ -324,6 +326,33 @@ def check_worktime(rep: Report, sessions: dict) -> None:
         rep.warn("нет отчёта, собранного программой (D-43) — " + FRESH_HINT)
 
 
+def check_org(rep: Report, sessions: dict) -> None:
+    """Раздел 10 (D-44): оргструктура пришла в снимок; d.kuznetsov включён в подразделение и его отчёты проверяет
+    e.orlova (руководитель вышестоящей дирекции — в его отделе руководителя нет). Только чтение."""
+    eng, head = sessions.get("d.kuznetsov"), sessions.get("e.orlova")
+    if eng is None or head is None:
+        rep.warn("нет входа d.kuznetsov или e.orlova — раздел «Оргструктура» не проверить")
+        return
+    units = eng.get_meta("org_units")
+    if units is None:
+        rep.fail("в снимке нет оргструктуры — сервер старой версии? Обновите стенд (update.cmd) и повторите")
+        return
+    if not units:
+        rep.warn("оргструктура не заведена (её заводит admin: «Оргструктура» → «Новое подразделение») — " + FRESH_HINT)
+        return
+    kinds = {k: sum(1 for u in units if u.get("kind") == k and u.get("active")) for k in ("branch", "structure", "department")}
+    rep.ok(f"подразделений: {len(units)} (филиалов {kinds['branch']}, структур {kinds['structure']}, "
+           f"отделов {kinds['department']})")
+    me = eng.get_meta("org_me") or {}
+    if not me.get("unit_id"):
+        rep.warn("d.kuznetsov не включён в подразделение — отчёты видят все руководители отделов (правило D-42)")
+    elif me.get("reviewer_id") == head.user_id:
+        rep.ok("d.kuznetsov в оргструктуре; его дневные отчёты проверяет e.orlova (руководитель вышестоящей дирекции)")
+    else:
+        rep.warn("отчёты d.kuznetsov проверяет не e.orlova — оргструктуру меняли; маршрут: «Оргструктура» → строка "
+                 "под заголовком")
+
+
 def finish(rep: Report, tmp=None) -> int:
     """Удалить временный кэш и напечатать итог; код выхода — 1 при ошибках."""
     if tmp is not None:
@@ -336,7 +365,7 @@ def finish(rep: Report, tmp=None) -> int:
         print(f"ИТОГ: стенд работает; предупреждений {len(rep.warnings)} — часть сценариев на этих данных не проверить "
               "(см. выше).")
     else:
-        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-18; сценарии — test-pc.md § 6).")
+        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-19; сценарии — test-pc.md § 6).")
     return 0
 
 

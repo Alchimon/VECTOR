@@ -108,3 +108,13 @@ def test_test_stand_prefills_server_and_ca(monkeypatch):
         assert "https://vector-test.local:8443" in texts and r"C:\VECTOR-test\certs\ca.pem" in texts
     finally:
         h.close()
+
+
+def test_sidebar_tagline_is_full_and_fits(ui):
+    """Подпись под названием — полностью, как в логотипе: «Единая платформа для инженеров и бизнеса» (замечание
+    владельца: раньше было обрезано до «единая платформа»); помещается в боковую панель, не выходит за её край."""
+    ui.login("a.smirnova")
+    t = ui.find("shellTagline")
+    assert t.property("text").replace("\n", " ") == "Единая платформа для инженеров и бизнеса"
+    right = t.mapToScene(t.boundingRect().topRight()).x()
+    assert t.property("implicitWidth") <= t.width() + 0.5 and right < 248

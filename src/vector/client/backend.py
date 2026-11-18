@@ -24,7 +24,7 @@ from vector.core import stock
 from vector.core.contracts import Contracts
 
 from . import (calc_view, delegation_view, hints, lifecycle_view, notification_view, production_view, purchasing_view,
-               quality_view, stock_view, worktime_view)
+               org_view, quality_view, stock_view, worktime_view)
 from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
 from .vault import KeyringStore, MemoryStore, VaultError
@@ -189,6 +189,7 @@ class Backend(QObject):
     """
     changed = Signal()
     dataChanged = Signal()
+    orgChanged = Signal()                    # раздел «Оргструктура»: данные или строка поиска (D-44)
     toast = Signal(str, str)                 # kind (success|info|warning|error), text
     commandDone = Signal(str, "QVariant")    # request tag, result dict
     queryDone = Signal(str, "QVariant")
@@ -224,6 +225,9 @@ class Backend(QObject):
                                        "daily_report": []}
         # Фильтр вкладки «Заказы поставщикам» (active / approval / draft / placed / closed / all) — состояние экрана.
         self._po_filter = "active"
+        # Строка поиска раздела «Оргструктура» (D-44) — состояние экрана; новые данные тоже перестраивают раздел.
+        self._org_query = ""
+        self.dataChanged.connect(self.orgChanged)
         # Наибольший id уведомления, о котором уже сказали (None — ещё не было снимка после входа, D-35).
         self._notify_seen: Optional[int] = None
         # Склад: снимок остатков/резервов/журнала/потребностей на момент последнего обновления (meta кэша).
@@ -892,6 +896,23 @@ class Backend(QObject):
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, "report.submit", res))
 
+    # ------------------------------------------------------------ оргструктура (D-44)
+    @Property("QVariantMap", notify=orgChanged)
+    def orgOverview(self):
+        """Раздел «Оргструктура»: дерево подразделений (филиалы, структуры, отделы), карточки, моё подразделение и кто
+        проверяет мои отчёты, варианты для форм администратора, последние изменения."""
+        st = self._stock
+        return qml_safe(org_view.org_view(
+            st.get("org_units") or [], st.get("org_members") or [], st.get("org_events") or [],
+            st.get("org_me") or {}, self._people, self._online and self._session_mode == "online",
+            datetime.now(timezone.utc), self._org_query))
+
+    @Slot(str)
+    def setOrgQuery(self, q: str):
+        """Поиск в оргструктуре: по названию, коду, руководителю и сотрудникам."""
+        self._org_query = q or ""
+        self.orgChanged.emit()
+
     @Property("QVariantMap", notify=dataChanged)
     def suppliersOverview(self):
         """Вкладка «Поставщики»: справочник с реквизитами и договорами (ведёт закупка, A-34)."""
@@ -1288,7 +1309,7 @@ class Backend(QObject):
     # (D-35) — список уведомлений и бейдж.
     # Наряды (D-36): после выпуска, замены, закрытия — свежие материалы и статусы с сервера.
     _STOCK_PREFIXES = frozenset({"stock", "need", "item_alias", "unit_conversion", "config", "po", "delegation",
-                                 "notification", "wo", "tp"})
+                                 "notification", "wo", "tp", "org"})
 
     def _finish_command(self, tag: str, command: str, res: dict):
         """Общий разбор результата команды: снимок данных, уведомление, сигнал commandDone для формы."""

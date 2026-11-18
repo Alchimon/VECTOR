@@ -15,6 +15,8 @@
 
 Рабочее время (D-42): дневные отчёты d.kuznetsov и m.lebedev — на проверке, черновик, принят, возвращён (см.
 _seed_worktime).
+
+Оргструктура (D-44): головной офис и филиал, дирекция, отделы, служба; руководители и сотрудники (см. _seed_org).
 """
 from __future__ import annotations
 
@@ -406,6 +408,7 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     prod = _seed_production(cmd, login, people, svc, kits, atx_v1)
     prod.update(_seed_lifecycle(cmd, login, people, svc, prod["tech_processes"][0], items, whs, docs))
     prod.update(_seed_quality(cmd, login, people, svc, prod["product_instances"][0], kits, prod["lifecycle_work_order"]))
+    prod.update(_seed_org(cmd, adm, people))
     prod.update(_seed_worktime(cmd, login, people, svc, pid))
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
             "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
@@ -555,6 +558,42 @@ def _seed_quality(cmd, login, people, svc, instance_id, kits, batch_wo) -> dict:
         for lg in ("a.smirnova", "p.volkov", "m.lebedev", "l.egorova"):
             svc._quality_reminders(c, people[lg], svc.now())
     return {"claims": [cid, cid2], "change_requests": [rid]}
+
+
+def _seed_org(cmd, adm, people) -> dict:
+    """Оргструктура (D-44, ответ на A-48 п. 1) — администратор заводит дерево обычными командами. Названия ВЫМЫШЛЕНЫ.
+
+    Головной офис (филиал, Волгоград)
+      ├─ Инженерная дирекция (структура) — руководитель e.orlova: она сама, p.volkov (ГИП), a.smirnova (РП)
+      │    └─ Отдел АСУ ТП (отдел, руководитель не назначен) — d.kuznetsov, m.lebedev: их отчёты уходят e.orlova
+      ├─ Производственный участок (отдел) — технологи, производство, ОТК (отдел технического контроля)
+      └─ Коммерческая служба (структура) — руководитель v.zaitseva (без роли «Руководитель отдела» — в маршруте
+         отчётов пропускается): закупка, склад, бухгалтерия
+    Филиал Астрахань (филиал) └─ Сервисный отдел — пока пустой (второй корень дерева).
+    n.sokolov в оргструктуру не включён (виден администратору как «вне оргструктуры»).
+    """
+    def unit(kind, name, parent=None, head=None, code=None):
+        """Завести подразделение (head — логин руководителя) и вернуть его id."""
+        uid = str(uuid.uuid4())
+        cmd(adm, "org.unit_create", {"id": uid, "kind": kind, "name": name, "parent_id": parent,
+                                     "head_user_id": people.get(head) if head else None, "code": code})
+        return uid
+    ho = unit("branch", "Головной офис", code="01")
+    eng_dir = unit("structure", "Инженерная дирекция", ho, "e.orlova", "01.1")
+    asu = unit("department", "Отдел АСУ ТП", eng_dir, code="01.1.1")
+    shop = unit("department", "Производственный участок", ho, code="01.2")
+    com = unit("structure", "Коммерческая служба", ho, "v.zaitseva", "01.3")
+    astr = unit("branch", "Филиал Астрахань", code="02")
+    service = unit("department", "Сервисный отдел", astr, code="02.1")
+    for lg, u, pos in (("e.orlova", eng_dir, "Директор по инжинирингу"), ("p.volkov", eng_dir, "Главный инженер проекта"),
+                       ("a.smirnova", eng_dir, "Руководитель проектов"), ("d.kuznetsov", asu, "Инженер-проектировщик"),
+                       ("m.lebedev", asu, "Ведущий инженер"), ("t.fedorova", shop, "Технолог"), ("a.grishin", shop, "Технолог"),
+                       ("k.pavlov", shop, "Сборщик-монтажник"), ("r.sergeev", shop, "Наладчик"),
+                       ("l.egorova", shop, "Контролёр ОТК"), ("v.zaitseva", com, "Коммерческий директор"),
+                       ("s.morozov", com, "Специалист по закупкам"), ("i.belova", com, "Кладовщик"),
+                       ("o.nikitina", com, "Бухгалтер")):
+        cmd(adm, "org.member_set", {"user_id": people[lg], "unit_id": u, "position": pos})
+    return {"org_units": [ho, eng_dir, asu, shop, com, astr, service]}
 
 
 def _seed_worktime(cmd, login, people, svc, pid) -> dict:

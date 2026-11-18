@@ -79,10 +79,13 @@ Item {
                     Image { objectName: "shellMark"; source: Theme.mark; Layout.preferredWidth: 46; Layout.preferredHeight: 46
                             sourceSize: Qt.size(128, 128); fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true
                             Accessible.name: "ВЕКТОР"
-                            VTipArea { text: "ВЕКТОР — единая платформа компании: тендеры, проекты, расчёты, склад, закупка, производство" } }
-                    ColumnLayout { spacing: -2
+                            VTipArea { text: "ВЕКТОР — единая платформа для инженеров и бизнеса: тендеры, проекты, расчёты, склад, закупка, производство, качество, рабочее время" } }
+                    // Подпись — полностью, как в логотипе владельца (D-28): «Единая платформа / для инженеров и бизнеса»,
+                    // в две строки, чтобы поместиться в ширину боковой панели и не обрезаться.
+                    ColumnLayout { spacing: 0
                         Text { text: "ВЕКТОР"; color: Theme.text; font.family: Theme.family; font.pixelSize: 17; font.weight: Font.DemiBold; font.letterSpacing: 2 }
-                        Text { text: "единая платформа"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs } }
+                        Text { objectName: "shellTagline"; text: "Единая платформа\nдля инженеров и бизнеса"; color: Theme.textFaint; font.family: Theme.family
+                               font.pixelSize: Theme.fsXs; lineHeight: 0.95 } }
                 }
                 Text { text: "РАБОТА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.bottomMargin: 4 }
                 NavItem { text: "Заказчики"; iconName: "building-2"; active: shellRoot.page === "customers"; onClicked: shellRoot.go("customers"); visible: backend.hint("customer.read", backend.permRevision) }
@@ -119,6 +122,8 @@ Item {
                 NavItem { objectName: "navDelegations"; text: "Замещения"; iconName: "user-check"; active: shellRoot.page === "delegations"; onClicked: shellRoot.go("delegations")
                           badge: backend.delegationsOverview.manage ? backend.delegationsOverview.warnings : backend.delegationsOverview.active_received
                           badgeTone: backend.delegationsOverview.manage ? "warning" : "primary" }
+                // Оргструктура (D-44) — всем: справочник компании и «кто проверяет мои отчёты»; правит администратор.
+                NavItem { objectName: "navOrg"; text: "Оргструктура"; iconName: "network"; active: shellRoot.page === "org"; onClicked: shellRoot.go("org") }
                 NavItem { objectName: "navHelp"; text: "Сокращения и подсказки"; iconName: "circle-help"; active: shellRoot.page === "help"; onClicked: shellRoot.go("help") }
                 NavItem { text: "Администрирование"; iconName: "shield-check"; active: shellRoot.page === "admin"; onClicked: shellRoot.go("admin"); visible: backend.hint("admin.list_users", backend.permRevision) }
                 Item { Layout.fillHeight: true }
@@ -157,7 +162,7 @@ Item {
             sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC, finance: financeC,
                                stock: stockC, procurement: procurementC, delegations: delegationsC,
                                notifications: notificationsC, production: productionC, products: productsC, quality: qualityC, help: helpC,
-                               worktime: worktimeC })[shellRoot.page]
+                               worktime: worktimeC, org: orgC })[shellRoot.page]
         }
         }
     }
@@ -176,6 +181,7 @@ Item {
     Component { id: qualityC; QualityPage { shell: shellRoot } }
     Component { id: helpC; HelpPage { shell: shellRoot } }
     Component { id: worktimeC; WorktimePage { shell: shellRoot } }
+    Component { id: orgC; OrgPage { shell: shellRoot } }
 
     FormDialog {
         id: reconnect

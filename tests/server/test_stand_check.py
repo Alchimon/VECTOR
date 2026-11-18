@@ -87,6 +87,8 @@ def test_fresh_stand_is_ready_and_check_is_read_only(stand, svc, capsys):
     assert "рекламаций: 2 (закрыто 0), запросов на изменение: 1, извещений: 0" in out   # раздел 7 (D-39)
     assert "l.egorova: вход, роль «otk»" in out and "на партию (без номера изделия): 1" in out   # раздел 8 (D-40)
     assert "l.egorova (ОТК — по проектам, D-41) работает в проектах: П-2026-014" in out           # только свой проект
+    assert "подразделений: 7 (филиалов 2, структур 2, отделов 3)" in out                         # раздел 10 (D-44)
+    assert "его дневные отчёты проверяет e.orlova" in out
     assert _counts(svc) == before          # ни «прочитано», ни заказы, ни замещения не изменились
 
 

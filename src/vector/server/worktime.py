@@ -27,8 +27,10 @@
 * исправление после отправки — только с основанием; каждый шаг — в неизменяемом журнале daily_report_events (кто,
   когда, на каком основании, подробности).
 
-Отделов в программе пока нет (оргструктура — R-21): руководитель отдела видит и проверяет отчёты всех сотрудников
-(временное правило A-48). Черновики чужих отчётов не видит никто.
+Оргструктура (D-44, R-21): отчёт сотрудника, включённого в подразделение, уходит руководителю его подразделения (или
+ближайшего вышестоящего) и его замещающим; видят и проверяют его руководители по цепочке вверх (при роли
+«Руководитель отдела»). Сотрудники вне оргструктуры — по правилу D-42: все руководители отделов. Черновики чужих
+отчётов не видит никто.
 """
 from __future__ import annotations
 
@@ -279,7 +281,8 @@ class WorktimeMixin:
 
     def _report_submit(self, ctx, p, ev):
         """report.submit {id, self_check: {shift, lines, hours}} — самопроверка (все отметки, A-48 п. 4) и свой полный
-        отчёт на проверку («На проверке»); уведомление руководителям отдела. Смена не должна пересекаться со сменой
+        отчёт на проверку («На проверке»); уведомление руководителю подразделения автора (D-44) или, если автор вне
+        оргструктуры, всем руководителям отделов. Смена не должна пересекаться со сменой
         соседнего дня (ночные смены)."""
         only_keys(p, {"id", "self_check"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "report.submit", ctx.now)
@@ -304,7 +307,10 @@ class WorktimeMixin:
                                                   "resubmitted": o["status"] == "returned", "self_check": checked}, auth)
         ctx.log("daily_report", o["id"], auth, o["version"], n["version"], {"event": "ReportSubmitted", "total_minutes": t["total"]})
         who = self._who_day(self._user_name(ctx.conn, ctx.user_id), o)
-        self._notify(ctx, self._users_with_role(ctx.conn, "dept_head", ctx.now), "report_submitted",
+        # Кому на проверку (D-44): руководителю подразделения автора (или вышестоящего) и его замещающим; автор вне
+        # оргструктуры — всем руководителям отделов, как раньше (D-42).
+        to = self._report_reviewers(ctx.conn, ctx.user_id, ctx.now)
+        self._notify(ctx, to if to is not None else self._users_with_role(ctx.conn, "dept_head", ctx.now), "report_submitted",
                      f"Дневной отчёт на проверке: {who}", body=f"Всего: {wt.hours_label(t['total'])}",
                      object_type="daily_report", object_id=o["id"])
         return {"daily_report": self.v_daily_report(ctx.conn, n)}
@@ -330,7 +336,9 @@ class WorktimeMixin:
     # ------------------------------------------------------------ проверка руководителем
     def _report_review(self, ctx, p, ev):
         """report.review {id, decision (accept|return), comment?} — руководитель отдела, не автор: «Принят» или
-        «Возвращён» (причина обязательна). Уведомление автору."""
+        «Возвращён» (причина обязательна). Уведомление автору. Автор в оргструктуре — проверяет руководитель
+        подразделения по его цепочке или замещающий такого руководителя (D-44); вне оргструктуры — любой
+        руководитель отдела (D-42)."""
         only_keys(p, {"id", "decision", "comment"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "report.review", ctx.now)
         o = self._require(ctx.conn, daily_reports, req_uuid(p, "id"), "Дневной отчёт")
@@ -338,6 +346,7 @@ class WorktimeMixin:
         self._report_state(ctx.conn, o, "submitted")
         if o["user_id"] == ctx.user_id:
             raise Denied("four_eyes", "Свой дневной отчёт проверяет другой руководитель («четыре глаза»).")
+        auth = self._review_authority(ctx.conn, ctx.user_id, o["user_id"], ctx.now) or auth
         dec = p.get("decision")
         if dec not in ("accept", "return"):
             raise Rejected("invalid_decision", "Решение — «Принять» или «Вернуть».", {"field": "decision"})
@@ -359,7 +368,7 @@ class WorktimeMixin:
     # ------------------------------------------------------------ pull
     def _pull_worktime(self, conn, uid: str, now) -> dict:
         """Свои отчёты за PULL_DAYS дней; руководителю отдела — ещё и отправленные (не черновики и не на самопроверке)
-        чужие; проекты, где
+        чужие — сотрудников его подразделений и вне оргструктуры (D-44); проекты, где
         сотрудник участник (для строк отчёта); может ли он проверять отчёты."""
         since = (now - timedelta(days=PULL_DAYS)).date()
         dr = daily_reports
@@ -368,7 +377,11 @@ class WorktimeMixin:
         if reviewer:
             # Черновики и отчёты на самопроверке — личное дело автора, пока он их не отправил.
             cond = sa.or_(cond, dr.c.status.in_(("submitted", "accepted", "returned")))
-        rows = conn.execute(sa.select(dr).where(cond, dr.c.work_date >= since).order_by(dr.c.work_date.desc(), dr.c.user_id))
+        rows = list(conn.execute(sa.select(dr).where(cond, dr.c.work_date >= since).order_by(dr.c.work_date.desc(), dr.c.user_id)))
+        if reviewer:
+            # Оргструктура (D-44): чужие отчёты — только сотрудников своих подразделений (и вне оргструктуры).
+            visible = self._review_scope(conn, uid, now)
+            rows = [r for r in rows if r.user_id == uid or visible(r.user_id)]
         mine = [{"id": r.id, "code": r.code, "title": r.title}
                 for r in conn.execute(sa.select(projects.c.id, projects.c.code, projects.c.title).order_by(projects.c.code))
                 if project_member(conn, uid, r.id, now)]

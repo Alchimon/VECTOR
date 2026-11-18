@@ -692,7 +692,8 @@ def test_v20_to_v21_self_check_night_shift_and_auto_tables(backend, tmp_path, cl
     bad(db.daily_reports.insert().values(id=new_id(), work_date=date(2026, 11, 2), **{**r, "status": "self_check"}))
     before = counts(eng, mg.tables_of_version(20))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
-    assert (rep.from_version, rep.to_version, rep.created_tables) == (20, 21, ["daily_report_auto", "daily_report_line_sources"])
+    assert (rep.from_version, rep.to_version) == (20, db.SCHEMA_VERSION)
+    assert rep.created_tables[:2] == ["daily_report_auto", "daily_report_line_sources"]
     assert rep.backup_path.name.startswith("vector-premigrate-v20-")
     after = counts(eng, mg.tables_of_version(20))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
@@ -723,3 +724,38 @@ def test_v20_to_v21_refuses_unexpected_check_definition(tmp_path, clock, keys, m
         mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     with eng.connect() as c:
         assert mg.current_version(eng) == 20 and "daily_report_auto" not in sa.inspect(c).get_table_names()
+
+
+def test_v21_to_v22_adds_org_structure(backend, tmp_path, clock, keys):
+    """v21 → v22 (D-44, ответ на A-48 п. 1): таблицы оргструктуры; данные v21 не меняются; журнал оргструктуры
+    неизменяем; подразделение не входит само в себя, вид — из трёх."""
+    eng = make_v3(backend, tmp_path, clock, version=21)
+    now, uid = clock.now(), new_id()
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x", must_change_password=False,
+                                           password_changed_at=now, failed_attempts=0, active=True, created_at=now))
+    before = counts(eng, mg.tables_of_version(21))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version, rep.created_tables) == (21, 22, ["org_units", "org_members", "org_events"])
+    after = counts(eng, mg.tables_of_version(21))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    unit = dict(kind="department", name="Отдел", active=True, version=1, created_by=uid, created_at=now, updated_by=uid,
+                updated_at=now)
+    uid1 = new_id()
+    with eng.begin() as c:
+        c.execute(db.org_units.insert().values(id=uid1, **unit))
+        c.execute(db.org_members.insert().values(user_id=uid, unit_id=uid1, position="Инженер", since=now, updated_by=uid))
+        c.execute(db.org_events.insert().values(object_type="unit", object_id=uid1, event="created", details_json="{}",
+                                                authority="global_role:admin#grant:1", actor_id=uid, at=now))
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    bad(db.org_units.insert().values(id=new_id(), **{**unit, "kind": "division"}))
+    x = new_id()
+    bad(db.org_units.insert().values(id=x, parent_id=x, **unit))
+    bad(db.org_events.update().values(event="x"))                                       # журнал неизменяем
+    bad(db.org_members.insert().values(user_id=uid, unit_id=uid1, since=now, updated_by=uid))   # один на сотрудника
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []

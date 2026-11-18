@@ -87,6 +87,8 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     20: [db.daily_reports, db.daily_report_lines, db.daily_report_events],
     # Отчёт, собранный программой, и источник времени строк (D-43). Плюс ограничения и индекс — см. STEPS[20].
     21: [db.daily_report_auto, db.daily_report_line_sources],
+    # Оргструктура: подразделения, сотрудники в них, журнал изменений (R-21, D-44). Порядок — по внешним ключам.
+    22: [db.org_units, db.org_members, db.org_events],
 }
 
 
@@ -262,7 +264,8 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               12: _create_tables(ADDED_IN[13]), 13: _create_tables(ADDED_IN[14]),
                               14: _create_tables(ADDED_IN[15]), 15: _create_tables(ADDED_IN[16]),
                               16: _create_tables(ADDED_IN[17]), 17: _create_tables(ADDED_IN[18]),
-                              18: _v18_to_v19, 19: _create_tables(ADDED_IN[20]), 20: _v20_to_v21}
+                              18: _v18_to_v19, 19: _create_tables(ADDED_IN[20]), 20: _v20_to_v21,
+                              21: _create_tables(ADDED_IN[22])}
 
 
 @dataclass
