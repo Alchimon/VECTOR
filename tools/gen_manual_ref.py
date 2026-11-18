@@ -14,6 +14,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+# Словарь сокращений клиента (D-37) — без Qt, импортируется напрямую: справочник и программа расшифровывают одинаково.
+from vector.client import hints  # noqa: E402
 CONTRACTS = ROOT / "contracts"
 OUT = ROOT / "docs" / "manual" / "reference.md"
 
@@ -70,7 +73,7 @@ def render() -> str:
     """Собрать текст справочника из трёх контрактов."""
     cat, perm, wf = _load("command-catalog.slice1.json"), _load("permissions.slice1.json"), _load("workflows.slice1.json")
     rules = perm["rules"]
-    out = ["# Справочник: роли, права, команды, статусы",
+    out = ["# Справочник: роли, права, команды, статусы, сокращения",
            "",
            "> **Файл создан автоматически** командой `python tools/gen_manual_ref.py` из контрактов",
            f"> `{cat['contract']}`, `{perm['contract']}`, `{wf['contract']}`. Не правьте его вручную —",
@@ -87,10 +90,11 @@ def render() -> str:
            "",
            "| Код | Роль | Тип |",
            "|---|---|---|"]
+    # Сокращения в названиях ролей расшифрованы (D-37), как в списках выбора программы.
     for r in perm["roles"]:
-        out.append(f"| `{r}` | {ROLE_LABELS.get(r, r)} | глобальная |")
+        out.append(f"| `{r}` | {hints.with_expansion(ROLE_LABELS.get(r, r))} | глобальная |")
     for r in perm["project_roles"]:
-        out.append(f"| `{r}` | {PROJECT_ROLE_LABELS.get(r, r)} | в проекте |")
+        out.append(f"| `{r}` | {hints.with_expansion(PROJECT_ROLE_LABELS.get(r, r))} | в проекте |")
     out += ["", "Общие правила:", ""]
     out += [f"* {n}" for n in perm.get("notes", [])]
     out += ["", "## 2. Кто что может (матрица прав)", "",
@@ -158,6 +162,13 @@ def render() -> str:
             out.append("")
         if w.get("assumption"):
             out += [f"Основание: {w['assumption']}.", ""]
+    out += ["## 5. Сокращения", "",
+            "Все сокращения, которые встречаются в программе (D-37). Тот же список — в программе: раздел",
+            "«Сокращения и подсказки» (клавиша `F1`) и во всплывающих подсказках при наведении мыши. Источник —",
+            "`src/vector/client/hints.py`; тест не даст показать в интерфейсе сокращение без расшифровки.", "",
+            "| Сокращение | Полное название | Пояснение |", "|---|---|---|"]
+    for row in hints.glossary_rows():
+        out.append(f"| {row['abbr']} | {row['full']} | {row['note'] or '—'} |")
     return "\n".join(out).rstrip() + "\n"
 
 

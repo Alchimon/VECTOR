@@ -208,7 +208,7 @@ def _plain(v):
 
 
 def main():
-    """Снять скриншоты 01–38 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
+    """Снять скриншоты 01–40 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
     args = ap.parse_args()
@@ -457,6 +457,18 @@ def main():
         h.wait_idle()
         h.shot(out / f"{theme}-38-tech-process-editor.png")
         ed.setProperty("visible", False)
+        h.wait_idle()
+        # Подсказки (D-37): наведение мыши на кнопку «Новый ТП» — пояснение и расшифровка «ТП»; затем справочник (F1).
+        from PySide6.QtCore import QPoint, QPointF
+        from PySide6.QtTest import QTest
+        btn = next(i for i in h.items("tipText") if i.isVisible() and i.property("text") == "Новый ТП")
+        QTest.mouseMove(h.win, btn.mapToScene(QPointF(btn.width() / 2, btn.height() / 2)).toPoint())
+        h.pump(0.9)
+        h.shot(out / f"{theme}-39-tooltip.png")
+        QTest.mouseMove(h.win, QPoint(700, 880))
+        h.pump(0.3)
+        h.go("help")
+        h.shot(out / f"{theme}-40-glossary.png")
         h.backend.logout()
         h.wait_idle()
         # Настройки компании (D-26, A-26): администратор, вкладка «Настройки компании».
