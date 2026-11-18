@@ -44,6 +44,10 @@ Item {
     // (РП и ГИП проектов). Подсказка; данные решает сервер.
     readonly property bool seesProduction: (backend.me.roles || []).some(r => r === "technologist" || r === "production" || r === "dept_head" || r === "warehouse")
         || (backend.productionOverview.work_orders || []).length > 0 || (backend.productionOverview.tps || []).length > 0
+    Shortcut { sequence: "Ctrl+8"; onActivated: if (shellRoot.seesProducts) shellRoot.go("products") }
+    // Изделия и паспорта (D-38): команда проекта, технологи, руководитель отдела — и все, кому сервер отдал
+    // экземпляры или закрытые наряды для регистрации. Подсказка; данные решает сервер.
+    readonly property bool seesProducts: backend.lifecycleOverview.sees === true
     Shortcut { sequence: "F5"; onActivated: backend.syncNow() }
     // Справочник сокращений и подсказок (D-37) — всем, без связи тоже.
     Shortcut { sequence: "F1"; onActivated: shellRoot.go("help") }
@@ -82,10 +86,12 @@ Item {
                 NavItem { objectName: "navStock"; text: "Склад"; iconName: "warehouse"; active: shellRoot.page === "stock"; onClicked: shellRoot.go("stock"); visible: shellRoot.seesStock }
                 NavItem { objectName: "navProcurement"; text: "Закупка"; iconName: "shopping-cart"; active: shellRoot.page === "procurement"; onClicked: shellRoot.go("procurement"); visible: shellRoot.seesNeeds
                           badge: (backend.needsOverview.candidates || []).length; badgeTone: "warning" }
-                Text { visible: shellRoot.seesProduction; text: "ПРОИЗВОДСТВО"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
+                Text { visible: shellRoot.seesProduction || shellRoot.seesProducts; text: "ПРОИЗВОДСТВО"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
                 // Бейдж: исполнителю — операции в работе/на паузе, остальным — открытые наряды.
                 NavItem { objectName: "navProduction"; text: "Производство"; iconName: "factory"; active: shellRoot.page === "production"; onClicked: shellRoot.go("production"); visible: shellRoot.seesProduction
                           badge: (backend.productionOverview.my_ops || []).length > 0 ? backend.productionOverview.my_ops.length : 0; badgeTone: "primary" }
+                // Изделия и паспорта (D-38): экземпляры с заводскими номерами, паспорт-черновик, эксплуатация.
+                NavItem { objectName: "navProducts"; text: "Изделия и паспорта"; iconName: "package-check"; active: shellRoot.page === "products"; onClicked: shellRoot.go("products"); visible: shellRoot.seesProducts }
                 Text { text: "СИСТЕМА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
                 NavItem { text: "Синхронизация"; iconName: "refresh-cw"; active: shellRoot.page === "sync"; onClicked: shellRoot.go("sync")
                           badge: backend.problemCount > 0 ? backend.problemCount : backend.pendingCount; badgeTone: backend.problemCount > 0 ? "danger" : "warning" }
@@ -134,7 +140,7 @@ Item {
             anchors.fill: parent
             sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC, finance: financeC,
                                stock: stockC, procurement: procurementC, delegations: delegationsC,
-                               notifications: notificationsC, production: productionC, help: helpC })[shellRoot.page]
+                               notifications: notificationsC, production: productionC, products: productsC, help: helpC })[shellRoot.page]
         }
         }
     }
@@ -149,6 +155,7 @@ Item {
     Component { id: delegationsC; DelegationsPage { shell: shellRoot } }
     Component { id: notificationsC; NotificationsPage { shell: shellRoot } }
     Component { id: productionC; ProductionPage { shell: shellRoot } }
+    Component { id: productsC; ProductsPage { shell: shellRoot } }
     Component { id: helpC; HelpPage { shell: shellRoot } }
 
     FormDialog {

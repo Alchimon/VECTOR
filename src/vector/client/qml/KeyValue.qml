@@ -9,9 +9,11 @@ RowLayout {
     property string k: ""
     property string v: ""
     property bool muted: false
+    // Ширина колонки подписи: по умолчанию 150; для длинных подписей (связи экземпляра) — шире, с переносом.
+    property int kWidth: 150
     spacing: 12
     Layout.fillWidth: true
-    Text { text: k; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs; Layout.preferredWidth: 150; Layout.alignment: Qt.AlignTop
+    Text { text: k; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs; Layout.preferredWidth: kv.kWidth; Layout.alignment: Qt.AlignTop; wrapMode: Text.Wrap
            VTipArea { text: kv.tip } }
     Text {
         text: v === "" ? "—" : v

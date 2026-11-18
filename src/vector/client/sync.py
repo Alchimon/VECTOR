@@ -80,7 +80,10 @@ OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp")
                 ("supplier_contract", "supplier_contracts"),
                 # Технология и производство (D-36): ТП (черновик правится офлайн), наряды и операции нарядов (события
                 # исполнителя — офлайн через очередь; выпуск, назначение, замена, закрытие — онлайн-командами).
-                ("tech_process", "tech_processes"), ("work_order", "work_orders"), ("wo_operation", "wo_operations"))
+                ("tech_process", "tech_processes"), ("work_order", "work_orders"), ("wo_operation", "wo_operations"),
+                # Экземпляры изделий и паспорта (D-38): паспорт-черновик правится офлайн через очередь; регистрация,
+                # передача, сервис, замены и черновой экспорт — онлайн-командами.
+                ("product_instance", "product_instances"), ("passport", "passports"))
 # Объекты из результата команды → список в meta (ключ результата, ключ meta); заменяются по id.
 # Движения склада, резервы и потребности меняются ТОЛЬКО онлайн-командами (online_required): в кэше это
 # снимок «на момент последнего обновления», офлайн он только читается.
@@ -95,11 +98,24 @@ STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_
               "stock_transfers", "stock_projects", "need_candidates", "item_aliases", "unit_conversions", "config",
               "delegations", "role_coverage", "project_deputies", "notifications",
               # D-36: состав изделий из зафиксированных версий расчёта (без цен) — для ТП; исполнители «Производства».
-              "tech_specs", "production_kits", "production_staff")
+              "tech_specs", "production_kits", "production_staff",
+              # D-38: закрытые наряды для регистрации экземпляров и документы проекта для паспорта.
+              "instance_work_orders", "passport_documents")
 
 
 # Онлайн-команды, которым не нужно сначала отправить очередь (их результат не зависит от неотправленных правок).
 ORDER_FREE = frozenset({"account.change_password", "notification.read"})
+
+
+def _passport_part(obj: dict, key: str) -> Any:
+    """Часть паспорта для сравнения «есть ли изменения»: документы — только пары (документ, версия), как в запросе
+    (сервер добавляет к ним обозначение, имя файла и SHA-256)."""
+    v = obj.get(key)
+    if key == "documents":
+        return [(d.get("document_id"), d.get("version_no")) for d in v or []]
+    if key == "fields":
+        return {k: x for k, x in (v or {}).items() if x}
+    return v or []
 
 
 def _calc_same(local: dict, payload: dict) -> bool:
@@ -498,6 +514,28 @@ class SyncClient:
         ev = (prev[0] or 0) + 1 if prev is not None else row[0]
         # tp.update не принимает kit_id: комплект ТП не меняется после создания.
         return self.execute("tp.update", {k: v for k, v in payload.items() if k != "kit_id"}, ev)
+
+    def save_passport_draft(self, payload: dict) -> LocalResult:
+        """«Сохранить паспорт (черновик)»: passport.create (паспорта ещё нет ни на сервере, ни в очереди) или
+        passport.save — через офлайн-очередь (D-38). Цепочка expected_version — как у черновика ТП (save_tp_draft);
+        сохранение без изменений в очередь не ставится.
+        """
+        if self.db is None:
+            return LocalResult("unauthenticated", message_ru="Войдите в систему.")
+        oid = payload["id"]
+        row = self.db.execute("SELECT server_version FROM cache WHERE object_type='passport' AND id=?", (oid,)).fetchone()
+        prev = self.db.execute("SELECT expected_version FROM outbox WHERE command IN ('passport.create','passport.save') "
+                               "AND object_id=? AND state IN ('pending','conflict','rejected') ORDER BY seq DESC LIMIT 1",
+                               (oid,)).fetchone()
+        if prev is None and (row is None or row[0] is None):
+            return self.execute("passport.create", payload)
+        local = self.get_local("passport", oid) or {}
+        body = {k: payload[k] for k in ("fields", "tests", "documents") if k in payload}
+        if all(_passport_part(local, k) == _passport_part(body, k) for k in body):
+            return LocalResult("accepted", message_ru="Изменений нет — сохранять нечего.", response={"unchanged": True})
+        ev = (prev[0] or 0) + 1 if prev is not None else row[0]
+        # passport.save не принимает instance_id: экземпляр паспорта не меняется.
+        return self.execute("passport.save", {"id": oid, **body}, ev)
 
     def op_event(self, op_id: str, kind: str, qty_done: Optional[int] = None, note: Optional[str] = None) -> LocalResult:
         """Событие исполнителя по операции наряда (старт / пауза / продолжить / завершить / проблема) — офлайн (D-36).

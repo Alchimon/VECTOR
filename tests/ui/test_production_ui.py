@@ -2,7 +2,7 @@
 
 Демо: ТП АТХ ред. 1 (составила t.fedorova, утвердил a.grishin), черновик ТП ЭМ (t.fedorova); наряд № 1 на 1 комплект
 (выпустила РП a.smirnova): операция 10 выполнена, 20 в работе с проблемой (k.pavlov), 30 — r.sergeev, 40 — без
-исполнителя; материалы со склада на наряд ещё не выдавались.
+исполнителя; материалы со склада на наряд ещё не выдавались. Наряд № 2 (пилотный комплект, D-38) выполнен и закрыт.
 """
 import pytest
 from PySide6.QtCore import QMetaObject
@@ -85,7 +85,7 @@ def test_worker_finish_and_problem_forms(ui, qml_warnings):  # noqa: F811
     QMetaObject.invokeMethod(ff, "confirmed")
     ui.wait_idle()
     assert _v(ui.backend, "productionOverview")["my_ops"] == []    # выполненная пропала из «моих»
-    wo = _v(ui.backend, "productionOverview")["work_orders"][0]
+    wo = next(w for w in _v(ui.backend, "productionOverview")["work_orders"] if w["doc_no"] == 1)
     assert [o["state"] for o in wo["operations"]][:2] == ["done", "done"]
     assert qml_warnings == []
 
@@ -95,8 +95,10 @@ def test_master_sees_work_order_snapshot_materials_and_cannot_close(ui, qml_warn
     ui.login("a.smirnova")
     _tab(ui, "orders")
     pane = _visible(ui, "all")
+    # Наряд № 2 (пилотный комплект, D-38) уже закрыт — по нему зарегистрирован экземпляр изделия.
     wos = _v(pane, "all")
-    assert [w["doc_no"] for w in wos] == [1]
+    assert [(w["doc_no"], w["status"]) for w in wos] == [(2, "closed"), (1, "in_progress")]
+    wos = [wos[1]]
     pane.setProperty("selectedId", wos[0]["id"])
     ui.wait_idle()
     sel = _v(pane, "sel")
@@ -130,7 +132,7 @@ def test_master_sees_work_order_snapshot_materials_and_cannot_close(ui, qml_warn
 
 
 def test_master_releases_second_work_order_from_form(ui, qml_warnings):  # noqa: F811
-    """«Выпустить наряд»: утверждённый ТП, количество, исполнитель первой операции → наряд № 2 со снимком × 2."""
+    """«Выпустить наряд»: утверждённый ТП, количество, исполнитель первой операции → наряд № 3 со снимком × 2."""
     ui.login("a.smirnova")
     _tab(ui, "orders")
     pane = _visible(ui, "all")
@@ -146,7 +148,7 @@ def test_master_releases_second_work_order_from_form(ui, qml_warnings):  # noqa:
     ui.wait_idle()
     assert not form.property("visible"), form.property("error")
     sel = _v(pane, "sel")
-    assert sel["doc_no"] == 2 and sel["qty"] == 2 and sel["status"] == "released"
+    assert sel["doc_no"] == 3 and sel["qty"] == 2 and sel["status"] == "released"
     shu = next(ln for ln in sel["spec"] if ln["code"] == "ШУ-1")
     assert shu["qty_label"] == "6 шт"                                      # 3 на изделие × 2
     assert next(o for o in sel["operations"] if o["op_no"] == 10)["norm_label"] == "8 ч 00 мин"
@@ -211,8 +213,8 @@ def test_warehouse_issue_form_offers_work_orders(ui, qml_warnings):  # noqa: F81
     """Склад: в форме выдачи на проект — выбор наряда этого проекта; выдача на наряд видна в его материалах."""
     ui.login("i.belova")
     pv = _v(ui.backend, "productionOverview")
-    wo = pv["work_orders"][0]
-    assert wo["doc_no"] == 1 and wo["manage"] is False                  # склад наряды только видит
+    wo = next(w for w in pv["work_orders"] if w["doc_no"] == 1)
+    assert wo["manage"] is False                                   # склад наряды только видит
     ui.go("stock")
     stock = next(i for i in ui.items("projectOptions") if i.isVisible())
     item = next(i for i in _v(stock, "ov")["items"] if i["code"] == "ХМТ-200")   # свободный остаток есть
