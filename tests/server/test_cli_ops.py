@@ -199,6 +199,11 @@ def test_demo_seed_only_into_fresh_db(setup):
         [("АТХ", "0001", "handed_over", 2, True)]
     assert [(p["status"], p["template_ok"], len(p["tests"])) for p in pull["passports"]] == [("draft", True, 1)]
     assert sorted((w["doc_no"], w["status"]) for w in pull["work_orders"]) == [(1, "in_progress"), (2, "closed")]
+    # Качество (D-39): рекламация № 1 по этому экземпляру — «Действия» (одно из двух действий CAPA выполнено),
+    # запрос на изменение № 1 по рекламации ждёт оценки.
+    assert [(c["claim_no"], c["status"], c["instance_label"], [a["status"] for a in c["actions"]]) for c in pull["claims"]] == \
+        [(1, "action", "АТХ № 0001 (серия 2026)", ["done", "open"])]
+    assert [(r["ecr_no"], r["status"], r["claim_no"]) for r in pull["change_requests"]] == [(1, "submitted", 1)]
     n = svc.handle({"type": "login", "login": "n.sokolov", "password": DEMO_PWD, "device_id": "t"}, "t")
     assert n["must_change_password"] is True
     # Склад и закупка (С4): у кладовщика — остатки и журнал со сторно, у закупщика — потребность АТХ v1.

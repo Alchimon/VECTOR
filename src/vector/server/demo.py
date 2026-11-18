@@ -395,6 +395,7 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
                                             "reason": "Командировка на объект (приказ № 118-к)"})["delegation"]
     prod = _seed_production(cmd, login, people, svc, kits, atx_v1)
     prod.update(_seed_lifecycle(cmd, login, people, svc, prod["tech_processes"][0], items, whs, docs))
+    prod.update(_seed_quality(cmd, login, people, svc, prod["product_instances"][0], kits))
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
             "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
             "suppliers": sups, "contracts": contracts, "delegations": [deleg["id"], pdeleg["id"]],
@@ -490,3 +491,38 @@ def _seed_lifecycle(cmd, login, people, svc, tp_id, items, whs, docs) -> dict:
     inst = cmd(rp, "instance.handover", {"id": inst["id"], "date": svc.now().date().isoformat(), "recipient": "Иванов П. С., главный инженер",
                                          "document": "Акт приёма-передачи № 27 (пилотный комплект)"}, inst["version"])["product_instance"]
     return {"lifecycle_work_order": wo["id"], "product_instances": [inst["id"]], "passports": [pp["id"]]}
+
+
+def _seed_quality(cmd, login, people, svc, instance_id, kits) -> dict:
+    """Рекламация, CAPA и запрос на изменение (С5 шаг 10, D-39). Номера писем и тексты ВЫМЫШЛЕНЫ.
+
+    * Рекламация № 1 по «АТХ № 0001 (серия 2026)» — от заказчика (письмо): зарегистрировала РП a.smirnova, анализ
+      причины поручен m.lebedev, план CAPA утвердила a.smirnova: корректирующее действие (исполнитель d.kuznetsov —
+      выполнено) и предупреждающее (исполнитель m.lebedev — ещё не выполнено). Состояние «Действия»: дальше —
+      отметка второго действия, затем проверка эффективности ДРУГИМ человеком (например, ГИП p.volkov).
+    * Запрос на изменение № 1 по этой рекламации подал d.kuznetsov — ждёт оценки влияния (РП или ГИП проекта).
+    """
+    rp, eng = login("a.smirnova"), login("d.kuznetsov")
+    today = svc.now().date()
+    cid = str(uuid.uuid4())
+    c = cmd(rp, "claim.register", {"id": cid, "instance_id": instance_id, "received_date": today.isoformat(), "source": "customer",
+                                   "reference": "Письмо заказчика № 45 (пилотный комплект)",
+                                   "description": "При пуске насоса шкаф управления не переходит в автоматический режим; "
+                                                  "на панели — сообщение об отсутствии сигнала датчика давления."})["claim"]
+    c = cmd(rp, "claim.start_analysis", {"id": cid, "responsible_id": people["m.lebedev"]}, c["version"])["claim"]
+    a1, a2 = str(uuid.uuid4()), str(uuid.uuid4())
+    due = (today + timedelta(days=14)).isoformat()
+    c = cmd(rp, "claim.plan", {"id": cid, "cause": "Перепутаны жилы кабеля датчика давления на клеммнике: в схеме подключения "
+                                                   "нумерация клемм не совпадает с маркировкой шкафа.",
+                               "actions": [{"id": a1, "kind": "corrective", "owner_id": people["d.kuznetsov"], "due_date": due,
+                                            "description": "Переподключить датчик на объекте, проверить автоматический режим"},
+                                           {"id": a2, "kind": "preventive", "owner_id": people["m.lebedev"], "due_date": due,
+                                            "description": "Привести нумерацию клемм в схеме подключения к маркировке шкафа"}]},
+            c["version"])["claim"]
+    cmd(eng, "claim.action_done", {"id": cid, "action_id": a1, "result": "Датчик переподключён, автоматический режим работает"})
+    rid = str(uuid.uuid4())
+    cmd(eng, "ecr.submit", {"id": rid, "project_id": c["project_id"], "kit_id": kits["АТХ"], "claim_id": cid,
+                            "title": "Нумерация клемм в схеме подключения",
+                            "reason": "Рекламация № 1: нумерация клемм в схеме не совпадает с маркировкой шкафа.",
+                            "proposal": "Выпустить новую версию схемы АТХ-001 с нумерацией по маркировке шкафа."})
+    return {"claims": [cid], "change_requests": [rid]}

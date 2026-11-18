@@ -98,6 +98,9 @@ ProductInstance 1─* ServiceEvent / Replacement / Claim;  Claim ─* CAPA;  ECR
 **ECR/ECO**: ECR `submitted → assessed → accepted | rejected`; ECO `draft → approved → implemented → verified`.
 **Рекламация/CAPA**: `registered → analysis → action → effectiveness_check → closed`; закрытие требует
 отдельной записи проверки эффективности (независимый проверяющий).
+> Реализовано (D-39, схема v18): `claims`, `claim_actions`, `effectiveness_checks` (неизменяемая), `change_requests`,
+> `change_orders` (строки — точные версии), `quality_decisions` (неизменяемый журнал шагов). Состояние «Выполнение
+> действий» — `action`; проверяющий не может быть тем, кто планировал, выполнял или отправлял на проверку.
 
 **Дневной отчёт**: `draft → in_review → submitted → accepted | returned`.
 

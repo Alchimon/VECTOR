@@ -489,6 +489,17 @@ def main():
         h.wait_idle()
         h.backend.logout()
         h.wait_idle()
+        # Качество (D-39): РП — карточка рекламации № 1 (действия CAPA, история); ГИП — запрос на изменение № 1.
+        h.login("a.smirnova")
+        h.go("quality", h.ids["claims"][0])
+        h.shot(out / f"{theme}-43-quality-claim.png")
+        h.backend.logout()
+        h.wait_idle()
+        h.login("p.volkov")
+        h.go("quality", h.ids["change_requests"][0])
+        h.shot(out / f"{theme}-44-quality-ecr.png")
+        h.backend.logout()
+        h.wait_idle()
         # Настройки компании (D-26, A-26): администратор, вкладка «Настройки компании».
         h.login("admin")
         h.go("admin")

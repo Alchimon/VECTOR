@@ -1,4 +1,4 @@
-"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-14).
+"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-15).
 
 Запускается ПОСЛЕ установки, при запущенном сервере стенда, Python-ом из окружения стенда:
 
@@ -248,6 +248,15 @@ def main(argv: list[str] | None = None) -> int:
             rep.fail(f"состав экземпляра не совпадает с контрольной суммой (SHA-256): {len(bad)} — сообщите разработчику")
     else:
         rep.warn("экземпляров изделий нет — " + FRESH_HINT)
+
+    print("\n7. Качество: рекламации, CAPA, запросы и извещения об изменении (D-39, П-15)")
+    cls = smirnova.list_local("claim")
+    if cls:
+        ecrs, ecos = smirnova.list_local("change_request"), smirnova.list_local("change_order")
+        rep.ok(f"рекламаций: {len(cls)} (закрыто {sum(c.get('status') == 'closed' for c in cls)}), "
+               f"запросов на изменение: {len(ecrs)}, извещений: {len(ecos)}")
+    else:
+        rep.warn("рекламаций нет — " + FRESH_HINT)
     return finish(rep, tmp)
 
 
@@ -263,7 +272,7 @@ def finish(rep: Report, tmp=None) -> int:
         print(f"ИТОГ: стенд работает; предупреждений {len(rep.warnings)} — часть сценариев на этих данных не проверить "
               "(см. выше).")
     else:
-        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-14; сценарии — test-pc.md § 6).")
+        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-15; сценарии — test-pc.md § 6).")
     return 0
 
 
