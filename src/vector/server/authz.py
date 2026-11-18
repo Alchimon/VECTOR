@@ -162,7 +162,8 @@ class Policy:
     """Исполнитель матрицы прав (contracts/permissions.slice1.json).
 
     Правило действия — список условий any_of: достаточно выполнить одно. Условие — глобальная роль, роль в проекте
-    (только если команда относится к проекту — передан project_id) или «любой вошедший» (authenticated). Нет правила
+    (только если команда относится к проекту — передан project_id) или «любой вошедший» (authenticated). Глобальная
+    роль с признаком in_project (D-38) действует только у участника проекта, к которому относится команда. Нет правила
     — отказ (fail-closed). Проверка идёт в той же транзакции, что и запись, — отзыв роли действует немедленно.
     """
     def __init__(self, permissions: dict):
@@ -194,7 +195,12 @@ class Policy:
         for cond in rule["any_of"]:
             if cond.get("authenticated"):
                 return Authority("self", "self", 0)
-            if "global_role" in cond:
+            if "global_role" in cond and cond.get("in_project") and (
+                    project_id is None or not project_member(conn, user_id, project_id, now)):
+                # Условие «глобальная роль, но только в своём проекте» (D-38): пользователь не участник проекта —
+                # его глобальная роль здесь не действует (переходим к следующему условию).
+                pass
+            elif "global_role" in cond:
                 grants = grants if grants is not None else active_grants(conn, user_id, now)
                 for gid, role in grants:
                     if role in cond["global_role"]:

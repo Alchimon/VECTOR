@@ -32,6 +32,7 @@ from .calc import CalcMixin
 from .config_store import ConfigMixin
 from .delegation import DelegationMixin
 from .notify import NotificationMixin
+from .lifecycle import LifecycleMixin
 from .production import ProductionMixin
 from .purchasing import PurchasingMixin
 from .stock import StockMixin
@@ -86,12 +87,12 @@ class Ctx:
 
 
 class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin, NotificationMixin,
-              ProductionMixin):
+              ProductionMixin, LifecycleMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
     склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py);
     замещение и основания решений — DelegationMixin (delegation.py, D-34/D-35); уведомления — NotificationMixin
     (notify.py, D-35); технология и производство (ТП, наряды, снимок, исполнение операций) — ProductionMixin
-    (production.py, D-36).
+    (production.py, D-36); экземпляры изделий, паспорт, передача, сервис и замены — LifecycleMixin (lifecycle.py, D-38).
 
     Как устроен обработчик команды (все _xxx_yyy(ctx, p, ev) следуют одной схеме — так их легко проверять):
 
@@ -175,6 +176,11 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "tp.create": self._tp_create, "tp.update": self._tp_update, "tp.approve": self._tp_approve,
             "wo.release": self._wo_release, "wo.assign": self._wo_assign, "wo.op_event": self._wo_op_event,
             "wo.substitute": self._wo_substitute, "wo.close": self._wo_close, "wo.cancel": self._wo_cancel,
+            # Экземпляры изделий и паспорт (lifecycle.py, D-38).
+            "instance.register": self._instance_register, "instance.handover": self._instance_handover,
+            "instance.service": self._instance_service, "instance.replace": self._instance_replace,
+            "passport.create": self._passport_create, "passport.save": self._passport_save,
+            "passport.export_draft": self._passport_export_draft,
         }
         diff = set(self.contracts.catalog["commands"]) ^ set(self.handlers)
         if diff:
@@ -1132,10 +1138,13 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         out.update(self._pull_notifications(conn, uid, now))
         # ТП и состав изделий (без цен), наряды и операции (D-36).
         out.update(self._pull_production(conn, uid, now))
+        # Экземпляры изделий, паспорта, наряды для регистрации, документы для паспорта (D-38).
+        out.update(self._pull_lifecycle(conn, uid, now))
         me_roles = self._me_roles(conn, uid, now)
         # Справочник людей нужен и для выбора замещающего — поэтому он приходит всем, у кого есть хоть одна роль.
         if (out["tenders"] or out["projects"] or out["calc_revisions"] or out["warehouses"] or out["needs"]
-                or out["purchase_orders"] or me_roles["roles"] or out["delegations"] or out["work_orders"]):
+                or out["purchase_orders"] or me_roles["roles"] or out["delegations"] or out["work_orders"]
+                or out["product_instances"]):
             # Минимальный справочник людей (имя для отображения ответственного) — без логинов и контактов.
             out["people"] = [{"id": r["id"], "display_name": r["display_name"]} for r in
                              self._rows(conn, sa.select(users.c.id, users.c.display_name).where(users.c.active == sa.true()))]
@@ -1171,7 +1180,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
                   "stock_transfer": "stock.read", "stock_reservation": "stock.read", "procurement_need": "need.read",
                   "item_alias": "stock.read", "unit_conversion": "stock.read", "config": "config.publish",
                   "supplier": "supplier.read", "supplier_contract": "supplier.read", "purchase_order": "po.read",
-                  "tech_process": "tp.read", "work_order": "wo.read", "wo_operation": "wo.read"}.get(otype)
+                  "tech_process": "tp.read", "work_order": "wo.read", "wo_operation": "wo.read",
+                  "product_instance": "instance.read", "passport": "passport.read"}.get(otype)
         if not action or not isinstance(oid, str):
             return {"status": "rejected", "code": "bad_history_request", "message_ru": "Укажите тип и id объекта."}
         pid = oid if otype in ("project", "project_calc") else None
@@ -1180,6 +1190,9 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             pid = n["project_id"] if n else None
         if otype in ("tech_process", "work_order"):
             t = self._get(conn, db.tech_processes if otype == "tech_process" else db.work_orders, oid)
+            pid = t["project_id"] if t else None
+        if otype in ("product_instance", "passport"):
+            t = self._get(conn, db.product_instances if otype == "product_instance" else db.passports, oid)
             pid = t["project_id"] if t else None
         if otype == "wo_operation":
             op = self._get(conn, db.wo_operations, oid)

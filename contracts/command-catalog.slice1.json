@@ -1,5 +1,5 @@
 {
-  "contract": "command-catalog-slice1-v16",
+  "contract": "command-catalog-slice1-v17",
   "offline_classes": {
     "offline_full": "Полностью доступно офлайн (чтение локального кэша, локальные черновики без эффекта для других).",
     "queued": "Создаёт локальное изменение в очереди синхронизации. До ответа сервера это НЕ подтверждённое действие; сервер заново проверяет права, состояние и версию.",
@@ -465,6 +465,51 @@
       "label_ru": "Отменить наряд",
       "requires_expected_version": true,
       "note": "Те же права, что выпуск. Причина обязательна. Только «Выпущен» или «В работе»; выданные материалы возвращаются на склад сторно (отдельно)."
+    },
+    "instance.register": {
+      "offline": "online_required",
+      "object": "product_instance",
+      "label_ru": "Зарегистрировать экземпляры",
+      "note": "РП проекта (или замещающий), резерв — руководитель отдела (D-38). По ЗАКРЫТОМУ наряду: work_order_id, series (серия), items — [{id, serial_no}]. Заводской номер уникален в области «изделие + серия» (не глобально). Всего экземпляров по наряду — не больше его количества. При регистрации фиксируется неизменяемый состав экземпляра (снимок наряда + замены, SHA-256)."
+    },
+    "instance.handover": {
+      "offline": "online_required",
+      "object": "product_instance",
+      "label_ru": "Передать заказчику",
+      "requires_expected_version": true,
+      "note": "РП проекта, резерв — руководитель отдела. {id, date, recipient, document, note?}. «Изготовлен» → «Передан заказчику»; запись истории неизменяема."
+    },
+    "instance.service": {
+      "offline": "online_required",
+      "object": "product_instance",
+      "label_ru": "Записать сервисное событие",
+      "note": "После передачи заказчику. {id, kind (commissioning|inspection|maintenance|repair|failure|other), date, description, document?}. Запись истории неизменяема."
+    },
+    "instance.replace": {
+      "offline": "online_required",
+      "object": "product_instance",
+      "label_ru": "Записать замену",
+      "note": "{id, date, removed, removed_serial?, installed, installed_serial?, qty?, reason, line_id?}. Состав при регистрации не переписывается — замена добавляется в историю."
+    },
+    "passport.create": {
+      "offline": "queued",
+      "object": "passport",
+      "label_ru": "Создать паспорт (черновик)",
+      "note": "РП проекта или ведущий инженер — участник проекта (D-38). {id, instance_id, fields?, tests?, documents?}. Шаблон — текущая версия шаблона-мастера (код, версия и SHA-256 хранятся в паспорте). Один паспорт на экземпляр."
+    },
+    "passport.save": {
+      "offline": "queued",
+      "object": "passport",
+      "label_ru": "Сохранить паспорт (черновик)",
+      "requires_expected_version": true,
+      "note": "{id, fields?, tests?, documents?} — заменяет указанное целиком. documents — [{document_id, version_no}]: точная версия документа проекта. Конфликт версий не сливается."
+    },
+    "passport.export_draft": {
+      "offline": "online_required",
+      "object": "passport",
+      "label_ru": "Черновой экспорт паспорта",
+      "requires_expected_version": true,
+      "note": "Только РП проекта (матрица 04). Ответ — HTML с пометкой «Черновик, не сертификат» на каждой странице, номер экспорта и SHA-256 содержимого; экспорт журналируется (passport_exports + аудит). Это НЕ сертификат и НЕ свидетельство о приёмке."
     }
   },
   "queries": {

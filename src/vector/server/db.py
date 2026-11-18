@@ -35,8 +35,9 @@ from vector.core import money
 #   v14 — замещение (передача роли на время), основания решений, сверка заказа со счётом поставщика (D-34);
 #   v15 — замещение роли в проекте и уведомления (D-35);
 #   v16 — технология и производство: ТП, наряды, неизменяемый снимок, исполнение операций, замены, выдача
-#         материалов на наряд (этап 5, D-36).
-SCHEMA_VERSION = 16
+#         материалов на наряд (этап 5, D-36);
+#   v17 — экземпляры изделий, их состав и история эксплуатации, паспорт и журнал черновых экспортов (этап 6, D-38).
+SCHEMA_VERSION = 17
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1085,6 +1086,80 @@ work_order_issues = sa.Table("work_order_issues", metadata,
     sa.Column("movement_id", ID, sa.ForeignKey("stock_movements.id"), primary_key=True),
     sa.Column("work_order_id", ID, sa.ForeignKey("work_orders.id"), nullable=False, index=True))
 
+# ------------------------------------------------------------ D-38 (схема v17): экземпляры изделий и паспорт
+# Экземпляр изделия — результат ЗАКРЫТОГО наряда: изделие (комплект проекта) + серия + заводской номер. Номер
+# уникален в области «изделие + серия» (02 С5 шаг 7), не глобально. Статус: registered (изготовлен) →
+# handed_over (передан заказчику). Состав экземпляра фиксируется при регистрации (instance_compositions).
+product_instances = sa.Table("product_instances", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id"), nullable=False),
+    sa.Column("work_order_id", ID, sa.ForeignKey("work_orders.id"), nullable=False, index=True),
+    sa.Column("series", U(40), nullable=False),
+    sa.Column("serial_no", U(60), nullable=False),
+    sa.Column("serial_key", U(60), nullable=False),      # номер без учёта регистра — для уникальности
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("kit_id", "series", "serial_key", name="uq_product_instances_serial"),
+    sa.CheckConstraint("status IN ('registered','handed_over')", name="status"))
+
+# Состав экземпляра на момент регистрации (неизменяемо): ссылки на проект, наряд и его снимок (SHA-256), ТП,
+# версию расчёта, состав одного изделия с заменами по наряду. Отсюда паспорт берёт «точные связи».
+instance_compositions = sa.Table("instance_compositions", metadata,
+    sa.Column("instance_id", ID, sa.ForeignKey("product_instances.id"), primary_key=True),
+    sa.Column("content_hash", sa.String(64), nullable=False),
+    sa.Column("composition_json", T, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False))
+
+# История эксплуатации (неизменяемо): передача заказчику, сервисные события, замены. Замена не переписывает
+# состав — действующий состав = состав при регистрации + замены по порядку (как замены в снимке наряда).
+instance_events = sa.Table("instance_events", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("instance_id", ID, sa.ForeignKey("product_instances.id"), nullable=False, index=True),
+    sa.Column("seq", sa.Integer, nullable=False),
+    sa.Column("kind", U(16), nullable=False),
+    sa.Column("event_date", sa.Date, nullable=False),
+    sa.Column("details_json", T, nullable=False),
+    sa.Column("authority", U(120), nullable=False),
+    sa.Column("created_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("instance_id", "seq", name="uq_instance_events_seq"),
+    sa.CheckConstraint("kind IN ('handover','service','replacement')", name="kind"))
+
+# Паспорт экземпляра (1─1): черновик по шаблону-мастеру (код, версия и SHA-256 шаблона хранятся — новая версия
+# шаблона не меняет составленные паспорта). Правится и офлайн через очередь; оформления «чистовика» в D-38 нет.
+passports = sa.Table("passports", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("instance_id", ID, sa.ForeignKey("product_instances.id"), nullable=False, unique=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("template_code", U(32), nullable=False),
+    sa.Column("template_version", sa.Integer, nullable=False),
+    sa.Column("template_hash", sa.String(64), nullable=False),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("fields_json", T, nullable=False),
+    sa.Column("tests_json", T, nullable=False),
+    sa.Column("documents_json", T, nullable=False),
+    sa.Column("content_hash", sa.String(64), nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("status IN ('draft')", name="status"))
+
+# Черновой экспорт паспорта (неизменяемо, журналируется): номер, какая версия паспорта и какое содержимое
+# (SHA-256) выгружено, кто и на каком основании. Сам файл не хранится — его всегда можно получить снова.
+passport_exports = sa.Table("passport_exports", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("passport_id", ID, sa.ForeignKey("passports.id"), nullable=False, index=True),
+    sa.Column("export_no", sa.Integer, nullable=False),
+    sa.Column("passport_version", sa.Integer, nullable=False),
+    sa.Column("content_hash", sa.String(64), nullable=False),
+    sa.Column("authority", U(120), nullable=False),
+    sa.Column("exported_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("exported_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("passport_id", "export_no", name="uq_passport_exports_no"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -1175,7 +1250,8 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (approval_bases, 50019), (purchase_order_invoice_checks, 50020),
                  (role_delegation_projects, 50021), (tech_process_approvals, 50022),
                  (work_order_snapshots, 50023), (wo_timer_events, 50024), (wo_substitutions, 50025),
-                 (work_order_issues, 50026)):
+                 (work_order_issues, 50026), (instance_compositions, 50027), (instance_events, 50028),
+                 (passport_exports, 50029)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):
