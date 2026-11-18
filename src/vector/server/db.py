@@ -41,7 +41,9 @@ from vector.core import money
 #         журнал решений по качеству (этап 6, D-39);
 #   v19 — рекламация без заводского номера (на партию или проект: claims.instance_id допускает NULL), охват и
 #         классификация дефекта, срок ответа заказчику, неизменяемые ответы заказчику (D-40, ответ на A-46).
-SCHEMA_VERSION = 19
+#   v20 — рабочее время (D-42): дневные отчёты сотрудников (смена, строки «на что ушло время»), журнал шагов отчёта
+#         (неизменяемый) — таблицы daily_reports, daily_report_lines, daily_report_events.
+SCHEMA_VERSION = 20
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1315,6 +1317,58 @@ claim_responses = sa.Table("claim_responses", metadata,
     sa.UniqueConstraint("claim_id", "seq", name="uq_claim_responses_seq"),
     sa.CheckConstraint("kind IN ('interim','final')", name="kind"))
 
+# ------------------------------------------------------------ D-42 (схема v20): рабочее время и дневной отчёт
+# Дневной отчёт: один на сотрудника за рабочий день. Смена — минуты от полуночи (начало, конец; обе или ни одной),
+# перерыв — минуты; total_minutes — сумма строк (для списков без чтения строк). Статусы: draft → submitted →
+# accepted | returned; submitted / accepted → draft — исправление с основанием (report.reopen).
+daily_reports = sa.Table("daily_reports", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("user_id", ID, sa.ForeignKey("users.id"), nullable=False, index=True),
+    sa.Column("work_date", sa.Date, nullable=False, index=True),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("shift_start", sa.Integer), sa.Column("shift_end", sa.Integer),
+    sa.Column("break_minutes", sa.Integer, nullable=False),
+    sa.Column("total_minutes", sa.Integer, nullable=False),
+    sa.Column("comment", T),
+    sa.Column("submitted_at", UtcDateTime),
+    sa.Column("reviewed_by", ID, sa.ForeignKey("users.id")), sa.Column("reviewed_at", UtcDateTime),
+    sa.Column("review_comment", T),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("user_id", "work_date", name="uq_daily_reports_day"),
+    sa.CheckConstraint("status IN ('draft','submitted','accepted','returned')", name="status"),
+    sa.CheckConstraint("(shift_start IS NULL AND shift_end IS NULL) OR (shift_start IS NOT NULL AND shift_end IS NOT NULL "
+                       "AND shift_start >= 0 AND shift_end <= 1440 AND shift_end > shift_start)", name="shift"),
+    sa.CheckConstraint("break_minutes >= 0 AND total_minutes >= 0", name="minutes"))
+
+# Строки отчёта «на что ушло время»: проект и задача (если работа проектная), минуты, что сделано. Меняются только
+# в черновике / возвращённом отчёте (сохранение заменяет строки целиком); история шагов — в daily_report_events.
+daily_report_lines = sa.Table("daily_report_lines", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("report_id", ID, sa.ForeignKey("daily_reports.id"), nullable=False, index=True),
+    sa.Column("line_no", sa.Integer, nullable=False),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), index=True),
+    sa.Column("task_id", ID, sa.ForeignKey("tasks.id")),
+    sa.Column("minutes", sa.Integer, nullable=False),
+    sa.Column("note", T, nullable=False),
+    sa.UniqueConstraint("report_id", "line_no", name="uq_daily_report_lines_no"),
+    sa.CheckConstraint("minutes > 0 AND minutes <= 1440", name="minutes"),
+    sa.CheckConstraint("task_id IS NULL OR project_id IS NOT NULL", name="task_project"))
+
+# Журнал шагов дневного отчёта (неизменяемо): создан, сохранён, отправлен, принят, возвращён, открыт для
+# исправления — кто, когда, на каком основании (замещение руководителя отдела — D-34) и подробности (итоги, причина).
+daily_report_events = sa.Table("daily_report_events", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("report_id", ID, sa.ForeignKey("daily_reports.id"), nullable=False, index=True),
+    sa.Column("seq", sa.Integer, nullable=False),
+    sa.Column("decision", U(24), nullable=False),
+    sa.Column("details_json", T, nullable=False),
+    sa.Column("authority", U(120), nullable=False),
+    sa.Column("decided_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("decided_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("report_id", "seq", name="uq_daily_report_events_seq"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -1407,7 +1461,7 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (work_order_snapshots, 50023), (wo_timer_events, 50024), (wo_substitutions, 50025),
                  (work_order_issues, 50026), (instance_compositions, 50027), (instance_events, 50028),
                  (passport_exports, 50029), (effectiveness_checks, 50030), (quality_decisions, 50031),
-                 (claim_responses, 50032)):
+                 (claim_responses, 50032), (daily_report_events, 50033)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

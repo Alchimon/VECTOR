@@ -296,5 +296,5 @@ def test_quality_tables_added_in_v18_and_v19():
     assert [t.name for t in mg.ADDED_IN[18]] == ["claims", "claim_actions", "effectiveness_checks", "change_requests",
                                                  "change_orders", "quality_decisions"]
     assert [t.name for t in mg.ADDED_IN[19]] == ["claim_terms", "claim_responses"]
-    assert db.SCHEMA_VERSION == 19 and {17, 18} <= set(mg.STEPS)
+    assert db.SCHEMA_VERSION >= 19 and {17, 18} <= set(mg.STEPS)
     assert db.claims.c.instance_id.nullable is True

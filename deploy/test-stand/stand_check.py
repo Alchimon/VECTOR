@@ -1,4 +1,4 @@
-"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-16).
+"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-17).
 
 Запускается ПОСЛЕ установки, при запущенном сервере стенда, Python-ом из окружения стенда:
 
@@ -275,22 +275,45 @@ def main(argv: list[str] | None = None) -> int:
     if otk is not None:
         # ОТК работает по проектам (D-41, ответ на A-47): l.egorova видит только проекты, куда её назначили участником.
         qp = [x.get("code") for x in otk.get_meta("quality_projects") or []]
-        if qp:
-            rep.ok(f"l.egorova (ОТК — по проектам, D-41) работает в проектах: {', '.join(qp)}")
-        else:
+        if not qp:
+            # Без проекта рекламаций ОТК не видит — остальные проверки раздела пропускаются.
             rep.warn("l.egorova не назначена ни в один проект — ОТК работает только в проектах, куда сотрудника назначил "
                      "участником ГИП или РП (D-41); на обновлённом стенде назначьте её в проект П-2026-014 (a.smirnova → "
                      "«Проекты» → «Команда»)")
-            return finish(rep, tmp)          # без проекта рекламаций ОТК не видит — дальше проверять нечего
-        mine = otk.list_local("claim")
-        batch = [c for c in mine if c.get("scope") == "batch"]
-        due = [c for c in mine if c.get("response_due")]
-        if batch and due:
-            rep.ok(f"l.egorova видит рекламаций: {len(mine)}; на партию (без номера изделия): {len(batch)}; "
-                   f"со сроком ответа заказчику: {len(due)}")
         else:
-            rep.warn("нет рекламации на партию или со сроком ответа — " + FRESH_HINT)
+            rep.ok(f"l.egorova (ОТК — по проектам, D-41) работает в проектах: {', '.join(qp)}")
+            mine = otk.list_local("claim")
+            batch = [c for c in mine if c.get("scope") == "batch"]
+            due = [c for c in mine if c.get("response_due")]
+            if batch and due:
+                rep.ok(f"l.egorova видит рекламаций: {len(mine)}; на партию (без номера изделия): {len(batch)}; "
+                       f"со сроком ответа заказчику: {len(due)}")
+            else:
+                rep.warn("нет рекламации на партию или со сроком ответа — " + FRESH_HINT)
+
+    print("\n9. Рабочее время: дневные отчёты и проверка руководителем отдела (D-42, П-17)")
+    check_worktime(rep, sessions)
     return finish(rep, tmp)
+
+
+def check_worktime(rep: Report, sessions: dict) -> None:
+    """Раздел 9: руководитель отдела e.orlova может проверять отчёты и видит отправленные; у d.kuznetsov есть свои
+    отчёты. Только чтение (pull уже сделан в разделе 2) — самопроверка ничего не меняет."""
+    head, eng = sessions.get("e.orlova"), sessions.get("d.kuznetsov")
+    if head is None or eng is None:
+        rep.warn("нет входа e.orlova или d.kuznetsov — раздел «Рабочее время» не проверить")
+        return
+    if head.get_meta("worktime_reviewer") is not True:
+        rep.fail("e.orlova (руководитель отдела) не может проверять дневные отчёты — сервер старой версии? "
+                 "Обновите стенд (update.cmd) и повторите")
+        return
+    me = head.user_id
+    waiting = [r for r in head.list_local("daily_report") if r.get("status") == "submitted" and r.get("user_id") != me]
+    own = eng.list_local("daily_report")
+    if waiting and own:
+        rep.ok(f"e.orlova: отчётов на проверке — {len(waiting)}; у d.kuznetsov своих отчётов — {len(own)}")
+    else:
+        rep.warn("нет дневных отчётов на проверке — " + FRESH_HINT)
 
 
 def finish(rep: Report, tmp=None) -> int:
@@ -305,7 +328,7 @@ def finish(rep: Report, tmp=None) -> int:
         print(f"ИТОГ: стенд работает; предупреждений {len(rep.warnings)} — часть сценариев на этих данных не проверить "
               "(см. выше).")
     else:
-        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-16; сценарии — test-pc.md § 6).")
+        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-17; сценарии — test-pc.md § 6).")
     return 0
 
 

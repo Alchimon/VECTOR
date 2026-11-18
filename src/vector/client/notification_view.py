@@ -22,17 +22,22 @@ KIND_ICONS = {"po_submitted": "shield-check", "po_approved": "circle-check", "po
               "ecr_assessed": "sliders-horizontal", "ecr_decided": "gavel", "eco_approval": "file-check",
               "eco_approved": "circle-check", "eco_implemented": "check-check", "eco_verified": "clipboard-check",
               # D-40: срок ответа заказчику подходит / прошёл; зарегистрирована критическая рекламация.
-              "claim_due_soon": "calendar-clock", "claim_overdue": "triangle-alert", "claim_critical": "octagon-x"}
+              "claim_due_soon": "calendar-clock", "claim_overdue": "triangle-alert", "claim_critical": "octagon-x",
+              # Рабочее время (D-42): дневной отчёт на проверке, принят, возвращён, принятый исправляется.
+              "report_submitted": "clock", "report_accepted": "circle-check", "report_returned": "undo-2",
+              "report_reopened": "rotate-ccw"}
 KIND_TONES = {"po_submitted": "warning", "po_approved": "success", "po_returned": "danger",
               "po_withdrawn": "neutral", "delegation_created": "info", "delegation_revoked": "neutral",
               "tp_approved": "success", "wo_assigned": "info", "wo_problem": "danger", "wo_completed": "success",
               "claim_new": "warning", "claim_assigned": "info", "capa_assigned": "info", "claim_check": "primary",
               "claim_checked": "success", "ecr_new": "info", "ecr_assessed": "info", "ecr_decided": "success",
               "eco_approval": "warning", "eco_approved": "success", "eco_implemented": "primary", "eco_verified": "success",
-              "claim_due_soon": "warning", "claim_overdue": "danger", "claim_critical": "danger"}
+              "claim_due_soon": "warning", "claim_overdue": "danger", "claim_critical": "danger",
+              "report_submitted": "warning", "report_accepted": "success", "report_returned": "danger", "report_reopened": "info"}
 # Куда ведёт «Открыть»: раздел оболочки по типу объекта.
 TARGET_PAGES = {"purchase_order": "procurement", "delegation": "delegations", "tech_process": "production",
-                "work_order": "production", "claim": "quality", "change_request": "quality", "change_order": "quality"}
+                "work_order": "production", "claim": "quality", "change_request": "quality", "change_order": "quality",
+                "daily_report": "worktime"}
 
 
 def when_label(at: Optional[str], now: datetime, tz: Optional[tzinfo] = None) -> str:

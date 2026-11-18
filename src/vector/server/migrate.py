@@ -79,6 +79,8 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     18: [db.claims, db.claim_actions, db.effectiveness_checks, db.change_requests, db.change_orders, db.quality_decisions],
     # Охват и классификация рекламаций, срок и ответы заказчику (D-40). Плюс снятие NOT NULL — см. STEPS[18].
     19: [db.claim_terms, db.claim_responses],
+    # Рабочее время: дневные отчёты, их строки и журнал шагов (D-42).
+    20: [db.daily_reports, db.daily_report_lines, db.daily_report_events],
 }
 
 
@@ -187,7 +189,7 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               12: _create_tables(ADDED_IN[13]), 13: _create_tables(ADDED_IN[14]),
                               14: _create_tables(ADDED_IN[15]), 15: _create_tables(ADDED_IN[16]),
                               16: _create_tables(ADDED_IN[17]), 17: _create_tables(ADDED_IN[18]),
-                              18: _v18_to_v19}
+                              18: _v18_to_v19, 19: _create_tables(ADDED_IN[20])}
 
 
 @dataclass

@@ -34,6 +34,7 @@ from .delegation import DelegationMixin
 from .notify import NotificationMixin
 from .lifecycle import LifecycleMixin
 from .quality import QualityMixin
+from .worktime import WorktimeMixin
 from .production import ProductionMixin
 from .purchasing import PurchasingMixin
 from .stock import StockMixin
@@ -88,13 +89,14 @@ class Ctx:
 
 
 class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin, NotificationMixin,
-              ProductionMixin, LifecycleMixin, QualityMixin):
+              ProductionMixin, LifecycleMixin, QualityMixin, WorktimeMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
     склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py);
     замещение и основания решений — DelegationMixin (delegation.py, D-34/D-35); уведомления — NotificationMixin
     (notify.py, D-35); технология и производство (ТП, наряды, снимок, исполнение операций) — ProductionMixin
     (production.py, D-36); экземпляры изделий, паспорт, передача, сервис и замены — LifecycleMixin (lifecycle.py, D-38);
-    рекламации, CAPA, запросы и извещения об изменении — QualityMixin (quality.py, D-39).
+    рекламации, CAPA, запросы и извещения об изменении — QualityMixin (quality.py, D-39); рабочее время и дневные
+    отчёты — WorktimeMixin (worktime.py, D-42).
 
     Как устроен обработчик команды (все _xxx_yyy(ctx, p, ev) следуют одной схеме — так их легко проверять):
 
@@ -192,6 +194,9 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "ecr.submit": self._ecr_submit, "ecr.assess": self._ecr_assess, "ecr.decide": self._ecr_decide,
             "eco.create": self._eco_create, "eco.save": self._eco_save, "eco.approve": self._eco_approve,
             "eco.implement": self._eco_implement, "eco.verify": self._eco_verify,
+            # Рабочее время и дневной отчёт (worktime.py, D-42).
+            "report.create": self._report_create, "report.save": self._report_save, "report.submit": self._report_submit,
+            "report.reopen": self._report_reopen, "report.review": self._report_review,
         }
         diff = set(self.contracts.catalog["commands"]) ^ set(self.handlers)
         if diff:
@@ -1155,11 +1160,13 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         out.update(self._pull_lifecycle(conn, uid, now))
         # Рекламации, CAPA, запросы и извещения об изменении; справочник версий для извещений (D-39).
         out.update(self._pull_quality(conn, uid, now))
+        # Дневные отчёты: свои; руководителю отдела — отправленные чужие; проекты для строк отчёта (D-42).
+        out.update(self._pull_worktime(conn, uid, now))
         me_roles = self._me_roles(conn, uid, now)
         # Справочник людей нужен и для выбора замещающего — поэтому он приходит всем, у кого есть хоть одна роль.
         if (out["tenders"] or out["projects"] or out["calc_revisions"] or out["warehouses"] or out["needs"]
                 or out["purchase_orders"] or me_roles["roles"] or out["delegations"] or out["work_orders"]
-                or out["product_instances"] or out["claims"] or out["change_requests"]):
+                or out["product_instances"] or out["claims"] or out["change_requests"] or out["daily_reports"]):
             # Минимальный справочник людей (имя для отображения ответственного) — без логинов и контактов.
             out["people"] = [{"id": r["id"], "display_name": r["display_name"]} for r in
                              self._rows(conn, sa.select(users.c.id, users.c.display_name).where(users.c.active == sa.true()))]
@@ -1197,7 +1204,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
                   "supplier": "supplier.read", "supplier_contract": "supplier.read", "purchase_order": "po.read",
                   "tech_process": "tp.read", "work_order": "wo.read", "wo_operation": "wo.read",
                   "product_instance": "instance.read", "passport": "passport.read",
-                  "claim": "quality.read", "change_request": "quality.read", "change_order": "quality.read"}.get(otype)
+                  "claim": "quality.read", "change_request": "quality.read", "change_order": "quality.read",
+                  "daily_report": "worktime.read_all"}.get(otype)
         if not action or not isinstance(oid, str):
             return {"status": "rejected", "code": "bad_history_request", "message_ru": "Укажите тип и id объекта."}
         pid = oid if otype in ("project", "project_calc") else None
@@ -1225,7 +1233,14 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             table = {"kit": kits, "task": db.tasks, "document": db.documents, "calc_draft": kits}[otype]
             k = self._get(conn, table, oid)
             pid = k["project_id"] if k else None
-        if not self.policy.can(conn, uid, action, now, pid):
+        if otype == "daily_report":
+            # Дневной отчёт: автор — всегда; руководитель отдела — отправленный (не черновик) чужой (D-42).
+            r = self._get(conn, db.daily_reports, oid)
+            if r is not None and r["user_id"] == uid:
+                action = "report.create"
+            elif r is not None and r["status"] == "draft":
+                action = None
+        if not action or not self.policy.can(conn, uid, action, now, pid):
             return {"status": "denied", "code": "no_authority", "message_ru": "Нет права на просмотр истории этого объекта."}
         names = {r["id"]: r["display_name"] for r in self._rows(conn, sa.select(users.c.id, users.c.display_name))}
         rows = self._rows(conn, sa.select(audit_log).where(audit_log.c.object_type == otype, audit_log.c.object_id == oid).order_by(audit_log.c.id))

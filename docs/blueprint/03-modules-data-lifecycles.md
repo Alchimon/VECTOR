@@ -22,7 +22,7 @@ service / доменные события. Клиент и чужие модул
 | `production` | WorkOrder(наряд), WorkOrderSnapshot, OpExecution, TimerEvent, Substitution | WorkOrderClosed | tech, inventory |
 | `quality` | ECR, ECO, Claim, CAPA, EffectivenessCheck | ECOReleased | projects, documents |
 | `lifecycle` | ProductInstance, Passport, PassportTemplate, ServiceEvent, Replacement, Handover | — | production, documents, quality |
-| `worktime` | Shift, Pause, WorkInterval, DailyReport | — | org, projects |
+| `worktime` | DailyReport (смена, перерыв, строки по проектам и задачам) — ✅ D-42; Shift, Pause, WorkInterval как отдельные объекты — позже | — | org, projects |
 | `comms` | Chat, Message, Attachment, MailLink, Notification | — | files, identity |
 | `analytics` | Report definitions, Metric (source/period/access) | — | read-модели всех модулей |
 | `cad3d` | Model3D, Model3DVersion, CadBinding | — | files |
@@ -106,7 +106,7 @@ ProductInstance 1─* ServiceEvent / Replacement / Claim;  Claim ─* CAPA;  ECR
 > `claims.instance_id` необязателен (рекламация без заводского номера) — единственная миграция, меняющая существующий
 > столбец. Срок «закрыт», когда после его установки записан ответ.
 
-**Дневной отчёт**: `draft → in_review → submitted → accepted | returned`.
+**Дневной отчёт**: `draft → in_review → submitted → accepted | returned`. Реализовано (D-42) упрощённо: `draft → submitted → accepted | returned`; «самопроверку» (`in_review`) выполняет программа перед отправкой; `returned` → правка → `submitted`; `submitted | accepted → draft` — исправление с основанием.
 
 **Конфигурация**: `draft → validated → preview → published → superseded`; rollback = публикация
 предыдущей версии новой записью.

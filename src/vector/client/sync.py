@@ -86,7 +86,10 @@ OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp")
                 ("product_instance", "product_instances"), ("passport", "passports"),
                 # Качество (D-39): рекламации, запросы (ECR) и извещения (ECO). Регистрация рекламации, подача запроса и
                 # черновик извещения — офлайн через очередь; решения, отметки и проверки — онлайн-командами.
-                ("claim", "claims"), ("change_request", "change_requests"), ("change_order", "change_orders"))
+                ("claim", "claims"), ("change_request", "change_requests"), ("change_order", "change_orders"),
+                # Рабочее время (D-42): свои дневные отчёты (создание, правка, отправка — офлайн через очередь) и —
+                # руководителю отдела — отправленные чужие (принять / вернуть — онлайн-командой).
+                ("daily_report", "daily_reports"))
 # Объекты из результата команды → список в meta (ключ результата, ключ meta); заменяются по id.
 # Движения склада, резервы и потребности меняются ТОЛЬКО онлайн-командами (online_required): в кэше это
 # снимок «на момент последнего обновления», офлайн он только читается.
@@ -108,7 +111,9 @@ STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_
               "quality_refs",
               # D-40: проекты для рекламаций и запросов (код, можно ли регистрировать), сотрудники ОТК (отдел
               # технического контроля) и выполненные наряды — для рекламации на партию.
-              "quality_projects", "quality_otk", "claim_batches")
+              "quality_projects", "quality_otk", "claim_batches",
+              # D-42: проекты, где сотрудник участник (для строк дневного отчёта), и может ли он проверять отчёты.
+              "worktime_projects", "worktime_reviewer")
 
 
 # Онлайн-команды, которым не нужно сначала отправить очередь (их результат не зависит от неотправленных правок).
@@ -441,7 +446,7 @@ class SyncClient:
                         "VALUES (?,?,?,?,?,?,?, 'pending')",
                         (op_id, command, self._seal("outbox", op_id, json.dumps(payload, ensure_ascii=False)), expected_version, otype, oid,
                          self.now().isoformat()))
-        self._overlay(otype, oid, payload)
+        self._overlay(otype, oid, payload, command)
         self.db.execute("COMMIT")
         res = LocalResult("queued", op_id, "Сохранено на этом компьютере и поставлено в очередь. Сервер ещё не подтвердил изменение.")
         if self.token:
@@ -568,6 +573,46 @@ class SyncClient:
         ev = (prev[0] or 0) + 1 if prev is not None else row[0]
         # eco.save не принимает ecr_id: запрос извещения не меняется.
         return self.execute("eco.save", {"id": oid, **body}, ev)
+
+    def save_report_draft(self, payload: dict) -> LocalResult:
+        """«Сохранить дневной отчёт»: report.create (отчёта ещё нет ни на сервере, ни в очереди) или report.save — через
+        офлайн-очередь (D-42). Цепочка expected_version — как у извещения (save_eco_draft); без изменений в очередь не
+        ставится. payload — {id, work_date, shift_start, shift_end, break_minutes, lines, comment}.
+        """
+        if self.db is None:
+            return LocalResult("unauthenticated", message_ru="Войдите в систему.")
+        oid = payload["id"]
+        row = self.db.execute("SELECT server_version FROM cache WHERE object_type='daily_report' AND id=?", (oid,)).fetchone()
+        prev = self._report_prev(oid)
+        if prev is None and (row is None or row[0] is None):
+            return self.execute("report.create", payload)
+        local = self.get_local("daily_report", oid) or {}
+        body = {k: payload[k] for k in ("shift_start", "shift_end", "break_minutes", "lines", "comment") if k in payload}
+        keys = ("project_id", "task_id", "minutes", "note")
+        same = lambda k: ([{x: ln.get(x) for x in keys} for ln in local.get(k) or []]  # noqa: E731
+                          == [{x: ln.get(x) for x in keys} for ln in body[k]]) if k == "lines" else (
+            (local.get(k) or None) == (body[k] or None) if k != "break_minutes" else int(local.get(k) or 0) == int(body[k] or 0))
+        if all(same(k) for k in body):
+            return LocalResult("accepted", message_ru="Изменений нет — сохранять нечего.", response={"unchanged": True})
+        ev = (prev[0] or 0) + 1 if prev is not None else row[0]
+        # report.save не принимает work_date: день отчёта не меняется.
+        return self.execute("report.save", {"id": oid, **body}, ev)
+
+    def submit_report(self, oid: str) -> LocalResult:
+        """«Отправить на проверку» — report.submit через очередь (можно без связи, D-42). Версия — по той же цепочке:
+        если в очереди есть неотправленное создание или сохранение этого отчёта, отправка основана на нём."""
+        if self.db is None:
+            return LocalResult("unauthenticated", message_ru="Войдите в систему.")
+        row = self.db.execute("SELECT server_version FROM cache WHERE object_type='daily_report' AND id=?", (oid,)).fetchone()
+        prev = self._report_prev(oid)
+        ev = (prev[0] or 0) + 1 if prev is not None else (row[0] if row else None)
+        return self.execute("report.submit", {"id": oid}, ev)
+
+    def _report_prev(self, oid: str):
+        """Последняя неотправленная (или отклонённая / в конфликте) операция автора по отчёту — для цепочки версий."""
+        return self.db.execute("SELECT expected_version FROM outbox WHERE command IN ('report.create','report.save',"
+                               "'report.submit') AND object_id=? AND state IN ('pending','conflict','rejected') "
+                               "ORDER BY seq DESC LIMIT 1", (oid,)).fetchone()
 
     def op_event(self, op_id: str, kind: str, qty_done: Optional[int] = None, note: Optional[str] = None) -> LocalResult:
         """Событие исполнителя по операции наряда (старт / пауза / продолжить / завершить / проблема) — офлайн (D-36).
@@ -1012,14 +1057,23 @@ class SyncClient:
                 self.db.execute("UPDATE cache SET data_enc=?, pending=0 WHERE object_type=? AND id=?",
                                 (self._seal("cache", f"{otype}/{obj['id']}/d", j), otype, obj["id"]))
 
-    def _overlay(self, otype, oid, payload):
+    def _overlay(self, otype, oid, payload, command: Optional[str] = None):
         """Наложить данные queued-команды на локальную копию объекта (или создать её), пометив «есть локальные правки».
-        Так пользователь сразу видит своё изменение офлайн.
+        Так пользователь сразу видит своё изменение офлайн. Дневной отчёт (D-42) накладывается по своим правилам
+        (_report_overlay): статус после отправки, итоги, автор.
         """
         if not oid:
             return
         row = self.db.execute("SELECT data_enc FROM cache WHERE object_type=? AND id=?", (otype, oid)).fetchone()
-        if row and otype == "wo_operation" and "kind" in payload:
+        if otype == "daily_report":
+            old = json.loads(self._open("cache", f"{otype}/{oid}/d", row[0])) if row else None
+            data = _report_overlay(old, command or "", payload, self.user_id)
+            enc = self._seal("cache", f"{otype}/{oid}/d", json.dumps(data, ensure_ascii=False))
+            if row:
+                self.db.execute("UPDATE cache SET data_enc=?, pending=1 WHERE object_type=? AND id=?", (enc, otype, oid))
+            else:
+                self.db.execute("INSERT INTO cache VALUES (?,?,?,NULL,NULL,1)", (otype, oid, enc))
+        elif row and otype == "wo_operation" and "kind" in payload:
             data = _op_event_overlay(json.loads(self._open("cache", f"{otype}/{oid}/d", row[0])), payload)
             self.db.execute("UPDATE cache SET data_enc=?, pending=1 WHERE object_type=? AND id=?",
                             (self._seal("cache", f"{otype}/{oid}/d", json.dumps(data, ensure_ascii=False)), otype, oid))
@@ -1047,6 +1101,26 @@ class SyncClient:
             j = self._open("cache", f"{otype}/{oid}/s", row[0])
             self.db.execute("UPDATE cache SET data_enc=?, pending=0 WHERE object_type=? AND id=?",
                             (self._seal("cache", f"{otype}/{oid}/d", j), otype, oid))
+
+
+def _report_overlay(old: Optional[dict], command: str, payload: dict, user_id: Optional[str]) -> dict:
+    """Локальная копия дневного отчёта после queued-команды (офлайн, D-42): создание — новый черновик автора;
+    сохранение — переданные поля (строки целиком); отправка — «На проверке». Итог по строкам пересчитывается.
+    Сервер проверит всё ещё раз; расхождение — видимый конфликт в «Синхронизации».
+    """
+    from vector.core import worktime as wt
+    data = dict(old or {"user_id": user_id, "status": "draft", "break_minutes": 0, "lines": [], "history": [],
+                        "shift_start": None, "shift_end": None, "comment": None, "version": None})
+    if command == "report.submit":
+        data["status"] = "submitted"
+    else:
+        data.update({k: v for k, v in payload.items() if k != "lines"})
+        if "lines" in payload:
+            data["lines"] = [{**ln, "line_no": i} for i, ln in enumerate(payload.get("lines") or [], 1)]
+        data["break_minutes"] = int(data.get("break_minutes") or 0)
+    data["status_label"] = wt.STATUS_LABELS_RU.get(data["status"], data["status"])
+    data["total_minutes"] = sum(int(ln.get("minutes") or 0) for ln in data.get("lines") or [])
+    return data
 
 
 def _op_event_overlay(op: dict, payload: dict) -> dict:

@@ -12,6 +12,9 @@
   m.lebedev — ведущий инженер; o.nikitina — бухгалтерия; i.belova — склад; s.morozov — закупка;
   v.zaitseva — согласование закупок; t.fedorova, a.grishin — технологи; k.pavlov, r.sergeev — производство (D-36);
   n.sokolov — без роли, должен сменить пароль.
+
+Рабочее время (D-42): дневные отчёты d.kuznetsov и m.lebedev — на проверке, черновик, принят, возвращён (см.
+_seed_worktime).
 """
 from __future__ import annotations
 
@@ -21,7 +24,7 @@ import uuid
 
 import sqlalchemy as sa
 
-from .db import calc_versions, customers, users, work_orders
+from .db import calc_versions, customers, tasks, users, work_orders
 
 DEVICE = "demo-seed"
 
@@ -403,6 +406,7 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     prod = _seed_production(cmd, login, people, svc, kits, atx_v1)
     prod.update(_seed_lifecycle(cmd, login, people, svc, prod["tech_processes"][0], items, whs, docs))
     prod.update(_seed_quality(cmd, login, people, svc, prod["product_instances"][0], kits, prod["lifecycle_work_order"]))
+    prod.update(_seed_worktime(cmd, login, people, svc, pid))
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
             "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
             "suppliers": sups, "contracts": contracts, "delegations": [deleg["id"], pdeleg["id"]],
@@ -551,3 +555,39 @@ def _seed_quality(cmd, login, people, svc, instance_id, kits, batch_wo) -> dict:
         for lg in ("a.smirnova", "p.volkov", "m.lebedev", "l.egorova"):
             svc._quality_reminders(c, people[lg], svc.now())
     return {"claims": [cid, cid2], "change_requests": [rid]}
+
+
+def _seed_worktime(cmd, login, people, svc, pid) -> dict:
+    """Дневные отчёты (этап 7, D-42) — через обычные команды, как в работе. Тексты ВЫМЫШЛЕНЫ.
+
+    * d.kuznetsov: отчёт за вчера отправлен на проверку (проект П-2026-014 с задачей и общие дела отдела) — ждёт
+      руководителя отдела e.orlova; за сегодня — черновик (смена и одна строка, можно дополнить и отправить).
+    * m.lebedev: отчёт за позавчера принят e.orlova; отчёт за вчера возвращён с причиной — его нужно исправить и
+      отправить снова.
+    """
+    eng, lead, head = login("d.kuznetsov"), login("m.lebedev"), login("e.orlova")
+    today = svc.now().date()
+    with svc.engine.connect() as c:
+        task_id = c.execute(sa.select(tasks.c.id).where(tasks.c.project_id == pid).order_by(tasks.c.title)).scalar()
+
+    def report(tok, days_ago, lines, start="09:00", end="18:00", brk=60, comment=None):
+        """Создать отчёт за день (days_ago дней назад) и вернуть его (с версией)."""
+        return cmd(tok, "report.create", {"id": str(uuid.uuid4()), "work_date": (today - timedelta(days=days_ago)).isoformat(),
+                                          "shift_start": start, "shift_end": end, "break_minutes": brk, "lines": lines,
+                                          **({"comment": comment} if comment else {})})["daily_report"]
+
+    r1 = report(eng, 1, [{"project_id": pid, "task_id": task_id, "minutes": 330, "note": "Схема автоматизации: раздел насосной"},
+                         {"project_id": pid, "minutes": 90, "note": "Совещание с заказчиком по замечаниям"},
+                         {"minutes": 60, "note": "Обучение по охране труда"}])
+    cmd(eng, "report.submit", {"id": r1["id"]}, r1["version"])
+    r2 = report(eng, 0, [{"project_id": pid, "task_id": task_id, "minutes": 180, "note": "Схема автоматизации: щит управления"}],
+                end="18:00", comment="Вторую половину дня допишу вечером")
+    r3 = report(lead, 2, [{"project_id": pid, "minutes": 420, "note": "Проверка схем подключения"},
+                          {"minutes": 60, "note": "Планёрка отдела"}])
+    r3 = cmd(lead, "report.submit", {"id": r3["id"]}, r3["version"])["daily_report"]
+    cmd(head, "report.review", {"id": r3["id"], "decision": "accept"}, r3["version"])
+    r4 = report(lead, 1, [{"project_id": pid, "minutes": 480, "note": "Работа по проекту"}], start="08:00", end="17:00")
+    r4 = cmd(lead, "report.submit", {"id": r4["id"]}, r4["version"])["daily_report"]
+    cmd(head, "report.review", {"id": r4["id"], "decision": "return",
+                                "comment": "Распишите по задачам: «работа по проекту» — слишком общо."}, r4["version"])
+    return {"daily_reports": [r1["id"], r2["id"], r3["id"], r4["id"]]}

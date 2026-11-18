@@ -208,7 +208,7 @@ def _plain(v):
 
 
 def main():
-    """Снять скриншоты 01–40 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
+    """Снять скриншоты 01–48 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
     args = ap.parse_args()
@@ -510,6 +510,26 @@ def main():
         h.wait_idle()
         h.shot(out / f"{theme}-46-quality-claim-form.png")
         cf.setProperty("visible", False)
+        h.wait_idle()
+        h.backend.logout()
+        h.wait_idle()
+        # Рабочее время (D-42): руководитель отдела — отчёт сотрудника на проверке; инженер — редактор черновика за
+        # сегодня (смена, строки, итоги «не распределено»).
+        h.login("e.orlova")
+        h.go("worktime", h.ids["daily_reports"][0])
+        h.shot(out / f"{theme}-47-worktime-review.png")
+        h.backend.logout()
+        h.wait_idle()
+        h.login("d.kuznetsov")
+        h.go("worktime", h.ids["daily_reports"][1])
+        wv = h.backend.property("worktimeOverview")
+        wv = wv.toVariant() if hasattr(wv, "toVariant") else wv
+        rep = next(r for r in wv["mine"] if r["id"] == h.ids["daily_reports"][1])
+        ed = next(o for o in h.win.findChildren(QObject) if o.objectName() == "reportEditor")
+        QMetaObject.invokeMethod(ed, "openFor", Q_ARG("QVariant", rep), Q_ARG("QVariant", rep["work_date"]))
+        h.wait_idle()
+        h.shot(out / f"{theme}-48-worktime-editor.png")
+        ed.setProperty("visible", False)
         h.wait_idle()
         h.backend.logout()
         h.wait_idle()

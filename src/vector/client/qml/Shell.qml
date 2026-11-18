@@ -5,7 +5,7 @@ import QtQuick.Layouts
 // Рабочая оболочка после входа: левое меню разделов, верхняя строка (связь, очередь), область страницы.
 // page — текущий раздел; go(page, id) — перейти к разделу и (необязательно) открыть объект id (navTarget).
 // Видимость пунктов меню — подсказка по правам (backend.hint); настоящий отказ всегда даёт сервер.
-// Горячие клавиши: Ctrl+1…9 — разделы, F5 — синхронизация. В офлайн-режиме внизу — кнопка переподключения.
+// Горячие клавиши: Ctrl+1…9 и Ctrl+0 (рабочее время) — разделы, F5 — синхронизация. В офлайн-режиме внизу — кнопка переподключения.
 Item {
     id: shellRoot
     objectName: "shell"
@@ -54,6 +54,8 @@ Item {
     // Качество (D-39): рекламации и CAPA, запросы и извещения об изменении — команда проекта, технологи, руководитель
     // отдела и все, кому сервер отдал данные качества. Подсказка; данные решает сервер.
     readonly property bool seesQuality: backend.qualityOverview.sees === true
+    // Рабочее время (D-42): дневной отчёт ведёт каждый — раздел виден всем.
+    Shortcut { sequence: "Ctrl+0"; onActivated: shellRoot.go("worktime") }
     Shortcut { sequence: "F5"; onActivated: backend.syncNow() }
     // Справочник сокращений и подсказок (D-37) — всем, без связи тоже.
     Shortcut { sequence: "F1"; onActivated: shellRoot.go("help") }
@@ -88,6 +90,11 @@ Item {
                 NavItem { text: "Проекты"; iconName: "folder-kanban"; active: shellRoot.page === "projects"; onClicked: shellRoot.go("projects") }
                 NavItem { text: "Итоги проектов"; iconName: "wallet"; active: shellRoot.page === "finance"; onClicked: shellRoot.go("finance")
                           visible: (backend.me.roles || []).indexOf("accountant") >= 0 || backend.financeOverview.length > 0 }
+                // Рабочее время (D-42): свой дневной отчёт — всем; бейдж — руководителю отдела отчёты на проверке,
+                // остальным — возвращённые на исправление.
+                NavItem { objectName: "navWorktime"; text: "Рабочее время"; iconName: "clock"; active: shellRoot.page === "worktime"; onClicked: shellRoot.go("worktime")
+                          badge: ((backend.worktimeOverview.counts || {}).to_review || 0) + ((backend.worktimeOverview.counts || {}).returned || 0)
+                          badgeTone: ((backend.worktimeOverview.counts || {}).returned || 0) > 0 ? "danger" : "warning" }
                 Text { visible: shellRoot.seesStock || shellRoot.seesNeeds; text: "СНАБЖЕНИЕ"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
                 NavItem { objectName: "navStock"; text: "Склад"; iconName: "warehouse"; active: shellRoot.page === "stock"; onClicked: shellRoot.go("stock"); visible: shellRoot.seesStock }
                 NavItem { objectName: "navProcurement"; text: "Закупка"; iconName: "shopping-cart"; active: shellRoot.page === "procurement"; onClicked: shellRoot.go("procurement"); visible: shellRoot.seesNeeds
@@ -149,7 +156,8 @@ Item {
             anchors.fill: parent
             sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC, finance: financeC,
                                stock: stockC, procurement: procurementC, delegations: delegationsC,
-                               notifications: notificationsC, production: productionC, products: productsC, quality: qualityC, help: helpC })[shellRoot.page]
+                               notifications: notificationsC, production: productionC, products: productsC, quality: qualityC, help: helpC,
+                               worktime: worktimeC })[shellRoot.page]
         }
         }
     }
@@ -167,6 +175,7 @@ Item {
     Component { id: productsC; ProductsPage { shell: shellRoot } }
     Component { id: qualityC; QualityPage { shell: shellRoot } }
     Component { id: helpC; HelpPage { shell: shellRoot } }
+    Component { id: worktimeC; WorktimePage { shell: shellRoot } }
 
     FormDialog {
         id: reconnect

@@ -1,5 +1,5 @@
 {
-  "contract": "command-catalog-slice1-v19",
+  "contract": "command-catalog-slice1-v20",
   "offline_classes": {
     "offline_full": "Полностью доступно офлайн (чтение локального кэша, локальные черновики без эффекта для других).",
     "queued": "Создаёт локальное изменение в очереди синхронизации. До ответа сервера это НЕ подтверждённое действие; сервер заново проверяет права, состояние и версию.",
@@ -625,6 +625,40 @@
       "label_ru": "Проверить внедрение",
       "requires_expected_version": true,
       "note": "ГИП, РП проекта или руководитель отдела — не тот, кто внедрял. {id, note}. «Внедрено» → «Проверено»."
+    },
+    "report.create": {
+      "offline": "queued",
+      "object": "daily_report",
+      "label_ru": "Создать дневной отчёт",
+      "note": "Свой отчёт за рабочий день (D-42). {id, work_date, shift_start? (ЧЧ:ММ), shift_end?, break_minutes?, lines?:[{project_id?, task_id?, minutes, note}], comment?}. Один отчёт на сотрудника за день; день не в будущем и не старше 31 дня. Проект строки — тот, где сотрудник участник; задача — этого проекта. Можно без связи (очередь)."
+    },
+    "report.save": {
+      "offline": "queued",
+      "object": "daily_report",
+      "label_ru": "Сохранить дневной отчёт",
+      "requires_expected_version": true,
+      "note": "{id, shift_start?, shift_end?, break_minutes?, lines?, comment?} — только автор, только черновик или возвращённый отчёт; переданное заменяется целиком (строки — все). Конфликт версий не сливается."
+    },
+    "report.submit": {
+      "offline": "queued",
+      "object": "daily_report",
+      "label_ru": "Отправить отчёт на проверку",
+      "requires_expected_version": true,
+      "note": "{id} — автор отправляет руководителю отдела: смена указана, есть строки, часов в строках не больше смены без перерыва. Можно без связи (очередь)."
+    },
+    "report.reopen": {
+      "offline": "online_required",
+      "object": "daily_report",
+      "label_ru": "Исправить отправленный отчёт",
+      "requires_expected_version": true,
+      "note": "{id, reason} — автор возвращает отправленный или принятый отчёт в черновик для исправления; основание обязательно (матрица 04: исправление после отправки — с основанием)."
+    },
+    "report.review": {
+      "offline": "online_required",
+      "object": "daily_report",
+      "label_ru": "Принять или вернуть дневной отчёт",
+      "requires_expected_version": true,
+      "note": "{id, decision (accept|return), comment? (обязателен при возврате)} — руководитель отдела, не автор («четыре глаза»); только отчёт «На проверке»."
     }
   },
   "queries": {

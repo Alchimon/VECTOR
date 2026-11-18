@@ -577,7 +577,8 @@ def test_v18_to_v19_relaxes_claim_instance_and_adds_terms_and_responses(backend,
                                             source="customer", description="Отказ", status="registered", **meta))
     before = counts(eng, mg.tables_of_version(18))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
-    assert (rep.from_version, rep.to_version, rep.created_tables) == (18, 19, ["claim_terms", "claim_responses"])
+    assert (rep.from_version, rep.to_version) == (18, db.SCHEMA_VERSION)
+    assert rep.created_tables == [t.name for v in range(19, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]]
     assert rep.backup_path.name.startswith("vector-premigrate-v18-")
     after = counts(eng, mg.tables_of_version(18))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
@@ -606,7 +607,7 @@ def test_v18_to_v19_relaxes_claim_instance_and_adds_terms_and_responses(backend,
     bad(db.claim_responses.update().values(summary="Другое"))                                   # ответ неизменяем
     bad(db.claim_responses.delete())
     assert db.check_schema(eng) == db.SCHEMA_VERSION
-    # Повторный запуск — уже v19: ничего не делает.
+    # Повторный запуск — уже текущая версия: ничего не делает.
     assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
 
 
@@ -621,3 +622,39 @@ def test_v18_to_v19_refuses_unexpected_claims_definition(tmp_path, clock, keys, 
     with eng.connect() as c:
         assert mg.current_version(eng) == 18 and "claim_terms" not in sa.inspect(c).get_table_names()
         assert not mg._column_nullable(c, "claims", "instance_id")
+
+
+def test_v19_to_v20_adds_worktime_tables(backend, tmp_path, clock, keys):
+    """v19 → v20 (D-42): только новые таблицы рабочего времени; данные v19 не меняются; ограничения и неизменяемость
+    журнала шагов действуют на обеих СУБД."""
+    eng = make_v3(backend, tmp_path, clock, version=19)
+    now, uid, rid = clock.now(), new_id(), new_id()
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x", must_change_password=False,
+                                           password_changed_at=now, failed_attempts=0, active=True, created_at=now))
+    before = counts(eng, mg.tables_of_version(19))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (19, 20)
+    assert rep.created_tables == ["daily_reports", "daily_report_lines", "daily_report_events"]
+    after = counts(eng, mg.tables_of_version(19))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    r = dict(user_id=uid, work_date=now.date(), status="draft", break_minutes=0, total_minutes=0, version=1,
+             created_by=uid, created_at=now, updated_by=uid, updated_at=now)
+    bad(db.daily_reports.insert().values(id=new_id(), **{**r, "status": "in_review"}))
+    bad(db.daily_reports.insert().values(id=new_id(), shift_start=600, **r))                  # смена — обе границы
+    bad(db.daily_reports.insert().values(id=new_id(), shift_start=600, shift_end=540, **r))   # конец позже начала
+    with eng.begin() as c:
+        c.execute(db.daily_reports.insert().values(id=rid, shift_start=510, shift_end=1050, **r))
+        c.execute(db.daily_report_events.insert().values(report_id=rid, seq=1, decision="created", details_json="{}",
+                                                         authority="authenticated", decided_by=uid, decided_at=now))
+    bad(db.daily_reports.insert().values(id=new_id(), **r))                                   # один отчёт за день
+    bad(db.daily_report_lines.insert().values(report_id=rid, line_no=1, task_id=new_id(), minutes=30, note="x"))
+    bad(db.daily_report_lines.insert().values(report_id=rid, line_no=1, minutes=0, note="x"))
+    bad(db.daily_report_events.update().values(decision="x"))                                 # журнал неизменяем
+    bad(db.daily_report_events.delete())
+    assert db.check_schema(eng) == db.SCHEMA_VERSION

@@ -24,7 +24,7 @@ from vector.core import stock
 from vector.core.contracts import Contracts
 
 from . import (calc_view, delegation_view, hints, lifecycle_view, notification_view, production_view, purchasing_view,
-               quality_view, stock_view)
+               quality_view, stock_view, worktime_view)
 from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
 from .vault import KeyringStore, MemoryStore, VaultError
@@ -219,7 +219,9 @@ class Backend(QObject):
                                        "calc_draft": [], "warehouse": [], "stock_item": [], "supplier": [], "purchase_order": [],
                                        "supplier_contract": [], "tech_process": [], "work_order": [], "wo_operation": [],
                                        "product_instance": [], "passport": [],
-                                       "claim": [], "change_request": [], "change_order": []}
+                                       "claim": [], "change_request": [], "change_order": [],
+                                       # Рабочее время (D-42): дневные отчёты (свои и — руководителю отдела — отправленные).
+                                       "daily_report": []}
         # Фильтр вкладки «Заказы поставщикам» (active / approval / draft / placed / closed / all) — состояние экрана.
         self._po_filter = "active"
         # Наибольший id уведомления, о котором уже сказали (None — ещё не было снимка после входа, D-35).
@@ -841,6 +843,50 @@ class Backend(QObject):
             r = self.client.save_eco_draft(data)
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, "eco.save", res))
+
+    # ------------------------------------------------------------ рабочее время и дневной отчёт (D-42)
+    @Property("QVariantMap", notify=dataChanged)
+    def worktimeOverview(self):
+        """Раздел «Время»: свои дневные отчёты, отчёты на проверку (руководителю отдела), проекты и задачи для строк."""
+        st = self._stock
+        reports = [{**o, "pending": bool(o.get("_pending"))} for o in self._data.get("daily_report", [])]
+        return qml_safe(worktime_view.worktime_view(
+            reports, st.get("worktime_projects") or [], self._data.get("task", []), self._people, self._me,
+            bool(st.get("worktime_reviewer")), self._online and self._session_mode == "online", self._last_pull))
+
+    @Slot("QVariantMap", result="QVariantMap")
+    def reportCheck(self, payload) -> dict:
+        """Проверка формы дневного отчёта без сервера (правила ядра): замечания по строкам, итоги, что мешает отправке."""
+        p = payload.toVariant() if hasattr(payload, "toVariant") else payload
+        return qml_safe(worktime_view.report_form(_plain(p)))
+
+    @Slot(str, "QVariantMap")
+    def saveReport(self, tag: str, payload):
+        """«Сохранить отчёт»: через очередь (можно без связи); создание или правка — решает SyncClient.save_report_draft.
+        payload — форма {id?, work_date, shift_start, shift_end, break_minutes, comment, lines: [{project_id, task_id,
+        hours, note}]}; часы переводятся в минуты здесь (те же правила, что в проверке формы)."""
+        p = _plain(payload.toVariant() if hasattr(payload, "toVariant") else payload)
+        f = worktime_view.report_form(p)
+        if not f["ok"]:
+            self._command_done(tag, {"status": "rejected", "message_ru": f["message"]})
+            return
+        # id нового отчёта создаёт форма (backend.newId) — чтобы после сохранения сразу выбрать его в списке.
+        data = {"id": p.get("id") or self.newId(), "work_date": p.get("work_date"), **f["data"]}
+
+        def job():
+            """Сохранить отчёт в рабочем потоке и снять снимок данных."""
+            r = self.client.save_report_draft(data)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "report.save", res))
+
+    @Slot(str, str)
+    def submitReport(self, tag: str, report_id: str):
+        """«Отправить на проверку»: report.submit через очередь (можно без связи); версия — по цепочке очереди."""
+        def job():
+            """Отправить отчёт в рабочем потоке и снять снимок данных."""
+            r = self.client.submit_report(report_id)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "report.submit", res))
 
     @Property("QVariantMap", notify=dataChanged)
     def suppliersOverview(self):
