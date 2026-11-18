@@ -2,9 +2,16 @@ import QtQuick
 
 // Компактная метка статуса («Черновик», «Выигран», «Не отправлено»): text, tone (цвет из Theme.tone), iconName.
 // maxWidth > 0 — длинный текст сокращается многоточием.
+// tip — подсказка при наведении (D-37): что значит статус; по умолчанию — из словаря по тексту метки. Если текст
+// сокращён многоточием, полный текст тоже показывается в подсказке.
 Rectangle {
     id: c
     property string text: ""
+    property string tip: backend.tip(text)
+    readonly property string tipText: {
+        var full = naturalWidth > width + 1 ? c.text : ""
+        return full !== "" && tip !== "" ? full + "\n" + tip : (full !== "" ? full : tip)
+    }
     property string tone: "neutral"
     property string iconName: ""
     property int maxWidth: 0          // 0 — без ограничения; иначе текст сокращается с «…»
@@ -16,6 +23,9 @@ Rectangle {
     implicitWidth: maxWidth > 0 ? Math.min(maxWidth, naturalWidth) : naturalWidth
     radius: 11
     color: t.bg
+    Accessible.role: Accessible.StaticText; Accessible.name: text; Accessible.description: tip
+    HoverHandler { id: chipHover }
+    VToolTip { visible: chipHover.hovered && c.tipText !== ""; text: c.tipText }
     Row {
         id: row
         anchors.centerIn: parent

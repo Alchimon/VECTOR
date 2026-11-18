@@ -303,7 +303,9 @@ Item {
                     RowLayout { Layout.fillWidth: true
                         SectionTitle { text: "Другие обозначения (" + (page.dv.aliases || []).length + ")"; iconName: "link" }
                         VButton { objectName: "btnNewAlias"; text: "Добавить"; kind: "soft"; compact: true; iconName: "plus"; visible: page.dv.can_edit === true; onClicked: aliasForm.openFor(null) } }
-                    Text { text: "Аналоги и написания из расчётов/ТКП. Строка потребности с таким обозначением сопоставится автоматически, если единица совпадает с единицей позиции."
+                    Text { // подсказка: расшифровка сокращений в тексте (D-37)
+                        VTipArea { text: backend.tip(parent.text) }
+                        text: "Аналоги и написания из расчётов/ТКП. Строка потребности с таким обозначением сопоставится автоматически, если единица совпадает с единицей позиции."
                            color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs; wrapMode: Text.Wrap; Layout.fillWidth: true }
                     ListView {
                         id: aliasList; objectName: "aliasList"

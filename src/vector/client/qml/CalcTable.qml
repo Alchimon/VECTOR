@@ -21,8 +21,12 @@ Rectangle {
         horizontalAlignment: num ? Text.AlignRight : Text.AlignLeft
         elide: Text.ElideRight
     }
+    // Заголовок столбца; tip — подсказка при наведении (D-37), например «ЕД.» — единица измерения.
     component Head: Text {
+        id: head
         property bool num: false
+        property string tip: ""
+        VTipArea { text: head.tip }
         color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsXs; font.weight: Font.DemiBold
         font.letterSpacing: 0.4
         horizontalAlignment: num ? Text.AlignRight : Text.AlignLeft
@@ -36,12 +40,12 @@ Rectangle {
             Layout.fillWidth: true; implicitHeight: 32; color: Theme.surfaceAlt; radius: Theme.radius
             Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: parent.radius; color: Theme.surfaceAlt }
             RowLayout { anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; spacing: 10
-                Head { text: "№"; Layout.preferredWidth: t.w.pos }
-                Head { text: "ПОЗИЦИЯ"; Layout.fillWidth: true }
-                Head { text: "ЕД."; Layout.preferredWidth: t.w.unit }
-                Head { text: "КОЛ-ВО"; num: true; Layout.preferredWidth: t.w.qty }
-                Head { text: "ЦЕНА"; num: true; Layout.preferredWidth: t.w.price }
-                Head { text: "СУММА"; num: true; Layout.preferredWidth: t.w.amount }
+                Head { text: "№"; tip: "Номер позиции в расчёте"; Layout.preferredWidth: t.w.pos }
+                Head { text: "ПОЗИЦИЯ"; tip: "Обозначение (код) и наименование позиции"; Layout.fillWidth: true }
+                Head { text: "ЕД."; tip: "ЕД. — единица измерения (шт, м, компл.…)"; Layout.preferredWidth: t.w.unit }
+                Head { text: "КОЛ-ВО"; tip: "КОЛ-ВО — количество"; num: true; Layout.preferredWidth: t.w.qty }
+                Head { text: "ЦЕНА"; tip: "Цена за единицу, в валюте расчёта"; num: true; Layout.preferredWidth: t.w.price }
+                Head { text: "СУММА"; tip: "Сумма по позиции: количество × цена"; num: true; Layout.preferredWidth: t.w.amount }
             }
         }
         Repeater {

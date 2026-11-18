@@ -97,7 +97,9 @@ Item {
                     contentItem: RowLayout {
                         spacing: 6
                         Icon { name: page.advanced ? "chevron-down" : "chevron-right"; size: 14 }
-                        Text { text: "Сертификат корпоративного центра (CA)"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS }
+                        Text { // подсказка: расшифровка сокращений в тексте (D-37)
+                            VTipArea { text: backend.tip(parent.text) }
+                            text: "Сертификат корпоративного центра (CA)"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS }
                     }
                 }
                 VField { id: ca; visible: page.advanced; label: "Файл сертификата CA (PEM)"; placeholder: "C:\\VECTOR\\ca.pem"; text: backend.savedCa

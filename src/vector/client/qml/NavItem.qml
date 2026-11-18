@@ -4,8 +4,10 @@ import QtQuick.Layouts
 
 // Пункт левого меню: text, iconName, active — выбранный раздел; badge > 0 — счётчик (например, ожидающие
 // операции), badgeTone — его цвет. Доступен с клавиатуры (Tab, Пробел/Enter).
+// tip — подсказка при наведении (D-37): что в разделе; по умолчанию — из словаря подсказок по названию.
 AbstractButton {
     id: n
+    property string tip: backend.tip(text)
     property string iconName: ""
     property bool active: false
     property int badge: 0
@@ -15,6 +17,8 @@ AbstractButton {
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
     Accessible.name: text
+    Accessible.description: tip
+    VToolTip { visible: n.hovered && n.tip !== ""; text: n.tip }
     background: Rectangle {
         radius: Theme.radius - 2
         color: n.active ? Theme.primarySoft : n.hovered ? Theme.hover : "transparent"

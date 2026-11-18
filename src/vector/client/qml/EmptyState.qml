@@ -3,6 +3,7 @@ import QtQuick.Layouts
 
 // Пустое состояние списка или карточки: иконка, title, пояснение text и необязательная кнопка
 // (actionText → сигнал action()). Отличает «ещё ничего нет» от ошибки и от «нет доступа».
+// Подсказка при наведении на текст (D-37) — расшифровка сокращений из заголовка и пояснения.
 ColumnLayout {
     id: e
     property string iconName: "inbox"
@@ -23,6 +24,7 @@ ColumnLayout {
         Layout.alignment: Qt.AlignHCenter; Layout.maximumWidth: 360
         text: e.text; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs
         horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap
+        VTipArea { text: backend.tip(e.title + " " + e.text) }
     }
     VButton { Layout.alignment: Qt.AlignHCenter; visible: e.actionText !== ""; text: e.actionText; kind: "soft"; iconName: "plus"; onClicked: e.action() }
 }

@@ -16,7 +16,9 @@ ColumnLayout {
         SectionTitle { text: "Итог проекта"; iconName: "wallet" }
         Item { Layout.fillWidth: true }
         VChip { visible: pt.latest !== null; text: pt.latest ? pt.latest.label + " · " + pt.latest.created_label : ""; tone: "success"; iconName: "lock" } }
-    Text { visible: pt.latest === null; objectName: "projectTotalEmpty"
+    Text { // подсказка: расшифровка сокращений в тексте (D-37)
+        VTipArea { text: backend.tip(parent.text) }
+        visible: pt.latest === null; objectName: "projectTotalEmpty"
            text: "Официального итога ещё нет: он появится после первой фиксации расчёта комплекта ГИП проекта. Черновики в итог не входят."
            color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs; wrapMode: Text.Wrap; Layout.fillWidth: true }
 

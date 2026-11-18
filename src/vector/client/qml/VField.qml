@@ -5,6 +5,8 @@ import QtQuick.Layouts
 // Поле ввода с подписью: label, placeholder, hint (подсказка), error (текст ошибки — поле подсвечивается),
 // required — звёздочка у подписи, password — скрытый ввод с кнопкой «показать», readOnly.
 // text и input — доступ к введённому тексту и самому TextField; accepted() — нажат Enter.
+// tip — подсказка при наведении на подпись и поле (D-37): по умолчанию — из словаря по подписи (что вводить,
+// расшифровка ИНН, КПП, НДС…), а если пусто — текст hint.
 ColumnLayout {
     id: f
     property alias text: input.text
@@ -17,6 +19,8 @@ ColumnLayout {
     property bool password: false
     property bool readOnly: false
     property bool showPassword: false
+    property string tip: backend.tip(label)
+    readonly property string tipText: tip !== "" ? tip : hint
     signal accepted()
     spacing: 6
     Layout.fillWidth: true
@@ -25,6 +29,7 @@ ColumnLayout {
         visible: f.label !== ""
         text: f.label + (f.required ? "  *" : "")
         color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; font.weight: Font.Medium
+        VTipArea { text: f.tipText }
     }
     TextField {
         id: input
@@ -40,6 +45,9 @@ ColumnLayout {
         rightPadding: f.password ? 38 : 12
         leftPadding: 12
         Accessible.name: f.label
+        Accessible.description: f.tipText
+        hoverEnabled: true
+        VToolTip { visible: input.hovered && !input.activeFocus && f.tipText !== ""; text: f.tipText }
         onAccepted: f.accepted()
         background: Rectangle {
             radius: Theme.radius - 2
@@ -52,7 +60,8 @@ ColumnLayout {
             name: f.showPassword ? "eye-off" : "eye"
             size: 16
             anchors.right: parent.right; anchors.rightMargin: 12; anchors.verticalCenter: parent.verticalCenter
-            MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor; onClicked: f.showPassword = !f.showPassword }
+            MouseArea { id: eyeMouse; anchors.fill: parent; anchors.margins: -6; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: f.showPassword = !f.showPassword }
+            VToolTip { visible: eyeMouse.containsMouse; text: f.showPassword ? "Скрыть пароль" : "Показать пароль" }
         }
     }
     Text {

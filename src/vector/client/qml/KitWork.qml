@@ -131,7 +131,9 @@ ColumnLayout {
                 }
                 Text { visible: !!modelData.description; text: modelData.description || ""; color: Theme.textMuted; wrapMode: Text.Wrap
                        font.family: Theme.family; font.pixelSize: Theme.fsS; Layout.fillWidth: true; maximumLineCount: 3; elide: Text.ElideRight }
-                Text { visible: !!modelData.status_reason; text: "Причина: " + (modelData.status_reason || ""); color: Theme.textFaint
+                Text { // подсказка: расшифровка сокращений в тексте (D-37)
+                    VTipArea { text: backend.tip(parent.text) }
+                    visible: !!modelData.status_reason; text: "Причина: " + (modelData.status_reason || ""); color: Theme.textFaint
                        font.family: Theme.family; font.pixelSize: Theme.fsXs; Layout.fillWidth: true; wrapMode: Text.Wrap }
                 Flow { Layout.fillWidth: true; spacing: 6; visible: modelData.next.length > 0 && modelData.version > 0
                     Repeater {
@@ -220,7 +222,9 @@ ColumnLayout {
                                              + (modelData.comment ? "  ·  " + modelData.comment : "")
                                        color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs
                                        elide: Text.ElideRight; Layout.fillWidth: true }
-                                Text { text: "SHA-256 " + modelData.sha256.substring(0, 16) + "…"; color: Theme.textFaint
+                                Text { // подсказка: расшифровка сокращений в тексте (D-37)
+                                    VTipArea { text: backend.tip(parent.text) }
+                                    text: "SHA-256 " + modelData.sha256.substring(0, 16) + "…"; color: Theme.textFaint
                                        font.family: "monospace"; font.pixelSize: Theme.fsXs } }
                             VButton { kind: "ghost"; compact: true; iconName: "download"; Accessible.name: "Скачать версию " + modelData.version_no
                                       enabled: backend.online

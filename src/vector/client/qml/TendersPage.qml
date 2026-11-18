@@ -14,7 +14,8 @@ MasterDetail {
     readonly property var sel: backend.tenders.find(t => t.id === selectedId) || null
     readonly property var selTkp: sel ? backend.tkps.filter(k => k.tender_id === sel.id) : []
     title: "Тендеры и ТКП"
-    subtitle: backend.tenders.filter(t => ["draft", "in_work", "bid_submitted"].indexOf(t.status) >= 0).length + " активных · " + backend.tenders.length + " всего"
+    // ТКП расшифровано прямо в пояснении (D-37): название раздела короткое, а сокращение — первое, что видит новичок.
+    subtitle: "ТКП — технико-коммерческие предложения  ·  " + backend.tenders.filter(t => ["draft", "in_work", "bid_submitted"].indexOf(t.status) >= 0).length + " активных · " + backend.tenders.length + " всего"
     hasSelection: sel !== null
     emptyIcon: "gavel"; emptyTitle: "Тендеров пока нет"
     emptyText: "Тендер создаётся из карточки заказчика или кнопкой «Новый тендер»."
@@ -57,7 +58,7 @@ MasterDetail {
         RowLayout { id: rk; anchors.fill: parent; anchors.margins: 18; spacing: 14
             Icon { name: "play"; size: 22; color: Theme.success }
             ColumnLayout { spacing: 2; Layout.fillWidth: true
-                Text { text: "Тендер выигран. Следующий шаг — начать разработку РКД"; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsM; font.weight: Font.DemiBold; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                Text { text: "Тендер выигран. Следующий шаг — начать разработку РКД (рабочей конструкторской документации)"; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsM; font.weight: Font.DemiBold; wrapMode: Text.Wrap; Layout.fillWidth: true }
                 Text { text: "Проект создаётся только этим явным действием и только один на тендер. Требуется связь с сервером."; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true } }
             VButton { text: "Начать РКД"; kind: "primary"; iconName: "play"; visible: backend.hint("project.start_rkd", backend.permRevision); onClicked: startRkd.open() } }
     }
@@ -124,7 +125,9 @@ MasterDetail {
             }
         }
     }
-    Text { visible: page.selTkp.length === 0; text: "ТКП по тендеру ещё нет. Сумма может быть не указана — это не ноль."; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs; wrapMode: Text.Wrap; Layout.fillWidth: true }
+    Text { // подсказка: расшифровка сокращений в тексте (D-37)
+        VTipArea { text: backend.tip(parent.text) }
+        visible: page.selTkp.length === 0; text: "ТКП по тендеру ещё нет. Сумма может быть не указана — это не ноль."; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs; wrapMode: Text.Wrap; Layout.fillWidth: true }
     HistoryList { objectType: "tender"; objectId: page.selectedId }
 
     // ---------- формы
@@ -159,7 +162,7 @@ MasterDetail {
     FormDialog {
         id: startRkd
         title: "Начать разработку РКД"
-        subtitle: sel ? "Будет создан проект по тендеру «" + sel.title + "». ГИП проекта назначает администратор." : ""
+        subtitle: sel ? "Будет создан проект по тендеру «" + sel.title + "» и начнётся разработка рабочей конструкторской документации (РКД). ГИП (главного инженера проекта) назначает администратор." : ""
         confirmText: "Создать проект"
         canConfirm: pCode.text.trim() !== "" && pTitle.text.trim() !== ""
         onOpened: { pCode.text = ""; pTitle.text = sel ? sel.title : "" }

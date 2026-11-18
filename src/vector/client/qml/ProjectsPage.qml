@@ -59,7 +59,7 @@ MasterDetail {
     RowLayout { Layout.fillWidth: true
         SectionTitle { text: "Команда проекта"; iconName: "users" }
         VButton { text: "Назначить"; kind: "soft"; compact: true; iconName: "user-plus"; onClicked: assign.open() } }
-    Banner { visible: page.team.length > 0 && !page.team.some(a => a.project_role === "gip"); tone: "info"; text: "ГИП проекта не назначен. Назначает только администратор." }
+    Banner { visible: page.team.length > 0 && !page.team.some(a => a.project_role === "gip"); tone: "info"; text: "ГИП (главный инженер проекта) не назначен. Назначает только администратор." }
     Flow {
         Layout.fillWidth: true; spacing: 8
         Repeater {
@@ -127,7 +127,9 @@ MasterDetail {
             }
         }
     }
-    Text { visible: page.selKits.length === 0; text: "Комплектов пока нет. Создать комплект может РП проекта."; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
+    Text { // подсказка: расшифровка сокращений в тексте (D-37)
+        VTipArea { text: backend.tip(parent.text) }
+        visible: page.selKits.length === 0; text: "Комплектов пока нет. Создать комплект может РП проекта."; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
     Text { visible: page.selKits.length > 1 && page.selKit === null; text: "Выберите комплект, чтобы увидеть его задачи и документы."
            color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
     KitWork { Layout.fillWidth: true; kit: page.selKit; team: page.team; deputies: page.deputies }
@@ -156,7 +158,7 @@ MasterDetail {
     FormDialog {
         id: assign
         title: "Назначить в проект"
-        subtitle: "ГИП назначает только администратор; РП — администратор или ГИП проекта; участников — ГИП или РП проекта. Проверяет сервер."
+        subtitle: "ГИП (главного инженера проекта) назначает только администратор; РП (руководителя проекта) — администратор или ГИП; участников — ГИП или РП проекта. Проверяет сервер."
         confirmText: "Назначить"
         canConfirm: aWho.currentValue !== "" && aReason.text.trim() !== ""
         onOpened: aReason.text = ""

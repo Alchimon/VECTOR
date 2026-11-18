@@ -23,7 +23,7 @@ from vector import __version__
 from vector.core import stock
 from vector.core.contracts import Contracts
 
-from . import calc_view, delegation_view, notification_view, production_view, purchasing_view, stock_view
+from . import calc_view, delegation_view, hints, notification_view, production_view, purchasing_view, stock_view
 from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
 from .vault import KeyringStore, MemoryStore, VaultError
@@ -368,13 +368,15 @@ class Backend(QObject):
 
     @Property("QVariantList", constant=True)
     def roleOptions(self):
-        """Глобальные роли из контракта прав с русскими подписями (для админки)."""
-        return [{"id": r, "label": ROLE_LABELS.get(r, r)} for r in self.contracts.permissions["roles"]]
+        """Глобальные роли из контракта прав с русскими подписями (для админки). Сокращения в списке выбора
+        расшифрованы (D-37): «ГИП — главный инженер проекта»."""
+        return [{"id": r, "label": hints.with_expansion(ROLE_LABELS.get(r, r))} for r in self.contracts.permissions["roles"]]
 
     @Property("QVariantList", constant=True)
     def projectRoleOptions(self):
-        """Роли в проекте (ГИП, РП, участник) из контракта прав с подписями."""
-        return [{"id": r, "label": PROJECT_ROLE_LABELS.get(r, r)} for r in self.contracts.permissions["project_roles"]]
+        """Роли в проекте (ГИП, РП, участник) из контракта прав с подписями; сокращения расшифрованы (D-37)."""
+        return [{"id": r, "label": hints.with_expansion(PROJECT_ROLE_LABELS.get(r, r))}
+                for r in self.contracts.permissions["project_roles"]]
 
     def _decorate(self, kind):
         """Объекты кэша типа kind + всё, что нужно экрану: подписи статусов из контракта workflows, допустимые
@@ -825,6 +827,19 @@ class Backend(QObject):
         if kind == "global_role":
             return f"роль «{ROLE_LABELS.get(role, role)}» (выдача №{ref})"
         return f"«{PROJECT_ROLE_LABELS.get(role, role)}» (назначение №{ref})"
+
+    @Slot(str, result=str)
+    def tip(self, text: str) -> str:
+        """Всплывающая подсказка для элемента интерфейса с текстом ``text`` (D-37): что делает кнопка, пункт меню,
+        вкладка или что значит статус, плюс расшифровка всех сокращений. Пусто — подсказывать нечего.
+        Тексты — в hints.py (один источник для клиента, окна «Сокращения и подсказки» и руководства).
+        """
+        return hints.tip(text or "")
+
+    @Property("QVariantList", constant=True)
+    def glossary(self) -> list:
+        """Справочник сокращений для окна «Сокращения и подсказки» (F1): [{abbr, full, note}] по алфавиту."""
+        return hints.glossary_rows()
 
     @Slot(str, int, result=bool)
     def hint(self, action: str, _revision: int = 0) -> bool:

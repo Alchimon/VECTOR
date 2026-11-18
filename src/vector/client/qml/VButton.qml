@@ -2,11 +2,16 @@ import QtQuick
 import QtQuick.Controls.Basic
 
 // kind: primary | secondary | ghost | danger | soft
+// tip — всплывающая подсказка (D-37). По умолчанию берётся из словаря подсказок по тексту кнопки (у кнопки-иконки —
+// по Accessible.name): что сделает кнопка, нужна ли связь, расшифровка сокращений. Своё пояснение — tip: "…".
+// Если в словаре нет ни пояснения, ни сокращений, у кнопки-иконки подсказкой служит её Accessible.name.
 Button {
     id: b
     property string kind: "secondary"
     property string iconName: ""
     property bool compact: false
+    property string tip: backend.tip(b.text !== "" ? b.text : b.Accessible.name)
+    readonly property string tipText: tip !== "" ? tip : (b.text === "" ? b.Accessible.name : "")
     implicitHeight: compact ? 30 : 36
     leftPadding: compact ? 10 : 14
     rightPadding: compact ? 10 : 14
@@ -16,6 +21,8 @@ Button {
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
     Accessible.name: text
+    Accessible.description: tipText
+    VToolTip { visible: b.hovered && b.tipText !== ""; text: b.tipText }
 
     readonly property color fg: !enabled ? Theme.textFaint
         : kind === "primary" ? Theme.textOnPrimary

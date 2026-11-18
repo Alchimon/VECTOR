@@ -14,6 +14,7 @@ from datetime import date
 from typing import Any, Optional
 
 from vector.core import delegation as dl
+from vector.client import hints
 
 # Состояния, в которых замещение ещё можно отменить (завершённое и отменённое — только история).
 REVOCABLE = ("planned", "active", "suspended")
@@ -124,13 +125,14 @@ def delegations_view(delegations: list[dict], coverage: list[dict], people: dict
                     "holder_names": [name(u) for u in c.get("holders") or []],
                     "holder_id": (c.get("holders") or [None])[0]})
     cov.sort(key=lambda c: (c["state"] != "none", c["label"]))
-    role_opts = [{"id": r, "label": labels.get(r, r)} for r in own if r not in dl.NON_DELEGABLE]
+    # Сокращения в списках выбора расшифрованы (D-37): «ГИП (главный инженер проекта)».
+    role_opts = [{"id": r, "label": hints.with_expansion(labels.get(r, r))} for r in own if r not in dl.NON_DELEGABLE]
     # Свои роли в проектах (D-35): по моим действующим назначениям из кэша.
     for a in sorted((a for a in assignments or [] if a.get("user_id") == uid),
                     key=lambda a: (projects.get(a["project_id"], ""), a["project_role"])):
         role_opts.append({"id": role_key(a["project_role"], a["project_id"]),
                           "label": scoped_label(a["project_role"], projects.get(a["project_id"], "?"), labels)})
-    all_opts = [{"id": r, "label": labels.get(r, r)} for r in labels if r not in dl.NON_DELEGABLE]
+    all_opts = [{"id": r, "label": hints.with_expansion(labels.get(r, r))} for r in labels if r not in dl.NON_DELEGABLE]
     for pid, code in sorted(projects.items(), key=lambda kv: kv[1]):
         all_opts += [{"id": role_key(r, pid), "label": scoped_label(r, code, labels)} for r in dl.PROJECT_ROLE_LABELS_RU]
     people_opts = [{"id": k, "label": v} for k, v in sorted(people.items(), key=lambda kv: kv[1]) if k != uid]

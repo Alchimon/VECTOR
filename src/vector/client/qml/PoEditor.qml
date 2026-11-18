@@ -128,7 +128,9 @@ Popup {
             ColumnLayout { spacing: 2; Layout.fillWidth: true
                 Text { text: ed.order ? ed.order.title + " · черновик" : "Новый заказ поставщику"; color: Theme.text; font.family: Theme.family
                        font.pixelSize: Theme.fsL; font.weight: Font.DemiBold }
-                Text { text: "Цены — как в счёте поставщика; укажите, с НДС они или без, и ставку НДС строки — программа покажет суммы без НДС, НДС и с НДС. Пустая цена — «неизвестна», не ноль. Валюта не подставляется сама. Черновик можно сохранять без связи; разместить — после согласования."
+                Text { // подсказка: расшифровка сокращений в тексте (D-37)
+                    VTipArea { text: backend.tip(parent.text) }
+                    text: "Цены — как в счёте поставщика; укажите, с НДС они или без, и ставку НДС строки — программа покажет суммы без НДС, НДС и с НДС. Пустая цена — «неизвестна», не ноль. Валюта не подставляется сама. Черновик можно сохранять без связи; разместить — после согласования."
                        color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true } }
             VButton { kind: "ghost"; iconName: "x"; compact: true; onClicked: ed.close(); Accessible.name: "Закрыть" }
         }

@@ -177,7 +177,9 @@ ColumnLayout {
                                font.features: { "tnum": 1 }; elide: Text.ElideRight; Layout.fillWidth: true }
                         Text { text: modelData.frozen_label + " · " + modelData.author_name + " · " + modelData.line_count + " поз. · «" + modelData.reason + "»"
                                color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs; elide: Text.ElideRight; Layout.fillWidth: true } }
-                    Text { text: "SHA-256 " + modelData.hash_short + "…"; color: Theme.textFaint; font.family: "monospace"; font.pixelSize: Theme.fsXs }
+                    Text { // подсказка: расшифровка сокращений в тексте (D-37)
+                        VTipArea { text: backend.tip(parent.text) }
+                        text: "SHA-256 " + modelData.hash_short + "…"; color: Theme.textFaint; font.family: "monospace"; font.pixelSize: Theme.fsXs }
                     VButton { kind: "ghost"; compact: true; iconName: verCard.expanded ? "chevron-down" : "chevron-right"
                               Accessible.name: (verCard.expanded ? "Скрыть позиции версии " : "Показать позиции версии ") + modelData.label
                               onClicked: verCard.expanded = !verCard.expanded }

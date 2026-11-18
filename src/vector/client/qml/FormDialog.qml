@@ -3,12 +3,15 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
 // Модальная форма: заголовок, пояснение, поля (default property), баннер ошибки, кнопки.
+// Подсказки (D-37): при наведении на заголовок и пояснение — расшифровка сокращений в них; у кнопки подтверждения —
+// пояснение действия из словаря подсказок (что произойдёт, нужна ли связь); confirmTip — своё пояснение.
 Popup {
     id: d
     property string title: ""
     property string subtitle: ""
     property string confirmText: "Сохранить"
     property string confirmKind: "primary"
+    property string confirmTip: ""
     property string error: ""
     property string note: ""
     property bool working: false
@@ -35,10 +38,12 @@ Popup {
             spacing: 4
             RowLayout {
                 Layout.fillWidth: true
-                Text { text: d.title; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsL; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.Wrap }
+                Text { text: d.title; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsL; font.weight: Font.DemiBold; Layout.fillWidth: true; wrapMode: Text.Wrap
+                       VTipArea { text: backend.tip(d.title) } }
                 VButton { kind: "ghost"; iconName: "x"; compact: true; onClicked: d.close(); Accessible.name: "Закрыть" }
             }
-            Text { visible: d.subtitle !== ""; text: d.subtitle; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Text { visible: d.subtitle !== ""; text: d.subtitle; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs; wrapMode: Text.Wrap; Layout.fillWidth: true
+                   VTipArea { text: backend.tip(d.subtitle) } }
         }
         ColumnLayout {
             id: body
@@ -53,7 +58,8 @@ Popup {
             spacing: 8
             Item { Layout.fillWidth: true }
             VButton { text: "Отмена"; kind: "ghost"; onClicked: d.close() }
-            VButton { text: d.working ? "Выполняется…" : d.confirmText; kind: d.confirmKind; enabled: d.canConfirm && !d.working; onClicked: d.confirmed() }
+            VButton { text: d.working ? "Выполняется…" : d.confirmText; kind: d.confirmKind; enabled: d.canConfirm && !d.working; onClicked: d.confirmed()
+                      tip: d.confirmTip !== "" ? d.confirmTip : backend.tip(text) }
         }
     }
 }

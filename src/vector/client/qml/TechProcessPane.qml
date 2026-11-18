@@ -20,7 +20,7 @@ MasterDetail {
     readonly property var items: all.filter(t => search === "" || (t.title + " " + t.kit_label).toLowerCase().indexOf(search.toLowerCase()) >= 0)
     readonly property var sel: all.find(t => t.id === selectedId) || null
     title: "Производство"
-    subtitle: "Техпроцессы · черновиков " + ((pv.counts || {}).tp_draft || 0) + "  ·  " + (pv.as_of || "")
+    subtitle: "Технологические процессы (ТП) · черновиков " + ((pv.counts || {}).tp_draft || 0) + "  ·  " + (pv.as_of || "")
     hasSelection: sel !== null
     emptyIcon: "list-checks"; emptyTitle: "Техпроцессов нет"
     emptyText: pv.empty_tps || ""
@@ -113,7 +113,7 @@ MasterDetail {
     FormDialog {
         id: approveForm
         objectName: "tpApproveForm"
-        title: "Утвердить ТП"
+        title: "Утвердить технологический процесс (ТП)"
         subtitle: sel ? sel.kit_label + " · " + sel.title + " (" + sel.revision_label + ")" : ""
         confirmText: "Утвердить"
         note: "Утверждается именно это содержимое (SHA-256). После утверждения ТП не меняется; РП проекта сможет выпускать по нему наряды."
@@ -195,7 +195,9 @@ MasterDetail {
                 ColumnLayout { spacing: 2; Layout.fillWidth: true
                     Text { text: editor.fresh ? (editor.tp ? "Новая ревизия ТП" : "Новый технологический процесс") : (editor.tp ? editor.tp.title : "") + " · черновик"
                            color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsL; font.weight: Font.DemiBold }
-                    Text { text: "Норма — минут на ОДНО изделие (0 — если нормы нет); в наряде она умножится на количество. Черновик можно сохранять без связи; утверждает другой технолог или руководитель отдела."
+                    Text { // подсказка: расшифровка сокращений в тексте (D-37)
+                        VTipArea { text: backend.tip(parent.text) }
+                        text: "Норма — минут на ОДНО изделие (0 — если нормы нет); в наряде она умножится на количество. Черновик можно сохранять без связи; утверждает другой технолог или руководитель отдела."
                            color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true } }
                 VButton { kind: "ghost"; iconName: "x"; compact: true; onClicked: editor.close(); Accessible.name: "Закрыть" }
             }

@@ -1,7 +1,8 @@
 import QtQuick
 import QtQuick.Layouts
 
-// Состояние связи и очереди — всегда на виду (офлайн ≠ ошибка ≠ конфликт).
+// Состояние связи и очереди — всегда на виду (офлайн ≠ ошибка ≠ конфликт). Подсказка при наведении (D-37) объясняет
+// состояние и что делать.
 Rectangle {
     id: p
     readonly property string mode: backend.sessionMode === "online" && backend.online ? "online"
@@ -11,6 +12,13 @@ Rectangle {
     implicitHeight: col.implicitHeight + 20
     radius: Theme.radius
     color: t.bg
+    VTipArea {
+        text: (p.mode === "online" ? "Связь с сервером есть: изменения отправляются сразу."
+               : p.mode === "reconnect" ? "Сервер снова доступен, но вы вошли без связи. Нажмите «Подключиться» и введите пароль — очередь уйдёт на сервер."
+               : "Нет связи с сервером. Можно смотреть данные и делать изменения, помеченные «можно без связи» — они ждут в очереди.")
+              + (backend.problemCount > 0 ? "\nЕсть изменения, которые требуют вашего решения, — раздел «Синхронизация»."
+                 : backend.pendingCount > 0 ? "\nВ очереди — изменения, ещё не отправленные на сервер (изм. — изменений)." : "")
+    }
     ColumnLayout {
         id: col
         anchors.fill: parent; anchors.margins: 10

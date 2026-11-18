@@ -45,6 +45,8 @@ Item {
     readonly property bool seesProduction: (backend.me.roles || []).some(r => r === "technologist" || r === "production" || r === "dept_head" || r === "warehouse")
         || (backend.productionOverview.work_orders || []).length > 0 || (backend.productionOverview.tps || []).length > 0
     Shortcut { sequence: "F5"; onActivated: backend.syncNow() }
+    // Справочник сокращений и подсказок (D-37) — всем, без связи тоже.
+    Shortcut { sequence: "F1"; onActivated: shellRoot.go("help") }
 
     RowLayout {
         anchors.fill: parent
@@ -64,7 +66,8 @@ Item {
                     // Знак «V» из логотипа владельца (D-28) и название; полный логотип — на экране входа.
                     Image { objectName: "shellMark"; source: Theme.mark; Layout.preferredWidth: 46; Layout.preferredHeight: 46
                             sourceSize: Qt.size(128, 128); fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true
-                            Accessible.name: "ВЕКТОР" }
+                            Accessible.name: "ВЕКТОР"
+                            VTipArea { text: "ВЕКТОР — единая платформа компании: тендеры, проекты, расчёты, склад, закупка, производство" } }
                     ColumnLayout { spacing: -2
                         Text { text: "ВЕКТОР"; color: Theme.text; font.family: Theme.family; font.pixelSize: 17; font.weight: Font.DemiBold; font.letterSpacing: 2 }
                         Text { text: "единая платформа"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs } }
@@ -94,6 +97,7 @@ Item {
                 NavItem { objectName: "navDelegations"; text: "Замещения"; iconName: "user-check"; active: shellRoot.page === "delegations"; onClicked: shellRoot.go("delegations")
                           badge: backend.delegationsOverview.manage ? backend.delegationsOverview.warnings : backend.delegationsOverview.active_received
                           badgeTone: backend.delegationsOverview.manage ? "warning" : "primary" }
+                NavItem { objectName: "navHelp"; text: "Сокращения и подсказки"; iconName: "circle-help"; active: shellRoot.page === "help"; onClicked: shellRoot.go("help") }
                 NavItem { text: "Администрирование"; iconName: "shield-check"; active: shellRoot.page === "admin"; onClicked: shellRoot.go("admin"); visible: backend.hint("admin.list_users", backend.permRevision) }
                 Item { Layout.fillHeight: true }
                 ConnectionPill {}
@@ -105,7 +109,9 @@ Item {
                         Text { anchors.centerIn: parent; text: backend.me.initials || "?"; color: Theme.primary; font.family: Theme.family; font.pixelSize: Theme.fsS; font.weight: Font.Bold } }
                     ColumnLayout { spacing: 0; Layout.fillWidth: true
                         Text { text: backend.me.display_name || ""; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold; elide: Text.ElideRight; Layout.fillWidth: true }
-                        Text { text: (backend.me.role_labels || []).join(", ") || "Нет ролей"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsXs; elide: Text.ElideRight; Layout.fillWidth: true } }
+                        Text { text: (backend.me.role_labels || []).join(", ") || "Нет ролей"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsXs; elide: Text.ElideRight; Layout.fillWidth: true
+                               // Подсказка (D-37): все роли полностью и расшифровка сокращений (ГИП, РП).
+                               VTipArea { text: "Ваши роли: " + parent.text + (backend.tip(parent.text) !== "" ? "\n" + backend.tip(parent.text) : "") } } }
                     VButton { kind: "ghost"; compact: true; iconName: Theme.dark ? "sun" : "moon"; Accessible.name: "Сменить тему"; onClicked: backend.theme = Theme.dark ? "light" : "dark" }
                     VButton { kind: "ghost"; compact: true; iconName: "log-out"; Accessible.name: "Выйти"; onClicked: backend.logout() }
                 }
@@ -128,7 +134,7 @@ Item {
             anchors.fill: parent
             sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC, finance: financeC,
                                stock: stockC, procurement: procurementC, delegations: delegationsC,
-                               notifications: notificationsC, production: productionC })[shellRoot.page]
+                               notifications: notificationsC, production: productionC, help: helpC })[shellRoot.page]
         }
         }
     }
@@ -143,6 +149,7 @@ Item {
     Component { id: delegationsC; DelegationsPage { shell: shellRoot } }
     Component { id: notificationsC; NotificationsPage { shell: shellRoot } }
     Component { id: productionC; ProductionPage { shell: shellRoot } }
+    Component { id: helpC; HelpPage { shell: shellRoot } }
 
     FormDialog {
         id: reconnect
