@@ -41,7 +41,8 @@ ACCOUNTS = [
     ("a.grishin", "Гришин Алексей", "technologist", "Технолог"),
     ("k.pavlov", "Павлов Кирилл", "production", "Производство (сборщик-монтажник)"),
     ("r.sergeev", "Сергеев Роман", "production", "Производство (наладчик)"),
-    # Отдел технического контроля (D-40, ответ владельца на A-46): ведёт рекламации и проверяет эффективность действий.
+    # Отдел технического контроля (D-40, ответ владельца на A-46): ведёт рекламации и проверяет эффективность действий —
+    # в проектах, куда назначен (D-41).
     ("l.egorova", "Егорова Людмила", "otk", "Технический контроль (ОТК)"),
     ("n.sokolov", "Соколов Никита", None, "Без роли; при первом входе должен сменить пароль"),
 ]
@@ -154,6 +155,10 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     cmd(gip, "project.assign", {"project_id": pid, "user_id": people["a.smirnova"], "project_role": "rp", "reason": "Приказ № 112"})
     cmd(rp, "project.assign", {"project_id": pid, "user_id": people["d.kuznetsov"], "project_role": "participant", "reason": "Распределение работ"})
     cmd(rp, "project.assign", {"project_id": pid, "user_id": people["m.lebedev"], "project_role": "participant", "reason": "Распределение работ"})
+    # ОТК работает по проектам (D-41, ответ владельца на A-47): сотрудник ОТК — участник проекта П-2026-014; во втором
+    # проекте a.smirnova его нет — рекламаций того проекта он не видит.
+    cmd(rp, "project.assign", {"project_id": pid, "user_id": people["l.egorova"], "project_role": "participant",
+                               "reason": "Технический контроль по проекту"})
     kits = {}
     for code, title in [("АТХ", "Автоматизация технологических процессов"), ("ЭМ", "Силовое электрооборудование"),
                         ("КИП", "Контрольно-измерительные приборы"), ("СС", "Сети связи и диспетчеризация")]:

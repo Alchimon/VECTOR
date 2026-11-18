@@ -169,3 +169,23 @@ def test_quality_check_rules_without_server():
     assert not qv.quality_check("ecr", {"title": "", "reason": "x", "proposal": "y"})["ok"]
     assert not qv.quality_check("eco", {"description": "x", "items": []})["ok"]
     assert qv.quality_check("eco", {"description": "x", "items": [{"kind": "tech_process", "tp_id": new_id()}]})["ok"]
+
+
+def test_otk_per_project_team_and_flags_without_server():
+    """D-41 (ответ владельца на A-47, п. 4): ОТК — по проектам. В список ответственных/исполнителей попадают только
+    участники проекта (ОТК помечен «(ОТК)», если назначен в ЭТОТ проект); вне своих проектов роль ОТК не даёт
+    кнопок; старый формат quality_otk (общий список, D-40) клиент тоже понимает."""
+    people = {"u1": "Иванов И. И.", "o1": "Егорова Л. В.", "o2": "Петров П. П."}
+    assignments = [{"project_id": "P1", "user_id": "u1"}, {"project_id": "P1", "user_id": "o1"},
+                   {"project_id": "P2", "user_id": "u1"}]
+    otk = {"P1": ["o1"], "P2": ["o2"]}
+    assert qv._team("P1", assignments, [], people, otk) == [{"id": "o1", "label": "Егорова Л. В. (ОТК)"},
+                                                            {"id": "u1", "label": "Иванов И. И."}]
+    # o2 — ОТК второго проекта, но не его участник по назначению → в выборе нет (сервер ответит not_project_member).
+    assert [x["id"] for x in qv._team("P2", assignments, [], people, otk)] == ["u1"]
+    assert qv._otk_of(["o1", "o2"], "P1") == {"o1", "o2"} and qv._otk_of(None, "P1") == set()
+    # Роль ОТК действует, только если у сотрудника есть роль в проекте (назначение или замещение).
+    assert qv._here({"otk"}, {"participant"}) == {"otk"} and qv._here({"otk", "dept_head"}, set()) == {"dept_head"}
+    c = {"id": "c1", "status": "registered", "claim_no": 1, "project_id": "P1", "source": "internal", "severity": "minor"}
+    assert qv._claim_row(c, "o1", {"participant"}, {"otk"}, True, people, "—")["manage"] is True
+    assert qv._claim_row(c, "o2", set(), {"otk"}, True, people, "—")["manage"] is False

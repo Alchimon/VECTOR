@@ -260,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     else:
         rep.warn("рекламаций нет — " + FRESH_HINT)
 
-    print("\n8. Рекламации без номера изделия, сроки ответа, ОТК — отдел технического контроля (D-40, П-16)")
+    print("\n8. Рекламации без номера изделия, сроки ответа, ОТК — отдел технического контроля, по проектам (D-40, D-41, П-16)")
     otk = None
     for login, role in DEMO_D40:
         c = client(str(ca))
@@ -273,6 +273,15 @@ def main(argv: list[str] | None = None) -> int:
         rep.ok(f"{login}: вход, роль «{role}»") if role in roles else rep.fail(f"{login}: нет роли «{role}»")
         otk = c
     if otk is not None:
+        # ОТК работает по проектам (D-41, ответ на A-47): l.egorova видит только проекты, куда её назначили участником.
+        qp = [x.get("code") for x in otk.get_meta("quality_projects") or []]
+        if qp:
+            rep.ok(f"l.egorova (ОТК — по проектам, D-41) работает в проектах: {', '.join(qp)}")
+        else:
+            rep.warn("l.egorova не назначена ни в один проект — ОТК работает только в проектах, куда сотрудника назначил "
+                     "участником ГИП или РП (D-41); на обновлённом стенде назначьте её в проект П-2026-014 (a.smirnova → "
+                     "«Проекты» → «Команда»)")
+            return finish(rep, tmp)          # без проекта рекламаций ОТК не видит — дальше проверять нечего
         mine = otk.list_local("claim")
         batch = [c for c in mine if c.get("scope") == "batch"]
         due = [c for c in mine if c.get("response_due")]

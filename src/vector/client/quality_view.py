@@ -66,17 +66,28 @@ def _history(rows: list[dict], people: dict[str, str]) -> list[dict]:
     return out
 
 
+def _otk_of(otk: Any, project_id: str) -> set:
+    """Сотрудники ОТК проекта из pull: {проект: [id]} (D-41); старый сервер (D-40) присылал общий список."""
+    if isinstance(otk, dict):
+        return set(otk.get(project_id) or [])
+    return set(otk or [])
+
+
+def _here(roles: set, pr: set) -> set:
+    """Глобальные роли, действующие в этом проекте: роль ОТК — только там, где сотрудник назначен (D-41, по проектам;
+    сервер проверяет то же условие in_project)."""
+    return roles if pr else roles - {"otk"}
+
+
 def _team(project_id: str, assignments: list[dict], deputies: list[dict], people: dict[str, str],
-          otk: Optional[list[str]] = None) -> list[dict]:
-    """Участники проекта (свои назначения и замещающие в проекте) и сотрудники ОТК (D-40) — для выбора
-    ответственного и исполнителей."""
+          otk: Any = None) -> list[dict]:
+    """Участники проекта (свои назначения и замещающие в проекте) — для выбора ответственного и исполнителей;
+    сотрудники ОТК проекта помечены «(ОТК)» (D-40, D-41)."""
     ids = [a.get("user_id") for a in assignments or [] if a.get("project_id") == project_id]
     ids += [d.get("user_id") for d in deputies or [] if d.get("project_id") == project_id]
-    team = sorted(({"id": u, "label": people.get(u, "—")} for u in dict.fromkeys(i for i in ids if i)), key=lambda x: x["label"])
-    known = {t["id"] for t in team}
-    team += sorted(({"id": u, "label": f"{people.get(u, '—')} (ОТК)"} for u in otk or [] if u and u not in known),
-                   key=lambda x: x["label"])
-    return team
+    mark = _otk_of(otk, project_id)
+    return sorted(({"id": u, "label": people.get(u, "—") + (" (ОТК)" if u in mark else "")}
+                   for u in dict.fromkeys(i for i in ids if i)), key=lambda x: x["label"])
 
 
 def _deadline(c: dict, today: str) -> dict:
@@ -100,6 +111,7 @@ def _claim_row(c: dict, me_id: str, pr: set, roles: set, online: bool, people: d
     """Рекламация для списка и карточки: подписи, действия CAPA, проверки, история, флаги и причины недоступности;
     охват, классификация, срок и ответы заказчику (D-40)."""
     st = c.get("status") or "registered"
+    roles = _here(roles, pr)
     manage = bool(pr & {"rp", "gip"}) or bool(roles & {"dept_head", "otk"})
     acts = c.get("actions") or []
     planners, doers = set(c.get("planners") or []), set(c.get("doers") or [])
@@ -242,8 +254,8 @@ def _eco_row(o: dict, me_id: str, pr: set, roles: set, online: bool, people: dic
             "approve_block": "Утверждает не тот, кто составлял или правил извещение («четыре глаза»)."
                              if "gip" in pr and st == "draft" and me_id in editors else "",
             "can_implement": edit and online and st == "approved",
-            "may_verify": (bool(pr & {"rp", "gip"}) or bool(roles & {"dept_head", "otk"})) and st == "implemented",
-            "can_verify": (bool(pr & {"rp", "gip"}) or bool(roles & {"dept_head", "otk"})) and online and st == "implemented"
+            "may_verify": (bool(pr & {"rp", "gip"}) or bool(_here(roles, pr) & {"dept_head", "otk"})) and st == "implemented",
+            "can_verify": (bool(pr & {"rp", "gip"}) or bool(_here(roles, pr) & {"dept_head", "otk"})) and online and st == "implemented"
                           and o.get("implemented_by") != me_id,
             "verify_block": "Проверяет не тот, кто отмечал внедрение." if st == "implemented" and o.get("implemented_by") == me_id else ""}
 
@@ -262,12 +274,12 @@ def _pending_subject(c: dict, inst_label: dict, batches: dict, pcode: dict) -> t
 def quality_view(claims: list[dict], ecrs: list[dict], ecos: list[dict], instances: list[dict], refs: list[dict],
                  projects: list[dict], kits: list[dict], assignments: list[dict], deputies: list[dict],
                  people: dict[str, str], me: dict, online: bool, last_pull: str,
-                 qprojects: Optional[list[dict]] = None, otk: Optional[list[str]] = None,
+                 qprojects: Optional[list[dict]] = None, otk: Any = None,
                  batches: Optional[list[dict]] = None, today: Optional[str] = None) -> dict[str, Any]:
     """Всё для раздела «Качество»: три списка с карточками, варианты для форм, счётчики, подсказки.
 
     qprojects / otk / batches — из pull (D-40): проекты качества (код, можно ли регистрировать рекламацию и подавать
-    запрос), сотрудники ОТК, выполненные наряды для рекламации на партию. today — дата для срока ответа (по
+    запрос), сотрудники ОТК по проектам ({проект: [id]}, D-41), выполненные наряды для рекламации на партию. today — дата для срока ответа (по
     умолчанию — сегодняшняя дата компьютера: срок «идёт» и без связи).
     """
     me_id = me.get("user_id") or ""
@@ -298,7 +310,7 @@ def quality_view(claims: list[dict], ecrs: list[dict], ecos: list[dict], instanc
     # по ролям (РП, ГИП проекта, руководитель отдела, ОТК).
     reg_ids = {p["id"] for p in qprojects or [] if p.get("can_claim")}
     may_claim = (lambda pid: pid in reg_ids) if qprojects else (  # noqa: E731
-        lambda pid: bool(proles.get(pid, set()) & {"rp", "gip"}) or bool(roles & {"dept_head", "otk"}))
+        lambda pid: bool(proles.get(pid, set()) & {"rp", "gip"}) or bool(_here(roles, proles.get(pid, set())) & {"dept_head", "otk"}))
     inst_opts = [{"id": i["id"], "project_id": i.get("project_id"), "label": f"{pcode.get(i.get('project_id'), '')} · {inst_label[i['id']]}"}
                  for i in instances or [] if may_claim(i.get("project_id"))]
     batch_opts = [{"id": b["id"], "project_id": b.get("project_id"),

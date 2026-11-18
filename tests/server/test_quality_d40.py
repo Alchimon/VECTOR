@@ -4,7 +4,8 @@
 
 Каждый тест закрепляет правило из server/quality.py (правила — vector.core.quality); запускается на SQLite и на
 встроенном PostgreSQL. Кто есть кто — как в test_quality: gip1 — ГИП, rp1 — РП, eng1 — участник (инженер), head1 —
-руководитель отдела, tech1/tech2 — технологи, prod1 — производство; otk1/otk2 — ОТК (вне команды проекта).
+руководитель отдела, tech1/tech2 — технологи, prod1 — производство; otk1/otk2 — ОТК, назначенные в проект участниками
+(D-41: ОТК работает по проектам), otk3 — ОТК, в проект не назначенный.
 """
 from dataclasses import dataclass
 from datetime import timedelta
@@ -22,23 +23,28 @@ from vector.server import db
 
 @dataclass
 class Q:
-    """Набор теста: закрытый наряд на 2 шт. (зарегистрирован один экземпляр), экземпляр, сеансы ОТК."""
+    """Набор теста: закрытый наряд на 2 шт. (зарегистрирован один экземпляр), экземпляр, сеансы ОТК: двое в проекте и
+    один вне проекта (out)."""
     wo: dict
     inst: dict
     otk: object
     otk2: object
+    out: object
 
 
 @pytest.fixture
 def q(world, pd):  # noqa: F811
-    """Наряд на 2 изделия закрыт, зарегистрирован экземпляр № 001 (второй — без номера); два сотрудника ОТК."""
+    """Наряд на 2 изделия закрыт, зарегистрирован экземпляр № 001 (второй — без номера); три сотрудника ОТК: otk1 и
+    otk2 РП назначил в проект участниками (D-41), otk3 — нет."""
     wo = closed_wo(world, pd, qty=2)
     inst = register(pd.st.proj.rp, wo, "2026", "001")["result"]["product_instances"][0]
     world.clock.advance(seconds=61)          # ограничение частоты входа
+    ids = {login: world.make_user(login, "otk") for login in ("otk1", "otk2", "otk3")}
     for login in ("otk1", "otk2"):
-        world.make_user(login, "otk")
+        pd.st.proj.rp.ok("project.assign", {"project_id": pd.st.proj.pid, "user_id": ids[login],
+                                            "project_role": "participant", "reason": "Технический контроль"})
     world.clock.advance(seconds=61)
-    return Q(wo, inst, world.login("otk1"), world.login("otk2"))
+    return Q(wo, inst, world.login("otk1"), world.login("otk2"), world.login("otk3"))
 
 
 def reg(s, **kw):
@@ -58,19 +64,18 @@ def kinds(s):
 # ====================================================================== ОТК
 def test_otk_registers_leads_and_checks_claims_but_does_not_decide_changes(world, pd, q):  # noqa: F811
     u = pd.st.proj
-    # ОТК видит качество, изделия и наряды всех проектов — без роли в проекте и без денег (calc/цены — нет).
+    # ОТК, назначенный в проект участником (D-41), видит качество, изделия и наряды этого проекта.
     p = pull(q.otk)
     assert [x["id"] for x in p["product_instances"]] == [q.inst["id"]]
     assert [x["id"] for x in p["work_orders"]] == [q.wo["id"]]
-    assert p["projects"] == []                                     # карточка проекта (и расчёты) ОТК не нужна
     assert [(x["code"], x["can_claim"], x["can_ecr"]) for x in p["quality_projects"]] == [("П-100", True, True)]
-    assert sorted(p["quality_otk"]) == sorted([q.otk.user_id, q.otk2.user_id])
+    assert {k: sorted(v) for k, v in p["quality_otk"].items()} == {u.pid: sorted([q.otk.user_id, q.otk2.user_id])}
     assert [b["id"] for b in p["claim_batches"]] == [q.wo["id"]] and p["claim_batches"][0]["instances"] == 1
     # Регистрирует рекламацию; новость приходит РП, ГИП и другому сотруднику ОТК.
     c = reg(q.otk, instance_id=q.inst["id"])["result"]["claim"]
     assert (c["claim_no"], c["scope"], c["severity_label"], c["deadline"]) == (1, "instance", "Значительный", "overdue")
     assert "claim_new" in kinds(u.rp) and "claim_new" in kinds(q.otk2) and "claim_new" not in kinds(q.otk)
-    # Ответственный за анализ и исполнитель действия — может быть сотрудник ОТК (не участник проекта).
+    # Ответственный за анализ и исполнитель действия — может быть сотрудник ОТК, назначенный в проект.
     c = u.rp.ok("claim.start_analysis", {"id": c["id"], "responsible_id": q.otk.user_id}, expected_version=1)["claim"]
     a = {"id": new_id(), "kind": "corrective", "description": "Заменить автомат", "owner_id": q.otk.user_id,
          "due_date": "2099-01-01"}
@@ -93,6 +98,42 @@ def test_otk_registers_leads_and_checks_claims_but_does_not_decide_changes(world
                       expected_version=e["version"])["status"] == "denied"
     # Производство и инженер вне ОТК рекламации на партию не регистрируют.
     assert reg(pd.prod, scope="batch", work_order_id=q.wo["id"])["status"] == "denied"
+
+
+# ====================================================================== ОТК по проектам (D-41)
+def test_otk_works_only_in_projects_where_assigned(world, pd, q):  # noqa: F811
+    """Ответ владельца на A-47 (п. 4): ОТК работает по проектам — только там, куда сотрудник назначен участником."""
+    u = pd.st.proj
+    # Вне проекта: ни рекламаций, ни изделий, ни нарядов; регистрировать, вести и проверять — нельзя.
+    p = pull(q.out)
+    assert (p["claims"], p["product_instances"], p["work_orders"], p["quality_projects"], p["quality_otk"]) == ([], [], [], [], {})
+    assert reg(q.out, instance_id=q.inst["id"])["status"] == "denied"
+    assert q.out.cmd("ecr.submit", {"id": new_id(), "project_id": u.pid, "title": "Т", "reason": "Р",
+                                    "proposal": "П"})["status"] == "denied"
+    # Рекламацию регистрирует РП: новость — РП/ГИП и ОТК проекта, но не ОТК вне проекта.
+    c = reg(u.rp, instance_id=q.inst["id"])["result"]["claim"]
+    assert "claim_new" in kinds(q.otk) and "claim_new" in kinds(q.otk2) and kinds(q.out) == []
+    # Ответственным и исполнителем ОТК вне проекта не назначить — только участника проекта.
+    assert u.rp.cmd("claim.start_analysis", {"id": c["id"], "responsible_id": q.out.user_id},
+                    expected_version=1)["code"] == "not_project_member"
+    c = u.rp.ok("claim.start_analysis", {"id": c["id"], "responsible_id": q.otk.user_id}, expected_version=1)["claim"]
+    a = {"id": new_id(), "kind": "corrective", "description": "Заменить", "owner_id": q.out.user_id, "due_date": "2099-01-01"}
+    assert q.otk.cmd("claim.plan", {"id": c["id"], "cause": "Брак", "category": "purchased", "actions": [a]},
+                     expected_version=c["version"])["code"] == "not_project_member"
+    assert q.out.cmd("claim.classify", {"id": c["id"], "severity": "critical", "reason": "Опасно"},
+                     expected_version=c["version"])["status"] == "denied"
+    # РП назначает otk3 в проект — доступ появляется сразу; отзыв назначения — доступ пропадает (запись — в истории).
+    aid = u.rp.ok("project.assign", {"project_id": u.pid, "user_id": q.out.user_id, "project_role": "participant",
+                                     "reason": "Контроль партии"})["assignment_id"]
+    p = pull(q.out)
+    assert [x["id"] for x in p["claims"]] == [c["id"]] and q.out.user_id in p["quality_otk"][u.pid]
+    c = q.out.ok("claim.classify", {"id": c["id"], "severity": "critical", "reason": "Опасно"},
+                 expected_version=c["version"])["claim"]
+    assert c["severity"] == "critical" and c["history"][-1]["authority"].startswith("global_role:otk")
+    u.rp.ok("project.revoke_assignment", {"assignment_id": aid, "reason": "Партия принята"})
+    assert pull(q.out)["claims"] == []
+    assert q.out.cmd("claim.classify", {"id": c["id"], "severity": "major", "reason": "Уточнили"},
+                     expected_version=c["version"])["status"] == "denied"
 
 
 # ====================================================================== охват: партия и проект
@@ -134,6 +175,7 @@ def test_classification_with_reason_and_critical_notice(world, pd, q):  # noqa: 
                                    "reason": "Перегрев клемм — опасно"}, expected_version=v)["claim"]
     assert (c["severity_label"], c["category_label"]) == ("Критический", "Производственный (изготовление, сборка)")
     assert "claim_critical" in kinds(u.gip) and "claim_critical" in kinds(q.otk)
+    assert kinds(q.out) == []                                     # ОТК вне проекта — без уведомлений (D-41)
     h = c["history"][-1]
     assert (h["decision"], h["details"]["previous"]["severity"], h["details"]["reason"]) == ("classified", "major",
                                                                                              "Перегрев клемм — опасно")
@@ -155,6 +197,7 @@ def test_response_deadline_reminders_and_responses(world, pd, q):  # noqa: F811
     # Напоминание «срок подходит» — при обновлении, один раз; тем, кто ведёт рекламацию (не инженеру).
     assert kinds(u.rp).count("claim_due_soon") == 1 and kinds(u.rp).count("claim_due_soon") == 1
     assert "claim_due_soon" in kinds(q.otk) and "claim_due_soon" not in kinds(u.eng)
+    assert "claim_due_soon" not in kinds(q.out)                   # ОТК вне проекта — без напоминаний (D-41)
     # Срок прошёл (рекламация получена 5 дней назад, ответить надо было вчера) — напоминание «срок прошёл».
     c = reg(u.rp, instance_id=q.inst["id"], received_date=today(world, -5), response_due=today(world, -1))["result"]["claim"]
     assert c["deadline"] == "overdue"

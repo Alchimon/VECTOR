@@ -783,7 +783,7 @@ class Backend(QObject):
             self._data.get("kit", []), self._assignments, st.get("project_deputies") or [], self._people, self._me,
             self._online and self._session_mode == "online", self._last_pull,
             # D-40: проекты качества, сотрудники ОТК (отдел технического контроля), наряды для рекламации на партию.
-            st.get("quality_projects") or [], st.get("quality_otk") or [], st.get("claim_batches") or []))
+            st.get("quality_projects") or [], st.get("quality_otk") or {}, st.get("claim_batches") or []))
 
     @Slot(str, "QVariantMap", result="QVariantMap")
     def qualityCheck(self, kind: str, payload) -> dict:

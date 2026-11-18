@@ -35,9 +35,10 @@
 
 Расширение D-40 (ответ владельца на A-46):
 
-* роль ОТК (otk — отдел технического контроля, глобальная) ведёт рекламации наравне с РП и ГИП, проверяет
-  эффективность и внедрение (правило «другой человек» действует и для неё); ответственным за анализ и исполнителем
-  действия может быть участник проекта ИЛИ сотрудник ОТК;
+* роль ОТК (otk — отдел технического контроля) ведёт рекламации наравне с РП и ГИП, проверяет эффективность и
+  внедрение (правило «другой человек» действует и для неё). D-41 (ответ владельца на A-47, «по проектам»): роль
+  действует только в проектах, куда сотрудник ОТК назначен (участник проекта, условие in_project), — там он и
+  ответственный, и исполнитель, и получатель уведомлений;
 * охват рекламации (claim_terms.scope): экземпляр (заводской номер), партия — наряд (экземпляры наряда; номера могут
   быть неизвестны) или проект без номера изделия; claims.instance_id тогда NULL;
 * классификация дефекта: тяжесть — при регистрации (обязательна), категория — при первом плане CAPA (по найденной
@@ -121,20 +122,25 @@ class QualityMixin:
         self._notify(ctx, [u for u in to if u not in skip], kind, title, object_type=otype, object_id=oid)
 
     def _member_or_reject(self, conn, uid: Any, project_id: str, field: str, now) -> str:
-        """Сотрудник — участник проекта сейчас (своё назначение или замещение в проекте) или сотрудник ОТК (D-40),
-        иначе отказ по полю."""
-        if not isinstance(uid, str) or not (project_member(conn, uid, project_id, now)
-                                            or uid in self._users_with_role(conn, "otk", now)):
-            raise Rejected("not_project_member", "Выберите участника проекта или сотрудника ОТК (технического контроля).",
+        """Сотрудник — участник проекта сейчас (своё назначение или замещение в проекте), иначе отказ по полю.
+        Сотрудник ОТК тоже должен быть назначен в проект (D-41: ОТК — по проектам)."""
+        if not isinstance(uid, str) or not project_member(conn, uid, project_id, now):
+            raise Rejected("not_project_member", "Выберите участника проекта (сотрудник ОТК — отдела технического "
+                                                 "контроля — должен быть назначен в проект).",
                            {"field": field, "user_id": uid})
         return uid
 
+    def _project_otk(self, conn, project_id: str, now) -> list[str]:
+        """Сотрудники ОТК этого проекта (D-41): роль «Технический контроль» (своя или по замещению) и назначение в
+        проект (своё или по замещению в проекте). ОТК других проектов сюда не попадают."""
+        return [u for u in self._users_with_role(conn, "otk", now) if project_member(conn, u, project_id, now)]
+
     def _claim_leads(self, conn, o: dict, now) -> list[str]:
         """Кто ведёт рекламацию (адресаты уведомлений о сроке и новых рекламациях): РП и ГИП проекта (и их замещающие
-        в проекте), ответственный за анализ, сотрудники ОТК."""
+        в проекте), ответственный за анализ, сотрудники ОТК этого проекта (D-41)."""
         out = [u for r in ("rp", "gip") for u in self._project_role_users(conn, o["project_id"], r, now)]
         out += [o["responsible_id"]] if o.get("responsible_id") else []
-        out += self._users_with_role(conn, "otk", now)
+        out += self._project_otk(conn, o["project_id"], now)
         return list(dict.fromkeys(out))
 
     def _not_future(self, ctx, iso_d: str, field: str, what: str) -> None:
@@ -472,7 +478,7 @@ class QualityMixin:
         self._qnotify_project(ctx, o["project_id"], ("gip", "rp"), "claim_check",
                               f"Рекламация № {o['claim_no']}: нужна проверка эффективности", o["id"], "claim",
                               extra=tuple(self._users_with_role(ctx.conn, "dept_head", ctx.now)
-                                          + self._users_with_role(ctx.conn, "otk", ctx.now)), skip=tuple(busy))
+                                          + self._project_otk(ctx.conn, o["project_id"], ctx.now)), skip=tuple(busy))
         return {"claim": self.v_claim(ctx.conn, n)}
 
     def _claim_check(self, ctx, p, ev):
@@ -852,7 +858,7 @@ class QualityMixin:
         ctx.log("change_order", o["id"], auth, o["version"], n["version"], {"event": "EcoImplemented", "results": len(out)})
         self._qnotify_project(ctx, o["project_id"], ("gip", "rp"), "eco_implemented",
                               f"Извещение № {o['eco_no']} внедрено — нужна проверка", o["id"], "change_order",
-                              extra=tuple(self._users_with_role(ctx.conn, "otk", ctx.now)))
+                              extra=tuple(self._project_otk(ctx.conn, o["project_id"], ctx.now)))
         return {"change_order": self.v_change_order(ctx.conn, n)}
 
     def _eco_verify(self, ctx, p, ev):
@@ -879,14 +885,14 @@ class QualityMixin:
         (документы с номерами версий, техпроцессы с редакциями) — тем, кто может составлять извещения (eco.edit).
         """
         out: dict[str, Any] = {"claims": [], "change_requests": [], "change_orders": [], "quality_refs": [],
-                               "quality_projects": [], "quality_otk": [], "claim_batches": []}
+                               "quality_projects": [], "quality_otk": {}, "claim_batches": []}
         prs = conn.execute(sa.select(projects.c.id, projects.c.code, projects.c.title).order_by(projects.c.code)).all()
         readable = [r.id for r in prs if self.policy.can(conn, uid, "quality.read", now, r.id)]
         if not readable:
             return out
-        # D-40: проекты (код и название — ОТК видит качество без права на карточку проекта), где можно регистрировать
-        # рекламации и подавать запросы; сотрудники ОТК (их можно назначать ответственными и исполнителями);
-        # выполненные наряды — для рекламации на партию.
+        # D-40: проекты (код и название), где можно регистрировать рекламации и подавать запросы; сотрудники ОТК по
+        # проектам (D-41: {проект: [id]} — пометка «(ОТК)» в списке ответственных и исполнителей); выполненные наряды —
+        # для рекламации на партию.
         reg = set()
         for r in prs:
             if r.id in readable:
@@ -894,7 +900,7 @@ class QualityMixin:
                 reg |= {r.id} if can_reg else set()
                 out["quality_projects"].append({"id": r.id, "code": r.code, "title": r.title, "can_claim": can_reg,
                                                 "can_ecr": self.policy.can(conn, uid, "ecr.submit", now, r.id)})
-        out["quality_otk"] = self._users_with_role(conn, "otk", now)
+        out["quality_otk"] = {pid: u for pid in readable if (u := self._project_otk(conn, pid, now))}
         if reg:
             for r in conn.execute(sa.select(work_orders, kits.c.code.label("kit_code")).join(kits, kits.c.id == work_orders.c.kit_id)
                                   .where(work_orders.c.project_id.in_(reg), work_orders.c.status.in_(BATCH_WO_STATES))
