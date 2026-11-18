@@ -83,7 +83,10 @@ OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp")
                 ("tech_process", "tech_processes"), ("work_order", "work_orders"), ("wo_operation", "wo_operations"),
                 # Экземпляры изделий и паспорта (D-38): паспорт-черновик правится офлайн через очередь; регистрация,
                 # передача, сервис, замены и черновой экспорт — онлайн-командами.
-                ("product_instance", "product_instances"), ("passport", "passports"))
+                ("product_instance", "product_instances"), ("passport", "passports"),
+                # Качество (D-39): рекламации, запросы (ECR) и извещения (ECO). Регистрация рекламации, подача запроса и
+                # черновик извещения — офлайн через очередь; решения, отметки и проверки — онлайн-командами.
+                ("claim", "claims"), ("change_request", "change_requests"), ("change_order", "change_orders"))
 # Объекты из результата команды → список в meta (ключ результата, ключ meta); заменяются по id.
 # Движения склада, резервы и потребности меняются ТОЛЬКО онлайн-командами (online_required): в кэше это
 # снимок «на момент последнего обновления», офлайн он только читается.
@@ -100,7 +103,9 @@ STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_
               # D-36: состав изделий из зафиксированных версий расчёта (без цен) — для ТП; исполнители «Производства».
               "tech_specs", "production_kits", "production_staff",
               # D-38: закрытые наряды для регистрации экземпляров и документы проекта для паспорта.
-              "instance_work_orders", "passport_documents")
+              "instance_work_orders", "passport_documents",
+              # D-39: документы с номерами версий и техпроцессы с редакциями — для строк извещения об изменении.
+              "quality_refs")
 
 
 # Онлайн-команды, которым не нужно сначала отправить очередь (их результат не зависит от неотправленных правок).
@@ -536,6 +541,30 @@ class SyncClient:
         ev = (prev[0] or 0) + 1 if prev is not None else row[0]
         # passport.save не принимает instance_id: экземпляр паспорта не меняется.
         return self.execute("passport.save", {"id": oid, **body}, ev)
+
+    def save_eco_draft(self, payload: dict) -> LocalResult:
+        """«Сохранить извещение»: eco.create (извещения ещё нет ни на сервере, ни в очереди) или eco.save — через
+        офлайн-очередь (D-39). Цепочка expected_version — как у паспорта (save_passport_draft); без изменений в очередь
+        не ставится. payload — {id, ecr_id, title, description, items}.
+        """
+        if self.db is None:
+            return LocalResult("unauthenticated", message_ru="Войдите в систему.")
+        oid = payload["id"]
+        row = self.db.execute("SELECT server_version FROM cache WHERE object_type='change_order' AND id=?", (oid,)).fetchone()
+        prev = self.db.execute("SELECT expected_version FROM outbox WHERE command IN ('eco.create','eco.save') "
+                               "AND object_id=? AND state IN ('pending','conflict','rejected') ORDER BY seq DESC LIMIT 1",
+                               (oid,)).fetchone()
+        if prev is None and (row is None or row[0] is None):
+            return self.execute("eco.create", payload)
+        local = self.get_local("change_order", oid) or {}
+        body = {k: payload[k] for k in ("title", "description", "items") if k in payload}
+        same = lambda k: ([{x: i.get(x) for x in ("kind", "document_id", "from_version", "tp_id") if i.get(x) is not None}  # noqa: E731
+                           for i in local.get(k) or []] == body[k]) if k == "items" else (local.get(k) or "") == body[k]
+        if all(same(k) for k in body):
+            return LocalResult("accepted", message_ru="Изменений нет — сохранять нечего.", response={"unchanged": True})
+        ev = (prev[0] or 0) + 1 if prev is not None else row[0]
+        # eco.save не принимает ecr_id: запрос извещения не меняется.
+        return self.execute("eco.save", {"id": oid, **body}, ev)
 
     def op_event(self, op_id: str, kind: str, qty_done: Optional[int] = None, note: Optional[str] = None) -> LocalResult:
         """Событие исполнителя по операции наряда (старт / пауза / продолжить / завершить / проблема) — офлайн (D-36).

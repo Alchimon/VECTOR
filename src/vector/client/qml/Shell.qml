@@ -5,7 +5,7 @@ import QtQuick.Layouts
 // Рабочая оболочка после входа: левое меню разделов, верхняя строка (связь, очередь), область страницы.
 // page — текущий раздел; go(page, id) — перейти к разделу и (необязательно) открыть объект id (navTarget).
 // Видимость пунктов меню — подсказка по правам (backend.hint); настоящий отказ всегда даёт сервер.
-// Горячие клавиши: Ctrl+1…7 — разделы, F5 — синхронизация. В офлайн-режиме внизу — кнопка переподключения.
+// Горячие клавиши: Ctrl+1…9 — разделы, F5 — синхронизация. В офлайн-режиме внизу — кнопка переподключения.
 Item {
     id: shellRoot
     objectName: "shell"
@@ -48,6 +48,10 @@ Item {
     // Изделия и паспорта (D-38): команда проекта, технологи, руководитель отдела — и все, кому сервер отдал
     // экземпляры или закрытые наряды для регистрации. Подсказка; данные решает сервер.
     readonly property bool seesProducts: backend.lifecycleOverview.sees === true
+    Shortcut { sequence: "Ctrl+9"; onActivated: if (shellRoot.seesQuality) shellRoot.go("quality") }
+    // Качество (D-39): рекламации и CAPA, запросы и извещения об изменении — команда проекта, технологи, руководитель
+    // отдела и все, кому сервер отдал данные качества. Подсказка; данные решает сервер.
+    readonly property bool seesQuality: backend.qualityOverview.sees === true
     Shortcut { sequence: "F5"; onActivated: backend.syncNow() }
     // Справочник сокращений и подсказок (D-37) — всем, без связи тоже.
     Shortcut { sequence: "F1"; onActivated: shellRoot.go("help") }
@@ -86,12 +90,15 @@ Item {
                 NavItem { objectName: "navStock"; text: "Склад"; iconName: "warehouse"; active: shellRoot.page === "stock"; onClicked: shellRoot.go("stock"); visible: shellRoot.seesStock }
                 NavItem { objectName: "navProcurement"; text: "Закупка"; iconName: "shopping-cart"; active: shellRoot.page === "procurement"; onClicked: shellRoot.go("procurement"); visible: shellRoot.seesNeeds
                           badge: (backend.needsOverview.candidates || []).length; badgeTone: "warning" }
-                Text { visible: shellRoot.seesProduction || shellRoot.seesProducts; text: "ПРОИЗВОДСТВО"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
+                Text { visible: shellRoot.seesProduction || shellRoot.seesProducts || shellRoot.seesQuality; text: "ПРОИЗВОДСТВО"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
                 // Бейдж: исполнителю — операции в работе/на паузе, остальным — открытые наряды.
                 NavItem { objectName: "navProduction"; text: "Производство"; iconName: "factory"; active: shellRoot.page === "production"; onClicked: shellRoot.go("production"); visible: shellRoot.seesProduction
                           badge: (backend.productionOverview.my_ops || []).length > 0 ? backend.productionOverview.my_ops.length : 0; badgeTone: "primary" }
                 // Изделия и паспорта (D-38): экземпляры с заводскими номерами, паспорт-черновик, эксплуатация.
                 NavItem { objectName: "navProducts"; text: "Изделия и паспорта"; iconName: "package-check"; active: shellRoot.page === "products"; onClicked: shellRoot.go("products"); visible: shellRoot.seesProducts }
+                // Качество (D-39): бейдж — что ждёт моего решения или отметки (проверки, решения, мои действия CAPA).
+                NavItem { objectName: "navQuality"; text: "Качество"; iconName: "shield-check"; active: shellRoot.page === "quality"; onClicked: shellRoot.go("quality"); visible: shellRoot.seesQuality
+                          badge: (backend.qualityOverview.counts || {}).to_me || 0; badgeTone: "primary" }
                 Text { text: "СИСТЕМА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
                 NavItem { text: "Синхронизация"; iconName: "refresh-cw"; active: shellRoot.page === "sync"; onClicked: shellRoot.go("sync")
                           badge: backend.problemCount > 0 ? backend.problemCount : backend.pendingCount; badgeTone: backend.problemCount > 0 ? "danger" : "warning" }
@@ -140,7 +147,7 @@ Item {
             anchors.fill: parent
             sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC, finance: financeC,
                                stock: stockC, procurement: procurementC, delegations: delegationsC,
-                               notifications: notificationsC, production: productionC, products: productsC, help: helpC })[shellRoot.page]
+                               notifications: notificationsC, production: productionC, products: productsC, quality: qualityC, help: helpC })[shellRoot.page]
         }
         }
     }
@@ -156,6 +163,7 @@ Item {
     Component { id: notificationsC; NotificationsPage { shell: shellRoot } }
     Component { id: productionC; ProductionPage { shell: shellRoot } }
     Component { id: productsC; ProductsPage { shell: shellRoot } }
+    Component { id: qualityC; QualityPage { shell: shellRoot } }
     Component { id: helpC; HelpPage { shell: shellRoot } }
 
     FormDialog {

@@ -24,7 +24,7 @@ from vector.core import stock
 from vector.core.contracts import Contracts
 
 from . import (calc_view, delegation_view, hints, lifecycle_view, notification_view, production_view, purchasing_view,
-               stock_view)
+               quality_view, stock_view)
 from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
 from .vault import KeyringStore, MemoryStore, VaultError
@@ -108,6 +108,21 @@ def _int_or_none(v: Any) -> Optional[int]:
         return int(v) if v.is_integer() else None
     t = str(v).strip()
     return int(t) if re.fullmatch(r"-?\d{1,9}", t) else None
+
+
+def _plain(v: Any) -> Any:
+    """Данные формы QML → обычные dict / list / str / int (рекурсивно). Целые числа из JavaScript приходят как float
+    (2.0) — превращаются в int, иначе сервер отклонит «номер версии — целое число»; дробные остаются float.
+    """
+    if hasattr(v, "toVariant"):
+        v = v.toVariant()
+    if isinstance(v, dict):
+        return {str(k): _plain(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_plain(x) for x in v]
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    return v
 
 
 def _plain_amount(v) -> Optional[str]:
@@ -202,7 +217,8 @@ class Backend(QObject):
         self._data: dict[str, list] = {"customer": [], "tender": [], "tkp": [], "project": [], "kit": [], "task": [], "document": [],
                                        "calc_draft": [], "warehouse": [], "stock_item": [], "supplier": [], "purchase_order": [],
                                        "supplier_contract": [], "tech_process": [], "work_order": [], "wo_operation": [],
-                                       "product_instance": [], "passport": []}
+                                       "product_instance": [], "passport": [],
+                                       "claim": [], "change_request": [], "change_order": []}
         # Фильтр вкладки «Заказы поставщикам» (active / approval / draft / placed / closed / all) — состояние экрана.
         self._po_filter = "active"
         # Наибольший id уведомления, о котором уже сказали (None — ещё не было снимка после входа, D-35).
@@ -752,6 +768,66 @@ class Backend(QObject):
             return {"result": r.__dict__, "snap": self._snapshot(False)}
 
         self._run(job, lambda res: self._file_done(tag, res, f"Черновик паспорта сохранён: {dest.name}. Это не сертификат."))
+
+    # ------------------------------------------------------------ качество: рекламации, CAPA, ECR, ECO (D-39)
+    # Команды качества идут через общий execute (tag, команда, payload, версия); здесь — данные раздела, проверка форм
+    # без сервера и сохранение черновика извещения (очередь с цепочкой версий).
+    @Property("QVariantMap", notify=dataChanged)
+    def qualityOverview(self):
+        """Раздел «Качество»: рекламации и CAPA, запросы и извещения об изменении, варианты для форм."""
+        st = self._stock
+        return qml_safe(quality_view.quality_view(
+            self._data.get("claim", []), self._data.get("change_request", []), self._data.get("change_order", []),
+            self._data.get("product_instance", []), st.get("quality_refs") or [], self._data.get("project", []),
+            self._data.get("kit", []), self._assignments, st.get("project_deputies") or [], self._people, self._me,
+            self._online and self._session_mode == "online", self._last_pull))
+
+    @Slot(str, "QVariantMap", result="QVariantMap")
+    def qualityCheck(self, kind: str, payload) -> dict:
+        """Проверка формы качества без сервера (те же правила ядра): kind — claim / actions / ecr / check / eco."""
+        p = payload.toVariant() if hasattr(payload, "toVariant") else payload
+        return qml_safe(quality_view.quality_check(kind, _plain(p)))
+
+    # Команды качества, которые форма может отправить через qualityCommand (остальные — отдельными слотами).
+    _QUALITY_COMMANDS = frozenset({"claim.register", "claim.start_analysis", "claim.plan", "claim.action_done",
+                                   "claim.submit_check", "claim.check", "ecr.submit", "ecr.assess", "ecr.decide",
+                                   "eco.approve", "eco.implement", "eco.verify"})
+
+    @Slot(str, str, "QVariantMap", int)
+    def qualityCommand(self, tag: str, command: str, payload, version: int):
+        """Команда качества из формы: данные приводятся к обычным типам (_plain — целые остаются целыми), новые
+        объекты получают id здесь; дальше — общий execute (очередь или онлайн по каталогу команд)."""
+        if command not in self._QUALITY_COMMANDS:
+            self._command_done(tag, {"status": "rejected", "message_ru": "Неизвестная команда качества."})
+            return
+        p = _plain(payload)
+        if command in ("claim.register", "ecr.submit") and not p.get("id"):
+            p["id"] = self.newId()
+        if command == "claim.plan":
+            p["actions"] = [{**a, "id": a.get("id") or self.newId()} for a in p.get("actions") or []]
+        self.execute(tag, command, p, int(version))
+
+    @Slot(str, "QVariantMap")
+    def saveEco(self, tag: str, payload):
+        """«Сохранить извещение»: через очередь (можно без связи); создание или правка — решает
+        SyncClient.save_eco_draft. payload — {id, ecr_id, title, description, items}."""
+        p = _plain(payload.toVariant() if hasattr(payload, "toVariant") else payload)
+        items = []
+        for it in p.get("items") or []:
+            if it.get("kind") == "document":
+                items.append({"kind": "document", "document_id": str(it.get("document_id")), "from_version": _int_or_none(it.get("from_version")) or 0})
+            elif it.get("kind") == "tech_process":
+                items.append({"kind": "tech_process", "tp_id": str(it.get("tp_id"))})
+        data = {"id": p["id"], "ecr_id": p.get("ecr_id"), "title": (p.get("title") or "").strip(),
+                "description": (p.get("description") or "").strip(), "items": items}
+        if not data["title"]:
+            data.pop("title")
+
+        def job():
+            """Сохранить черновик извещения в рабочем потоке и снять снимок данных."""
+            r = self.client.save_eco_draft(data)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "eco.save", res))
 
     @Property("QVariantMap", notify=dataChanged)
     def suppliersOverview(self):

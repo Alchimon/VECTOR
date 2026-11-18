@@ -15,13 +15,21 @@ KIND_ICONS = {"po_submitted": "shield-check", "po_approved": "circle-check", "po
               "po_withdrawn": "undo-2", "delegation_created": "user-check", "delegation_revoked": "user-x",
               # Технология и производство (D-36).
               "tp_approved": "circle-check", "wo_assigned": "factory", "wo_problem": "triangle-alert",
-              "wo_completed": "check-check"}
+              "wo_completed": "check-check",
+              # Качество (D-39): рекламации и CAPA, запросы (ECR) и извещения (ECO) об изменении.
+              "claim_new": "shield-x", "claim_assigned": "user-check", "capa_assigned": "list-checks",
+              "claim_check": "clipboard-check", "claim_checked": "circle-check", "ecr_new": "file-pen-line",
+              "ecr_assessed": "sliders-horizontal", "ecr_decided": "gavel", "eco_approval": "file-check",
+              "eco_approved": "circle-check", "eco_implemented": "check-check", "eco_verified": "clipboard-check"}
 KIND_TONES = {"po_submitted": "warning", "po_approved": "success", "po_returned": "danger",
               "po_withdrawn": "neutral", "delegation_created": "info", "delegation_revoked": "neutral",
-              "tp_approved": "success", "wo_assigned": "info", "wo_problem": "danger", "wo_completed": "success"}
+              "tp_approved": "success", "wo_assigned": "info", "wo_problem": "danger", "wo_completed": "success",
+              "claim_new": "warning", "claim_assigned": "info", "capa_assigned": "info", "claim_check": "primary",
+              "claim_checked": "success", "ecr_new": "info", "ecr_assessed": "info", "ecr_decided": "success",
+              "eco_approval": "warning", "eco_approved": "success", "eco_implemented": "primary", "eco_verified": "success"}
 # Куда ведёт «Открыть»: раздел оболочки по типу объекта.
 TARGET_PAGES = {"purchase_order": "procurement", "delegation": "delegations", "tech_process": "production",
-                "work_order": "production"}
+                "work_order": "production", "claim": "quality", "change_request": "quality", "change_order": "quality"}
 
 
 def when_label(at: Optional[str], now: datetime, tz: Optional[tzinfo] = None) -> str:
