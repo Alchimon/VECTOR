@@ -12,6 +12,9 @@
    между складами) v8 → v9 (перемещение «в пути») v9 → v10 (акт недостачи, срок прибытия) v10 → v11 (акт об утрате, подписи), v11 → v12 (поставщики, заказы, факты поставки) и v12 → v13 (реквизиты и
    договоры поставщиков, НДС и согласование заказов — таблицы-расширения) v13 → v14 (замещение, основания
    решений, сверка со счётом поставщика) и v14 → v15 (замещение в проекте, уведомления) только создают новые таблицы. Шаги, меняющие данные, потребуют отдельного решения (Decision Log).
+   Единственное исключение — v18 → v19 (D-40, ответ владельца на A-46 «рекламации без серийного номера бывают»):
+   у claims.instance_id снимается ограничение NOT NULL. Данные при этом не меняются (существующие строки уже
+   удовлетворяют более слабому ограничению), ограничение только ослабляется; см. _relax_claim_instance.
 4. **Fail-closed.** Неизвестная/более новая версия, незавершённое восстановление, уже существующая таблица,
    которую шаг должен создать, — отказ без изменений.
 
@@ -20,6 +23,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,6 +77,8 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     17: [db.product_instances, db.instance_compositions, db.instance_events, db.passports, db.passport_exports],
     # Качество: рекламации, CAPA, проверки эффективности, ECR, ECO, журнал решений (этап 6, D-39).
     18: [db.claims, db.claim_actions, db.effectiveness_checks, db.change_requests, db.change_orders, db.quality_decisions],
+    # Охват и классификация рекламаций, срок и ответы заказчику (D-40). Плюс снятие NOT NULL — см. STEPS[18].
+    19: [db.claim_terms, db.claim_responses],
 }
 
 
@@ -101,6 +107,78 @@ def _create_tables(tables: list[sa.Table]) -> Callable:
     return step
 
 
+# Столбец, ограничение NOT NULL которого снимает шаг v18 → v19, и его внешний ключ / индекс (имена — по
+# naming_convention db.metadata, одинаковые на всех СУБД).
+_RELAX_TABLE, _RELAX_COLUMN = "claims", "instance_id"
+_RELAX_FK = "fk_claims_instance_id_product_instances"
+_RELAX_IX = "ix_claims_instance_id"
+
+
+def _column_nullable(conn, table: str, column: str) -> bool:
+    """Допускает ли столбец NULL в РЕАЛЬНОЙ БД (по описанию схемы СУБД, а не по db.metadata)."""
+    for c in sa.inspect(conn).get_columns(table):
+        if c["name"] == column:
+            return bool(c["nullable"])
+    raise MigrationError(f"В таблице {table} нет столбца {column} — БД в непредусмотренном состоянии, миграция отменена.")
+
+
+def _relax_claim_instance(conn) -> None:
+    """Снять NOT NULL с claims.instance_id (рекламация на партию или проект без заводского номера, D-40).
+
+    Данные не меняются. Способ — свой для каждой СУБД, всё внутри общей транзакции миграции:
+
+    * PostgreSQL — ALTER TABLE … ALTER COLUMN … DROP NOT NULL;
+    * MS SQL — ALTER COLUMN с тем же типом и NULL; внешний ключ и индекс по столбцу на время пересоздаются (MS SQL
+      не меняет столбец, на который они ссылаются); имена — те же, что у новой БД;
+    * SQLite (тесты и пилот) — у SQLite нет ALTER COLUMN; применяется документированный SQLite способ снятия NOT NULL
+      без перестройки таблицы: правка текста CREATE TABLE в sqlite_master (writable_schema) с увеличением
+      schema_version — формат хранения строк от этого не меняется. Текст должен содержать ровно одно ожидаемое
+      определение столбца, иначе — отказ без изменений (fail-closed).
+
+    Если столбец уже допускает NULL (например, БД создана этой версией и версия схемы записана вручную) — ничего не
+    делается. После шага проверяется, что столбец действительно допускает NULL.
+    """
+    if _column_nullable(conn, _RELAX_TABLE, _RELAX_COLUMN):
+        return
+    name = conn.dialect.name
+    if name == "postgresql":
+        conn.exec_driver_sql(f"ALTER TABLE {_RELAX_TABLE} ALTER COLUMN {_RELAX_COLUMN} DROP NOT NULL")
+    elif name == "mssql":
+        typ = db.claims.c.instance_id.type.compile(dialect=conn.dialect)
+        conn.exec_driver_sql(f"ALTER TABLE {_RELAX_TABLE} DROP CONSTRAINT {_RELAX_FK}")
+        conn.exec_driver_sql(f"DROP INDEX {_RELAX_IX} ON {_RELAX_TABLE}")
+        conn.exec_driver_sql(f"ALTER TABLE {_RELAX_TABLE} ALTER COLUMN {_RELAX_COLUMN} {typ} NULL")
+        conn.exec_driver_sql(f"CREATE INDEX {_RELAX_IX} ON {_RELAX_TABLE} ({_RELAX_COLUMN})")
+        conn.exec_driver_sql(f"ALTER TABLE {_RELAX_TABLE} ADD CONSTRAINT {_RELAX_FK} FOREIGN KEY ({_RELAX_COLUMN}) "
+                             "REFERENCES product_instances (id)")
+    elif name == "sqlite":
+        sql = conn.exec_driver_sql("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (_RELAX_TABLE,)).scalar()
+        pattern = re.compile(r"(\n\s*" + _RELAX_COLUMN + r" VARCHAR\(36\)) NOT NULL(,)")
+        if not sql or len(pattern.findall(sql)) != 1:
+            raise MigrationError("Определение claims.instance_id не такое, как ожидалось (SQLite) — миграция отменена, "
+                                 "изменений нет.")
+        ver = conn.exec_driver_sql("PRAGMA schema_version").scalar()
+        conn.exec_driver_sql("PRAGMA writable_schema=ON")
+        try:
+            conn.exec_driver_sql("UPDATE sqlite_master SET sql=? WHERE type='table' AND name=?",
+                                 (pattern.sub(r"\1\2", sql), _RELAX_TABLE))
+            conn.exec_driver_sql(f"PRAGMA schema_version={int(ver) + 1}")
+        finally:
+            conn.exec_driver_sql("PRAGMA writable_schema=OFF")
+        if conn.exec_driver_sql("PRAGMA integrity_check").scalar() != "ok":
+            raise MigrationError("Проверка целостности SQLite после правки схемы не прошла — миграция отменена.")
+    else:  # pragma: no cover — другие СУБД не поддерживаются (db.SUPPORTED)
+        raise MigrationError(f"СУБД {name} не поддерживается.")
+    if not _column_nullable(conn, _RELAX_TABLE, _RELAX_COLUMN):
+        raise MigrationError("Не удалось снять ограничение NOT NULL с claims.instance_id — миграция отменена, изменений нет.")
+
+
+def _v18_to_v19(conn) -> list[str]:
+    """Шаг v18 → v19: снять NOT NULL с claims.instance_id и создать таблицы claim_terms и claim_responses."""
+    _relax_claim_instance(conn)
+    return _create_tables(ADDED_IN[19])(conn)
+
+
 # Шаг «из версии N в N+1».
 STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(ADDED_IN[5]),
                               5: _create_tables(ADDED_IN[6]), 6: _create_tables(ADDED_IN[7]),
@@ -108,7 +186,8 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               9: _create_tables(ADDED_IN[10]), 10: _create_tables(ADDED_IN[11]), 11: _create_tables(ADDED_IN[12]),
                               12: _create_tables(ADDED_IN[13]), 13: _create_tables(ADDED_IN[14]),
                               14: _create_tables(ADDED_IN[15]), 15: _create_tables(ADDED_IN[16]),
-                              16: _create_tables(ADDED_IN[17]), 17: _create_tables(ADDED_IN[18])}
+                              16: _create_tables(ADDED_IN[17]), 17: _create_tables(ADDED_IN[18]),
+                              18: _v18_to_v19}
 
 
 @dataclass

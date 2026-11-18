@@ -391,4 +391,5 @@ class DelegationMixin:
 ROLE_LABELS_RU = {"admin": "Администратор", "gip": "ГИП", "rp": "РП", "dept_head": "Руководитель отдела",
                   "lead_engineer": "Ведущий инженер", "engineer": "Инженер", "designer": "Конструктор",
                   "technologist": "Технолог", "production": "Производство", "warehouse": "Склад",
-                  "procurement": "Закупка", "accountant": "Бухгалтерия", "po_approver": "Согласование закупок"}
+                  "procurement": "Закупка", "accountant": "Бухгалтерия", "po_approver": "Согласование закупок",
+                  "otk": "Технический контроль (ОТК)"}

@@ -547,3 +547,77 @@ def test_v15_to_v16_adds_production_tables_with_immutable_snapshot(backend, tmp_
     with eng.begin() as c:
         c.execute(db.work_orders.update().where(db.work_orders.c.id == wid).values(status="in_progress", version=2))
     assert db.check_schema(eng) == db.SCHEMA_VERSION
+
+
+def test_v18_to_v19_relaxes_claim_instance_and_adds_terms_and_responses(backend, tmp_path, clock, keys, monkeypatch):
+    """v18 → v19 (D-40, ответ на A-46): рекламация без заводского номера. У claims.instance_id снимается NOT NULL —
+    данные v18 не меняются; появляются условия рекламации (охват, классификация, срок ответа) и неизменяемые ответы
+    заказчику. Работает на SQLite (правка схемы) и PostgreSQL (ALTER COLUMN … DROP NOT NULL)."""
+    # Схема v18 — как у установленной программы: instance_id NOT NULL (в db.py v19 столбец уже допускает NULL).
+    monkeypatch.setattr(db.claims.c.instance_id, "nullable", False)
+    eng = make_v3(backend, tmp_path, clock, version=18)
+    monkeypatch.undo()
+    with eng.connect() as c:
+        assert not mg._column_nullable(c, "claims", "instance_id")
+    now, uid, pid, kid, tid, wid, iid, cid = clock.now(), *(new_id() for _ in range(7))
+    meta = dict(version=1, created_by=uid, created_at=now, updated_by=uid, updated_at=now)
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x", must_change_password=False,
+                                           password_changed_at=now, failed_attempts=0, active=True, created_at=now))
+        c.execute(db.projects.insert().values(id=pid, code="П-1", title="Проект", status="rkd_in_progress", **meta))
+        c.execute(db.kits.insert().values(id=kid, project_id=pid, code="К", title="Комплект", **meta))
+        c.execute(db.tech_processes.insert().values(id=tid, project_id=pid, kit_id=kid, revision_no=1, title="ТП",
+                                                    status="approved", content_hash="h" * 64, **meta))
+        c.execute(db.work_orders.insert().values(id=wid, doc_no=1, project_id=pid, kit_id=kid, tp_id=tid, qty=2, title="Наряд",
+                                                 snapshot_hash="s" * 64, status="closed", version=1, released_by=uid,
+                                                 released_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.product_instances.insert().values(id=iid, project_id=pid, kit_id=kid, work_order_id=wid, series="2026",
+                                                       serial_no="001", serial_key="001", status="registered", **meta))
+        c.execute(db.claims.insert().values(id=cid, claim_no=1, project_id=pid, instance_id=iid, received_date=now.date(),
+                                            source="customer", description="Отказ", status="registered", **meta))
+    before = counts(eng, mg.tables_of_version(18))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version, rep.created_tables) == (18, 19, ["claim_terms", "claim_responses"])
+    assert rep.backup_path.name.startswith("vector-premigrate-v18-")
+    after = counts(eng, mg.tables_of_version(18))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    with eng.connect() as c:
+        assert mg._column_nullable(c, "claims", "instance_id")
+        assert c.execute(sa.select(db.claims.c.instance_id).where(db.claims.c.id == cid)).scalar() == iid  # данные те же
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    c2 = new_id()
+    with eng.begin() as c:
+        # Рекламация на партию: без экземпляра, наряд — в условиях.
+        c.execute(db.claims.insert().values(id=c2, claim_no=2, project_id=pid, instance_id=None, received_date=now.date(),
+                                            source="customer", description="Партия", status="registered", **meta))
+        c.execute(db.claim_terms.insert().values(claim_id=c2, scope="batch", work_order_id=wid, severity="major",
+                                                 response_due=now.date(), due_set_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.claim_responses.insert().values(claim_id=c2, seq=1, kind="interim", response_date=now.date(),
+                                                     summary="Приняли в работу", authority="global_role:otk#grant:1",
+                                                     responded_by=uid, responded_at=now))
+    terms = dict(updated_by=uid, updated_at=now)
+    bad(db.claim_terms.insert().values(claim_id=cid, scope="batch", **terms))                   # партия — с нарядом
+    bad(db.claim_terms.insert().values(claim_id=cid, scope="instance", response_due=now.date(), **terms))  # срок — с моментом
+    bad(db.claim_terms.insert().values(claim_id=cid, scope="instance", severity="huge", **terms))
+    bad(db.claim_responses.update().values(summary="Другое"))                                   # ответ неизменяем
+    bad(db.claim_responses.delete())
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    # Повторный запуск — уже v19: ничего не делает.
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
+
+
+def test_v18_to_v19_refuses_unexpected_claims_definition(tmp_path, clock, keys, monkeypatch):
+    """SQLite: если текст определения claims не такой, как ожидалось, — отказ без изменений (fail-closed)."""
+    monkeypatch.setattr(db.claims.c.instance_id, "nullable", False)
+    monkeypatch.setattr(db.claims.c.instance_id, "type", sa.String(40))      # «чужое» определение столбца
+    eng = make_v3("sqlite", tmp_path, clock, version=18)
+    monkeypatch.undo()
+    with pytest.raises(mg.MigrationError, match="не такое, как ожидалось"):
+        mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    with eng.connect() as c:
+        assert mg.current_version(eng) == 18 and "claim_terms" not in sa.inspect(c).get_table_names()
+        assert not mg._column_nullable(c, "claims", "instance_id")

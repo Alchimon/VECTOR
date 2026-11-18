@@ -29,7 +29,8 @@ def inst(world, pd):  # noqa: F811
 def claim_of(s, inst, **kw):  # noqa: F811
     """claim.register от имени s (по умолчанию — рекламация заказчика с сегодняшней датой)."""
     p = {"id": new_id(), "instance_id": inst["id"], "received_date": kw.pop("received_date", None) or "2026-01-10",
-         "source": "customer", "description": "Не включается вводной автомат", **kw}
+         "source": "customer", "description": "Не включается вводной автомат", "severity": "major",
+         "response_due": "2026-02-10", **kw}
     return s.cmd("claim.register", p)
 
 
@@ -45,11 +46,16 @@ def test_claim_cycle_rights_states_and_independent_effectiveness_check(world, pd
     for s in (u.eng, pd.tech, pd.prod, u.lead):
         assert claim_of(s, inst)["status"] == "denied", s
     assert claim_of(u.rp, inst, source="x")["code"] == "invalid_source"
-    assert claim_of(u.rp, inst, received_date=today(world, 5))["code"] == "date_in_future"
+    assert claim_of(u.rp, inst, received_date=today(world, 5), response_due=today(world, 30))["code"] == "date_in_future"
+    # D-40: тяжесть дефекта обязательна; у рекламации от заказчика — срок ответа (не раньше даты получения).
+    assert claim_of(u.rp, inst, severity=None)["code"] == "severity_required"
+    assert claim_of(u.rp, inst, response_due=None)["code"] == "required"
+    assert claim_of(u.rp, inst, response_due="2026-01-09")["code"] == "due_before_received"
     assert claim_of(u.rp, inst, description=" ")["code"] == "required"
     c = u.rp.ok("claim.register", {"id": new_id(), "instance_id": inst["id"], "received_date": today(world),
                                    "source": "customer", "description": "Не включается вводной автомат",
-                                   "reference": "Письмо № 17"})["claim"]
+                                   "reference": "Письмо № 17", "severity": "major",
+                                   "response_due": today(world, 10)})["claim"]
     assert (c["claim_no"], c["status"], c["instance_label"], c["reference"]) == (1, "registered", "АТХ № 001 (серия 2026)", "Письмо № 17")
     assert [n["kind"] for n in pull(u.gip)["notifications"]].count("claim_new") == 1
 
@@ -76,7 +82,12 @@ def test_claim_cycle_rights_states_and_independent_effectiveness_check(world, pd
                  expected_version=v)
     assert r["code"] == "actions_invalid" and [p["row"] for p in r["details"]["problems"]] == [1, 2]
     a1, a2 = act(u.eng), act(u.gip, "preventive", what="Входной контроль автоматов")
-    c = u.rp.ok("claim.plan", {"id": c["id"], "cause": "Брак партии автоматов", "actions": [a1, a2]}, expected_version=v)["claim"]
+    # Категория дефекта (D-40) — при первом плане обязательна.
+    assert u.rp.cmd("claim.plan", {"id": c["id"], "cause": "Брак партии автоматов", "actions": [a1, a2]},
+                    expected_version=v)["code"] == "category_required"
+    c = u.rp.ok("claim.plan", {"id": c["id"], "cause": "Брак партии автоматов", "category": "purchased",
+                               "actions": [a1, a2]}, expected_version=v)["claim"]
+    assert (c["category"], c["category_label"]) == ("purchased", "Покупные комплектующие")
     assert (c["status"], c["cause"], [a["kind"] for a in c["actions"]]) == ("action", "Брак партии автоматов",
                                                                            ["corrective", "preventive"])
     assert any(n["kind"] == "capa_assigned" for n in pull(u.eng)["notifications"])
@@ -280,8 +291,10 @@ def test_quality_rules_core():
     assert qa.parse_check({"effective": False, "evidence": "Отказ"}) == {"effective": False, "evidence": "Отказ"}
 
 
-def test_quality_tables_added_in_v18():
+def test_quality_tables_added_in_v18_and_v19():
     from vector.server import migrate as mg
     assert [t.name for t in mg.ADDED_IN[18]] == ["claims", "claim_actions", "effectiveness_checks", "change_requests",
                                                  "change_orders", "quality_decisions"]
-    assert db.SCHEMA_VERSION == 18 and 17 in mg.STEPS
+    assert [t.name for t in mg.ADDED_IN[19]] == ["claim_terms", "claim_responses"]
+    assert db.SCHEMA_VERSION == 19 and {17, 18} <= set(mg.STEPS)
+    assert db.claims.c.instance_id.nullable is True

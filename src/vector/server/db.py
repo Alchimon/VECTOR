@@ -38,8 +38,10 @@ from vector.core import money
 #         материалов на наряд (этап 5, D-36);
 #   v17 — экземпляры изделий, их состав и история эксплуатации, паспорт и журнал черновых экспортов (этап 6, D-38);
 #   v18 — качество: рекламации, действия CAPA, проверки эффективности, запросы (ECR) и извещения (ECO) об изменении,
-#         журнал решений по качеству (этап 6, D-39).
-SCHEMA_VERSION = 18
+#         журнал решений по качеству (этап 6, D-39);
+#   v19 — рекламация без заводского номера (на партию или проект: claims.instance_id допускает NULL), охват и
+#         классификация дефекта, срок ответа заказчику, неизменяемые ответы заказчику (D-40, ответ на A-46).
+SCHEMA_VERSION = 19
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1166,11 +1168,13 @@ passport_exports = sa.Table("passport_exports", metadata,
 # Правила — vector.core.quality (общие с клиентом). Рекламация относится к экземпляру изделия (точная связь с
 # проектом, нарядом, составом и версиями — через экземпляр). Статусы: registered → analysis → action →
 # effectiveness_check → closed (проверка «не помогло» возвращает в action).
+# D-40 (v19): instance_id допускает NULL — рекламация на партию (наряд) или на проект без заводского номера; охват,
+# наряд и классификация — в claim_terms. Миграция v18 → v19 снимает NOT NULL (данные не меняются, migrate.py).
 claims = sa.Table("claims", metadata,
     sa.Column("id", ID, primary_key=True),
     sa.Column("claim_no", sa.Integer, nullable=False, unique=True),
     sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
-    sa.Column("instance_id", ID, sa.ForeignKey("product_instances.id"), nullable=False, index=True),
+    sa.Column("instance_id", ID, sa.ForeignKey("product_instances.id"), index=True),   # NULL — без номера (D-40)
     sa.Column("received_date", sa.Date, nullable=False),
     sa.Column("source", U(16), nullable=False),
     sa.Column("reference", U(300)),                       # номер письма / акта заказчика
@@ -1274,6 +1278,43 @@ quality_decisions = sa.Table("quality_decisions", metadata,
     sa.UniqueConstraint("object_type", "object_id", "seq", name="uq_quality_decisions_seq"),
     sa.CheckConstraint("object_type IN ('claim','ecr','eco')", name="object_type"))
 
+# ------------------------------------------------------------ D-40 (схема v19): охват, классификация, сроки ответа
+# Условия рекламации (одна строка на рекламацию, таблица-расширение): охват — экземпляр, партия (наряд) или проект;
+# тяжесть и категория дефекта; срок ответа заказчику и когда он установлен (due_set_at: «ответ дан» = есть ответ,
+# записанный после этого момента). У рекламаций до v19 строки нет — это «экземпляр, не классифицирована, без срока».
+claim_terms = sa.Table("claim_terms", metadata,
+    sa.Column("claim_id", ID, sa.ForeignKey("claims.id"), primary_key=True),
+    sa.Column("scope", U(16), nullable=False),
+    sa.Column("work_order_id", ID, sa.ForeignKey("work_orders.id"), index=True),   # партия — наряд
+    sa.Column("severity", U(16)),
+    sa.Column("category", U(24)),
+    sa.Column("response_due", sa.Date),
+    sa.Column("due_set_at", UtcDateTime),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("scope IN ('instance','batch','project')", name="scope"),
+    sa.CheckConstraint("scope <> 'batch' OR work_order_id IS NOT NULL", name="batch_wo"),
+    sa.CheckConstraint("severity IS NULL OR severity IN ('critical','major','minor')", name="severity"),
+    sa.CheckConstraint("category IS NULL OR category IN ('design','manufacturing','purchased','software','logistics',"
+                       "'operation','other')", name="category"),
+    sa.CheckConstraint("(response_due IS NULL AND due_set_at IS NULL) OR "
+                       "(response_due IS NOT NULL AND due_set_at IS NOT NULL)", name="due_pair"))
+
+# Ответы заказчику по рекламации (неизменяемо): вид (промежуточный / окончательный), дата отправки, суть, номер
+# письма, кто записал и на каком основании. Ответ, записанный после установки срока, «закрывает» этот срок.
+claim_responses = sa.Table("claim_responses", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("claim_id", ID, sa.ForeignKey("claims.id"), nullable=False, index=True),
+    sa.Column("seq", sa.Integer, nullable=False),
+    sa.Column("kind", U(16), nullable=False),
+    sa.Column("response_date", sa.Date, nullable=False),
+    sa.Column("summary", T, nullable=False),
+    sa.Column("reference", U(300)),
+    sa.Column("authority", U(120), nullable=False),
+    sa.Column("responded_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("responded_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("claim_id", "seq", name="uq_claim_responses_seq"),
+    sa.CheckConstraint("kind IN ('interim','final')", name="kind"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -1365,7 +1406,8 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (role_delegation_projects, 50021), (tech_process_approvals, 50022),
                  (work_order_snapshots, 50023), (wo_timer_events, 50024), (wo_substitutions, 50025),
                  (work_order_issues, 50026), (instance_compositions, 50027), (instance_events, 50028),
-                 (passport_exports, 50029), (effectiveness_checks, 50030), (quality_decisions, 50031)):
+                 (passport_exports, 50029), (effectiveness_checks, 50030), (quality_decisions, 50031),
+                 (claim_responses, 50032)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

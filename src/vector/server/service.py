@@ -187,6 +187,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "claim.register": self._claim_register, "claim.start_analysis": self._claim_start_analysis,
             "claim.plan": self._claim_plan, "claim.action_done": self._claim_action_done,
             "claim.submit_check": self._claim_submit_check, "claim.check": self._claim_check,
+            # D-40: классификация дефекта, срок ответа и ответы заказчику.
+            "claim.classify": self._claim_classify, "claim.set_due": self._claim_set_due, "claim.respond": self._claim_respond,
             "ecr.submit": self._ecr_submit, "ecr.assess": self._ecr_assess, "ecr.decide": self._ecr_decide,
             "eco.create": self._eco_create, "eco.save": self._eco_save, "eco.approve": self._eco_approve,
             "eco.implement": self._eco_implement, "eco.verify": self._eco_verify,
@@ -1143,6 +1145,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         # Замещения (свои; все — руководителю отдела и администратору), покрытие ролей (D-34) и замещающие в
         # читаемых проектах (D-35).
         out.update(self._pull_delegations(conn, uid, now, readable))
+        # Напоминания о сроке ответа заказчику по рекламациям (D-40) — до выдачи уведомлений, чтобы новые пришли сразу.
+        self._quality_reminders(conn, uid, now)
         # Свои уведомления и число непрочитанных (D-35).
         out.update(self._pull_notifications(conn, uid, now))
         # ТП и состав изделий (без цен), наряды и операции (D-36).

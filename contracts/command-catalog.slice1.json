@@ -1,5 +1,5 @@
 {
-  "contract": "command-catalog-slice1-v18",
+  "contract": "command-catalog-slice1-v19",
   "offline_classes": {
     "offline_full": "Полностью доступно офлайн (чтение локального кэша, локальные черновики без эффекта для других).",
     "queued": "Создаёт локальное изменение в очереди синхронизации. До ответа сервера это НЕ подтверждённое действие; сервер заново проверяет права, состояние и версию.",
@@ -515,21 +515,21 @@
       "offline": "queued",
       "object": "claim",
       "label_ru": "Зарегистрировать рекламацию",
-      "note": "РП или ГИП проекта, резерв — руководитель отдела (D-39). {id, instance_id, received_date, source (customer|internal), description, reference?}. Можно без связи (очередь); номер рекламации присваивает сервер."
+      "note": "РП или ГИП проекта, ОТК (отдел технического контроля), резерв — руководитель отдела (D-39, D-40). {id, scope (instance|batch|project; по умолчанию instance), instance_id | work_order_id | project_id, received_date, source (customer|internal), description, reference?, severity (critical|major|minor), category?, response_due (обязательно для рекламации от заказчика)}. Партия — наряд: рекламация без заводского номера на экземпляры наряда; проект — без номера изделия. Можно без связи (очередь); номер рекламации присваивает сервер."
     },
     "claim.start_analysis": {
       "offline": "online_required",
       "object": "claim",
       "label_ru": "Начать анализ причины",
       "requires_expected_version": true,
-      "note": "{id, responsible_id} — ответственный за анализ, участник проекта. «Зарегистрирована» → «Анализ причины»."
+      "note": "{id, responsible_id} — ответственный за анализ: участник проекта или сотрудник ОТК (D-40). «Зарегистрирована» → «Анализ причины»."
     },
     "claim.plan": {
       "offline": "online_required",
       "object": "claim",
       "label_ru": "Утвердить план действий",
       "requires_expected_version": true,
-      "note": "{id, cause, actions:[{id, kind (corrective|preventive), description, owner_id, due_date}]}. Из «Анализ причины» → «Выполнение действий» (нужно хотя бы одно корректирующее); в «Выполнение действий» — добавляет действия (например, после проверки «не помогло»). Исполнители — участники проекта."
+      "note": "{id, cause, category?, actions:[{id, kind (corrective|preventive), description, owner_id, due_date}]}. Из «Анализ причины» → «Выполнение действий» (нужно хотя бы одно корректирующее); в «Выполнение действий» — добавляет действия (например, после проверки «не помогло»). Исполнители — участники проекта или сотрудники ОТК. При первом плане нужна категория дефекта (если её ещё нет) — по найденной причине (D-40)."
     },
     "claim.action_done": {
       "offline": "online_required",
@@ -550,6 +550,27 @@
       "label_ru": "Проверить эффективность",
       "requires_expected_version": true,
       "note": "{id, effective, evidence}. Независимый проверяющий: не составлял план, не выполнял действия, не отправлял на проверку. Эффективно → «Закрыта»; нет → «Выполнение действий». Запись проверки неизменяема. Закрытие не доказывает устранение причины."
+    },
+    "claim.classify": {
+      "offline": "online_required",
+      "object": "claim",
+      "label_ru": "Классифицировать дефект",
+      "requires_expected_version": true,
+      "note": "{id, severity (critical|major|minor), category?, reason} — уточнить тяжесть и категорию дефекта (D-40). Причина изменения обязательна; запись в журнале решений."
+    },
+    "claim.set_due": {
+      "offline": "online_required",
+      "object": "claim",
+      "label_ru": "Изменить срок ответа заказчику",
+      "requires_expected_version": true,
+      "note": "{id, response_due, reason} — новый срок ответа заказчику (по согласованию с ним или для следующего ответа, D-40). Не раньше сегодняшнего дня; причина обязательна."
+    },
+    "claim.respond": {
+      "offline": "online_required",
+      "object": "claim",
+      "label_ru": "Записать ответ заказчику",
+      "requires_expected_version": true,
+      "note": "{id, kind (interim|final), response_date, summary, reference?} — ответ заказчику отправлен (неизменяемая запись, D-40). Ответ после установки срока закрывает срок. Только для рекламации от заказчика."
     },
     "ecr.submit": {
       "offline": "queued",

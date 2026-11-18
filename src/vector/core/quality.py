@@ -22,6 +22,17 @@
     ECR:        submitted → assessed → accepted | rejected
     ECO:        draft → approved → implemented → verified
 
+Расширение D-40 (ответ владельца на A-46):
+
+* рекламация бывает без заводского номера — на ПАРТИЮ (наряд: все экземпляры одной серии, выпущенные по нему) или
+  на ПРОЕКТ в целом (CLAIM_SCOPES_RU); точная связь с экземпляром — только когда номер известен;
+* классификация дефекта: тяжесть (SEVERITY_RU) указывается при регистрации, категория — откуда дефект
+  (CATEGORY_RU) — когда найдена причина (при первом плане CAPA) или раньше, если уже ясно;
+* срок ответа заказчику (response_due): обязателен для рекламации от заказчика; «ответ дан», когда после
+  установки срока записан ответ заказчику (claim.respond); состояние срока — deadline_state;
+* роль «Технический контроль (ОТК — отдел технического контроля)» ведёт рекламации наравне с РП и ГИП и проверяет
+  эффективность (права — contracts/permissions.slice1.json).
+
 Закрытие рекламации НЕ доказывает устранение причины (02 сценарий 10): оно значит лишь, что независимый
 проверяющий признал выполненные действия эффективными на момент проверки. Это сказано в карточке (CLOSURE_NOTE).
 
@@ -29,6 +40,7 @@
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Iterable, Optional
 
 from .lifecycle import LifecycleError, parse_date
@@ -42,6 +54,24 @@ ACTION_STATUS_RU = {"open": "Не выполнено", "done": "Выполнен
 ECR_STATUS_LABELS_RU = {"submitted": "Подан", "assessed": "Оценён", "accepted": "Принят", "rejected": "Отклонён"}
 ECO_STATUS_LABELS_RU = {"draft": "Черновик", "approved": "Утверждено", "implemented": "Внедрено", "verified": "Проверено"}
 ECO_ITEM_KINDS_RU = {"document": "Документ", "tech_process": "Техпроцесс"}
+# D-40: охват рекламации, классификация дефекта, ответы заказчику.
+CLAIM_SCOPES_RU = {"instance": "Экземпляр (заводской номер)", "batch": "Партия (наряд)", "project": "Проект (без номера изделия)"}
+SEVERITY_RU = {"critical": "Критический", "major": "Значительный", "minor": "Незначительный"}
+SEVERITY_HINTS_RU = {
+    "critical": "Опасен для людей или оборудования либо изделие не работает — нужно немедленное решение.",
+    "major": "Изделие работает с ограничениями или не выполняет часть функций.",
+    "minor": "Не влияет на работу: внешний вид, маркировка, комплектность документации.",
+}
+CATEGORY_RU = {"design": "Конструкторский (ошибка в документации)", "manufacturing": "Производственный (изготовление, сборка)",
+               "purchased": "Покупные комплектующие", "software": "Программное обеспечение",
+               "logistics": "Транспортировка и хранение", "operation": "Нарушение условий эксплуатации", "other": "Другое"}
+RESPONSE_KINDS_RU = {"interim": "Промежуточный ответ", "final": "Окончательный ответ"}
+DEADLINE_LABELS_RU = {"none": "Срок не задан", "ok": "В срок", "soon": "Срок подходит", "today": "Срок сегодня",
+                      "overdue": "Срок прошёл", "answered": "Ответ дан"}
+DEADLINE_TONES = {"none": "neutral", "ok": "info", "soon": "warning", "today": "warning", "overdue": "danger", "answered": "success"}
+DUE_SOON_DAYS = 2        # за сколько дней до срока ответа он считается «подходит» (напоминание)
+MAX_RESPONSE_DAYS = 366  # срок ответа — не дальше года от даты получения (защита от опечатки в годе)
+
 CLOSURE_NOTE = ("Закрытие рекламации не доказывает устранение причины: оно значит только, что независимый проверяющий "
                 "признал выполненные действия эффективными на момент проверки.")
 
@@ -86,13 +116,86 @@ def _id(v: Any, field: str) -> str:
 
 # ---------------------------------------------------------------- рекламация
 def parse_claim(p: dict) -> dict:
-    """Регистрация рекламации: дата получения, источник (заказчик / внутренняя), описание, ссылка на письмо."""
+    """Регистрация рекламации: охват (экземпляр / партия / проект) и его объект, дата получения, источник
+    (заказчик / внутренняя), описание, ссылка на письмо, тяжесть дефекта, категория (если уже ясна), срок ответа
+    заказчику (для рекламации от заказчика — обязателен).
+
+    Охват по умолчанию — «экземпляр» (так регистрировались рекламации до D-40, в т. ч. команды из очереди старого
+    клиента). Тяжесть обязательна: без неё нельзя понять, насколько срочно реагировать (программа её не выдумывает).
+    """
     src = p.get("source")
     if src not in CLAIM_SOURCES_RU:
         raise QualityError("invalid_source", "Источник рекламации — «От заказчика» или «Внутренняя».", {"field": "source"})
-    return {"received_date": _date(p.get("received_date"), "received_date", "дату получения рекламации"),
-            "source": src,
+    scope = p.get("scope") or "instance"
+    if scope not in CLAIM_SCOPES_RU:
+        raise QualityError("invalid_scope", "Охват рекламации — экземпляр, партия (наряд) или проект.", {"field": "scope"})
+    need = {"instance": ("instance_id", "экземпляр изделия"), "batch": ("work_order_id", "наряд (партию)"),
+            "project": ("project_id", "проект")}[scope]
+    if not isinstance(p.get(need[0]), str) or not p.get(need[0]).strip():
+        raise QualityError("required", f"Укажите {need[1]}.", {"field": need[0]})
+    received = _date(p.get("received_date"), "received_date", "дату получения рекламации")
+    cls = parse_classification(p, require_category=False)
+    due = _date(p.get("response_due"), "response_due", "срок ответа заказчику", required=src == "customer")
+    if due:
+        check_due(received, due)
+    return {"scope": scope, "received_date": received, "source": src,
             "description": _text(p.get("description"), "description", "суть рекламации (что не так)", MAX_TEXT),
+            "reference": _text(p.get("reference"), "reference", "", MAX_TITLE, required=False),
+            **cls, "response_due": due}
+
+
+def parse_classification(p: dict, require_category: bool) -> dict:
+    """Классификация дефекта: тяжесть (обязательна) и категория — откуда дефект (обязательна, когда причина
+    найдена: require_category)."""
+    sev = p.get("severity")
+    if sev not in SEVERITY_RU:
+        raise QualityError("severity_required", "Укажите тяжесть дефекта: критический, значительный или незначительный.",
+                           {"field": "severity"})
+    cat = p.get("category") or None
+    if cat is not None and cat not in CATEGORY_RU:
+        raise QualityError("invalid_category", "Категория дефекта — из списка.", {"field": "category"})
+    if require_category and cat is None:
+        raise QualityError("category_required", "Укажите категорию дефекта — откуда он (по найденной причине).",
+                           {"field": "category"})
+    return {"severity": sev, "category": cat}
+
+
+def check_due(received: str, due: str) -> None:
+    """Срок ответа заказчику — не раньше даты получения и не дальше MAX_RESPONSE_DAYS дней от неё."""
+    r, d = date.fromisoformat(received), date.fromisoformat(due)
+    if d < r:
+        raise QualityError("due_before_received", "Срок ответа не может быть раньше даты получения рекламации.",
+                           {"field": "response_due"})
+    if (d - r).days > MAX_RESPONSE_DAYS:
+        raise QualityError("due_too_far", f"Срок ответа — не дальше {MAX_RESPONSE_DAYS} дней от даты получения. "
+                           "Проверьте год.", {"field": "response_due"})
+
+
+def deadline_state(due: Optional[str], answered: bool, today: str) -> str:
+    """Состояние срока ответа заказчику: none — срок не задан; answered — ответ после установки срока записан;
+    overdue — срок прошёл; today — сегодня; soon — осталось не больше DUE_SOON_DAYS дней; ok — в срок.
+
+    today — дата по часам сервера (клиент передаёт дату последнего обновления, а без связи — свою).
+    """
+    if not due:
+        return "none"
+    if answered:
+        return "answered"
+    left = (date.fromisoformat(due) - date.fromisoformat(today)).days
+    if left < 0:
+        return "overdue"
+    if left == 0:
+        return "today"
+    return "soon" if left <= DUE_SOON_DAYS else "ok"
+
+
+def parse_response(p: dict) -> dict:
+    """Ответ заказчику: вид (промежуточный / окончательный), дата отправки, что ответили, номер письма."""
+    kind = p.get("kind")
+    if kind not in RESPONSE_KINDS_RU:
+        raise QualityError("invalid_kind", "Вид ответа — промежуточный или окончательный.", {"field": "kind"})
+    return {"kind": kind, "response_date": _date(p.get("response_date"), "response_date", "дату отправки ответа"),
+            "summary": _text(p.get("summary"), "summary", "что ответили заказчику", MAX_TEXT),
             "reference": _text(p.get("reference"), "reference", "", MAX_TITLE, required=False)}
 
 

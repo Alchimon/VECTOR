@@ -32,6 +32,21 @@
 * строки ECO — точные версии документов и редакции техпроцессов этого проекта; новая версия при внедрении
   существует и новее прежней;
 * каждый шаг — в неизменяемом журнале решений (quality_decisions) с основанием («замещает …», D-34/D-35).
+
+Расширение D-40 (ответ владельца на A-46):
+
+* роль ОТК (otk — отдел технического контроля, глобальная) ведёт рекламации наравне с РП и ГИП, проверяет
+  эффективность и внедрение (правило «другой человек» действует и для неё); ответственным за анализ и исполнителем
+  действия может быть участник проекта ИЛИ сотрудник ОТК;
+* охват рекламации (claim_terms.scope): экземпляр (заводской номер), партия — наряд (экземпляры наряда; номера могут
+  быть неизвестны) или проект без номера изделия; claims.instance_id тогда NULL;
+* классификация дефекта: тяжесть — при регистрации (обязательна), категория — при первом плане CAPA (по найденной
+  причине) или раньше; claim.classify уточняет их с причиной;
+* срок ответа заказчику (обязателен для рекламации от заказчика): claim.set_due переносит его с причиной,
+  claim.respond записывает ответ (неизменяемо). Срок «закрыт», когда после его установки записан ответ;
+* напоминания о сроке: при обновлении (pull) сервер создаёт пользователю уведомление «срок подходит» / «срок прошёл»
+  (один раз на срок и вид), если он ведёт рекламацию (РП, ГИП проекта, их замещающие в проекте, ответственный за
+  анализ, ОТК) — отдельного планировщика нет, уведомление появляется при ближайшем обновлении.
 """
 from __future__ import annotations
 
@@ -46,9 +61,9 @@ from vector.core import quality as qa
 from vector.core.errors import Conflict, Denied, Rejected
 
 from .authz import project_member
-from .db import (change_orders, change_requests, claim_actions, claims, document_versions, documents,
-                 effectiveness_checks, instance_compositions, kits, passports, product_instances, projects,
-                 quality_decisions, tech_processes)
+from .db import (change_orders, change_requests, claim_actions, claim_responses, claim_terms, claims, document_versions,
+                 documents, effectiveness_checks, instance_compositions, kits, notifications, passports, product_instances,
+                 projects, quality_decisions, tech_processes, work_orders)
 from .validation import canon, iso, only_keys, req_uuid
 
 # Подписи шагов журнала решений (история карточки).
@@ -58,7 +73,11 @@ DECISION_LABELS_RU = {
     "check_effective": "Проверка: действия эффективны", "check_not_effective": "Проверка: действия не эффективны",
     "submitted": "Подан", "assessed": "Оценён", "accepted": "Принят", "rejected": "Отклонён",
     "created": "Составлено", "saved": "Изменено", "approved": "Утверждено", "implemented": "Внедрено", "verified": "Проверено",
+    # D-40
+    "classified": "Классификация дефекта", "due_set": "Изменён срок ответа заказчику", "responded": "Ответ заказчику",
 }
+# Наряды, по которым можно заявить рекламацию на партию: изготовление завершено.
+BATCH_WO_STATES = ("completed", "closed")
 
 
 def _q(fn, *a, **kw):
@@ -102,10 +121,21 @@ class QualityMixin:
         self._notify(ctx, [u for u in to if u not in skip], kind, title, object_type=otype, object_id=oid)
 
     def _member_or_reject(self, conn, uid: Any, project_id: str, field: str, now) -> str:
-        """Сотрудник — участник проекта сейчас (своё назначение или замещение в проекте), иначе отказ по полю."""
-        if not isinstance(uid, str) or not project_member(conn, uid, project_id, now):
-            raise Rejected("not_project_member", "Выберите участника проекта.", {"field": field, "user_id": uid})
+        """Сотрудник — участник проекта сейчас (своё назначение или замещение в проекте) или сотрудник ОТК (D-40),
+        иначе отказ по полю."""
+        if not isinstance(uid, str) or not (project_member(conn, uid, project_id, now)
+                                            or uid in self._users_with_role(conn, "otk", now)):
+            raise Rejected("not_project_member", "Выберите участника проекта или сотрудника ОТК (технического контроля).",
+                           {"field": field, "user_id": uid})
         return uid
+
+    def _claim_leads(self, conn, o: dict, now) -> list[str]:
+        """Кто ведёт рекламацию (адресаты уведомлений о сроке и новых рекламациях): РП и ГИП проекта (и их замещающие
+        в проекте), ответственный за анализ, сотрудники ОТК."""
+        out = [u for r in ("rp", "gip") for u in self._project_role_users(conn, o["project_id"], r, now)]
+        out += [o["responsible_id"]] if o.get("responsible_id") else []
+        out += self._users_with_role(conn, "otk", now)
+        return list(dict.fromkeys(out))
 
     def _not_future(self, ctx, iso_d: str, field: str, what: str) -> None:
         """Дата не в будущем (по часам сервера; запас — сутки на часовые пояса)."""
@@ -126,8 +156,9 @@ class QualityMixin:
         """Рекламация для клиента: экземпляр (точная связь), действия CAPA, проверки эффективности, история; кто
         участвовал (составлял план, выполнял, отправлял) — для подсказки «кто может проверять».
         """
-        inst = self._get(conn, product_instances, o["instance_id"])
-        kit = self._get(conn, kits, inst["kit_id"])
+        inst = self._get(conn, product_instances, o["instance_id"]) if o["instance_id"] else None
+        kit = self._get(conn, kits, inst["kit_id"]) if inst else None
+        terms = self._claim_terms(conn, o)
         acts = self._claim_actions(conn, o["id"])
         checks = [{"seq": r.seq, "effective": bool(r.effective), "evidence": r.evidence, "checked_by": r.checked_by,
                    "checked_at": iso(r.checked_at), "authority": r.authority}
@@ -136,9 +167,20 @@ class QualityMixin:
         ecrs = [{"id": r.id, "ecr_no": r.ecr_no, "status": r.status, "title": r.title}
                 for r in conn.execute(sa.select(change_requests).where(change_requests.c.claim_id == o["id"])
                                       .order_by(change_requests.c.ecr_no))]
+        resp = self._claim_responses(conn, o["id"])
+        answered = bool(terms["due_set_at"]) and any(r["responded_at"] >= terms["due_set_at"] for r in resp)
+        subject = self._claim_subject(conn, o, terms, inst, kit)
         return {"id": o["id"], "claim_no": o["claim_no"], "project_id": o["project_id"], "instance_id": o["instance_id"],
-                "instance_label": f"{kit['code']} {lc.serial_label(inst['series'], inst['serial_no'])}",
-                "kit_id": inst["kit_id"], "work_order_id": inst["work_order_id"],
+                "instance_label": subject["label"], "scope": terms["scope"], "scope_label": qa.CLAIM_SCOPES_RU[terms["scope"]],
+                "batch_instances": subject["instances"],
+                "kit_id": inst["kit_id"] if inst else subject["kit_id"],
+                "work_order_id": inst["work_order_id"] if inst else terms["work_order_id"],
+                "severity": terms["severity"], "severity_label": qa.SEVERITY_RU.get(terms["severity"] or "", ""),
+                "category": terms["category"], "category_label": qa.CATEGORY_RU.get(terms["category"] or "", ""),
+                "response_due": terms["response_due"], "due_set_at": iso(terms["due_set_at"]), "answered": answered,
+                "deadline": qa.deadline_state(terms["response_due"], answered, self.now().date().isoformat())
+                if o["source"] == "customer" else "none",
+                "responses": [{**r, "responded_at": iso(r["responded_at"])} for r in resp],
                 "received_date": o["received_date"].isoformat(), "source": o["source"],
                 "source_label": qa.CLAIM_SOURCES_RU[o["source"]], "reference": o["reference"], "description": o["description"],
                 "status": o["status"], "status_label": qa.CLAIM_STATUS_LABELS_RU[o["status"]],
@@ -149,6 +191,40 @@ class QualityMixin:
                 "history": self._qhistory(conn, "claim", o["id"]), "version": o["version"],
                 "created_by": o["created_by"], "created_at": iso(o["created_at"]),
                 "updated_by": o["updated_by"], "updated_at": iso(o["updated_at"])}
+
+    def _claim_terms(self, conn, o: dict) -> dict:
+        """Условия рекламации (claim_terms). У рекламаций до v19 строки нет — «экземпляр, не классифицирована, без
+        срока ответа»."""
+        t = conn.execute(sa.select(claim_terms).where(claim_terms.c.claim_id == o["id"])).mappings().first()
+        if t is None:
+            return {"scope": "instance", "work_order_id": None, "severity": None, "category": None, "response_due": None,
+                    "due_set_at": None, "exists": False}
+        return {"scope": t["scope"], "work_order_id": t["work_order_id"], "severity": t["severity"], "category": t["category"],
+                "response_due": t["response_due"].isoformat() if t["response_due"] else None, "due_set_at": t["due_set_at"],
+                "exists": True}
+
+    def _claim_responses(self, conn, claim_id: str) -> list[dict]:
+        """Ответы заказчику по порядку (неизменяемые записи)."""
+        cr = claim_responses
+        return [{"seq": r.seq, "kind": r.kind, "kind_label": qa.RESPONSE_KINDS_RU[r.kind],
+                 "response_date": r.response_date.isoformat(), "summary": r.summary, "reference": r.reference,
+                 "authority": r.authority, "responded_by": r.responded_by, "responded_at": r.responded_at}
+                for r in conn.execute(sa.select(cr).where(cr.c.claim_id == claim_id).order_by(cr.c.seq))]
+
+    def _claim_subject(self, conn, o: dict, terms: dict, inst: Optional[dict], kit: Optional[dict]) -> dict:
+        """К чему относится рекламация: подпись («АТХ № 0001 (серия 2026)», «Наряд № 2 — АТХ, 3 шт.», «Проект
+        П-2026-014 без номера изделия»), изделие и экземпляры партии (для связи с извещениями)."""
+        if terms["scope"] == "instance" and inst:
+            return {"label": f"{kit['code']} {lc.serial_label(inst['series'], inst['serial_no'])}", "instances": [], "kit_id": inst["kit_id"]}
+        if terms["scope"] == "batch" and terms["work_order_id"]:
+            wo = self._get(conn, work_orders, terms["work_order_id"])
+            k = self._get(conn, kits, wo["kit_id"])
+            pis = [{"id": r.id, "label": f"{k['code']} {lc.serial_label(r.series, r.serial_no)}"}
+                   for r in conn.execute(sa.select(product_instances).where(product_instances.c.work_order_id == wo["id"])
+                                         .order_by(product_instances.c.series, product_instances.c.serial_no))]
+            return {"label": f"Партия: наряд № {wo['doc_no']} — {k['code']}, {wo['qty']} шт.", "instances": pis, "kit_id": wo["kit_id"]}
+        pr = self._get(conn, projects, o["project_id"])
+        return {"label": f"Проект {pr['code']} — без номера изделия", "instances": [], "kit_id": None}
 
     def v_change_request(self, conn, o: dict) -> dict:
         """Запрос на изменение для клиента: связи (изделие, рекламация), оценка, решение, извещение, история."""
@@ -226,24 +302,64 @@ class QualityMixin:
                                           "действие не применено.", {"current": self.v_claim(conn, o)})
 
     def _claim_register(self, ctx, p, ev):
-        """claim.register {id, instance_id, received_date, source, description, reference?} — рекламация по экземпляру."""
-        only_keys(p, {"id", "instance_id", "received_date", "source", "description", "reference"})
+        """claim.register {id, scope?, instance_id | work_order_id | project_id, received_date, source, description,
+        reference?, severity, category?, response_due?} — рекламация на экземпляр, партию (наряд) или проект (D-40).
+
+        Охват по умолчанию — экземпляр (как до D-40). Партия — наряд с завершённым изготовлением (номера экземпляров
+        могут быть неизвестны). Для рекламации от заказчика срок ответа обязателен.
+        """
+        only_keys(p, {"id", "scope", "instance_id", "work_order_id", "project_id", "received_date", "source", "description",
+                      "reference", "severity", "category", "response_due"})
         cid = req_uuid(p, "id")
-        inst = self._require(ctx.conn, product_instances, req_uuid(p, "instance_id"), "Экземпляр")
-        auth = self.policy.check(ctx.conn, ctx.user_id, "claim.register", ctx.now, project_id=inst["project_id"])
+        # Сначала — объект охвата и права в его проекте (без права — отказ до разбора остальных полей).
+        scope = p.get("scope") or "instance"
+        inst = wo = None
+        if scope == "instance":
+            inst = self._require(ctx.conn, product_instances, req_uuid(p, "instance_id"), "Экземпляр")
+            project_id = inst["project_id"]
+        elif scope == "batch":
+            wo = self._require(ctx.conn, work_orders, req_uuid(p, "work_order_id"), "Наряд")
+            project_id = wo["project_id"]
+        elif scope == "project":
+            project_id = self._require(ctx.conn, projects, req_uuid(p, "project_id"), "Проект")["id"]
+        else:
+            raise Rejected("invalid_scope", "Охват рекламации — экземпляр, партия (наряд) или проект.", {"field": "scope"})
+        if p.get("project_id") and p.get("project_id") != project_id:
+            raise Rejected("project_mismatch", "Экземпляр или наряд — из другого проекта.", {"field": "project_id"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "claim.register", ctx.now, project_id=project_id)
         self._ensure_new(ctx.conn, claims, cid)
         d = _q(qa.parse_claim, p)
+        if wo is not None and wo["status"] not in BATCH_WO_STATES:
+            raise Rejected("batch_not_made", f"Наряд № {wo['doc_no']} ещё не выполнен — рекламация на партию возможна по "
+                                             "выполненному или закрытому наряду.", {"field": "work_order_id"})
         self._not_future(ctx, d["received_date"], "received_date", "Дата получения")
         no = (ctx.conn.execute(sa.select(sa.func.max(claims.c.claim_no))).scalar() or 0) + 1
         ctx.conn.execute(claims.insert().values(
-            id=cid, claim_no=no, project_id=inst["project_id"], instance_id=inst["id"],
+            id=cid, claim_no=no, project_id=project_id, instance_id=inst["id"] if inst else None,
             received_date=date.fromisoformat(d["received_date"]), source=d["source"], reference=d["reference"] or None,
             description=d["description"], status="registered", version=1, created_by=ctx.user_id, created_at=ctx.now,
             updated_by=ctx.user_id, updated_at=ctx.now))
-        self._qdecide(ctx, "claim", cid, "registered", {"claim_no": no, "instance_id": inst["id"], "source": d["source"]}, auth)
-        ctx.log("claim", cid, auth, None, 1, {"event": "ClaimRegistered", "claim_no": no, "instance_id": inst["id"]})
-        self._qnotify_project(ctx, inst["project_id"], ("rp", "gip"), "claim_new", f"Рекламация № {no}: новая", cid, "claim")
-        return {"claim": self.v_claim(ctx.conn, self._get(ctx.conn, claims, cid))}
+        due = date.fromisoformat(d["response_due"]) if d["response_due"] else None
+        ctx.conn.execute(claim_terms.insert().values(
+            claim_id=cid, scope=d["scope"], work_order_id=wo["id"] if wo else None, severity=d["severity"],
+            category=d["category"], response_due=due, due_set_at=ctx.now if due else None,
+            updated_by=ctx.user_id, updated_at=ctx.now))
+        self._qdecide(ctx, "claim", cid, "registered",
+                      {"claim_no": no, "scope": d["scope"], "instance_id": inst["id"] if inst else None,
+                       "work_order_id": wo["id"] if wo else None, "source": d["source"], "severity": d["severity"],
+                       "category": d["category"], "response_due": d["response_due"]}, auth)
+        ctx.log("claim", cid, auth, None, 1, {"event": "ClaimRegistered", "claim_no": no, "scope": d["scope"],
+                                             "instance_id": inst["id"] if inst else None,
+                                             "work_order_id": wo["id"] if wo else None, "severity": d["severity"]})
+        o = self._get(ctx.conn, claims, cid)
+        body = f"Тяжесть: {qa.SEVERITY_RU[d['severity']].lower()}" + (
+            f"; ответ заказчику — до {date.fromisoformat(d['response_due']):%d.%m.%Y}" if d["response_due"] else "")
+        # Критический дефект — отдельный вид уведомления (заметнее в списке), остальные — «новая рекламация».
+        crit = d["severity"] == "critical"
+        self._notify(ctx, self._claim_leads(ctx.conn, o, ctx.now), "claim_critical" if crit else "claim_new",
+                     f"Рекламация № {no}: новая" + (", критический дефект" if crit else ""), body,
+                     object_type="claim", object_id=cid)
+        return {"claim": self.v_claim(ctx.conn, o)}
 
     def _claim_start_analysis(self, ctx, p, ev):
         """claim.start_analysis {id, responsible_id} — ответственный за анализ причины (участник проекта)."""
@@ -265,13 +381,18 @@ class QualityMixin:
         """claim.plan {id, cause?, actions} — причина и план CAPA. Из «Анализ причины» (причина обязательна, нужно
         корректирующее действие) → «Выполнение действий»; в «Выполнение действий» — добавить действия.
         """
-        only_keys(p, {"id", "cause", "actions"})
+        only_keys(p, {"id", "cause", "category", "actions"})
         o = self._require(ctx.conn, claims, req_uuid(p, "id"), "Рекламация")
         auth = self.policy.check(ctx.conn, ctx.user_id, "claim.plan", ctx.now, project_id=o["project_id"])
         self._check_version(o, ev, lambda x: self.v_claim(ctx.conn, x))
         self._claim_state(ctx.conn, o, "analysis", "action")
         first = o["status"] == "analysis"
         cause = _q(qa._text, p.get("cause"), "cause", "найденную причину", qa.MAX_TEXT, required=first)
+        # Категория дефекта (D-40) — по найденной причине: при первом плане обязательна, если её ещё нет.
+        terms = self._claim_terms(ctx.conn, o)
+        category = p.get("category") or None
+        if category is not None and category not in qa.CATEGORY_RU:
+            raise Rejected("invalid_category", "Категория дефекта — из списка.", {"field": "category"})
         acts = _q(qa.parse_actions, p.get("actions"))
         if first and not qa.has_corrective(acts):
             raise Rejected("no_corrective", "В плане должно быть хотя бы одно корректирующее действие — оно устраняет причину.",
@@ -283,6 +404,9 @@ class QualityMixin:
             self._member_or_reject(ctx.conn, a["owner_id"], o["project_id"], "actions", ctx.now)
             if date.fromisoformat(a["due_date"]) < floor:
                 raise Rejected("due_in_past", "Срок действия уже прошёл — укажите будущую дату.", {"field": "actions"})
+        if first and category is None and terms["category"] is None:
+            raise Rejected("category_required", "Укажите категорию дефекта — откуда он (по найденной причине).",
+                           {"field": "category"})
         seq = ctx.conn.execute(sa.select(sa.func.max(claim_actions.c.seq)).where(claim_actions.c.claim_id == o["id"])).scalar() or 0
         for a in acts:
             seq += 1
@@ -292,9 +416,12 @@ class QualityMixin:
         vals = {"status": "action", "updated_by": ctx.user_id, "updated_at": ctx.now}
         if cause:
             vals["cause"] = cause
+        if category is not None and category != terms["category"]:
+            self._put_terms(ctx, o, terms, {"category": category})
         n = self._update_versioned(ctx, claims, o, vals)
         self._qdecide(ctx, "claim", o["id"], "planned" if first else "actions_added",
-                      {"cause": cause or None, "actions": [{k: a[k] for k in ("id", "kind", "owner_id", "due_date")} for a in acts]}, auth)
+                      {"cause": cause or None, "category": category,
+                       "actions": [{k: a[k] for k in ("id", "kind", "owner_id", "due_date")} for a in acts]}, auth)
         ctx.log("claim", o["id"], auth, o["version"], n["version"],
                 {"event": "CapaPlanned" if first else "CapaActionsAdded", "actions": len(acts)})
         self._notify(ctx, [a["owner_id"] for a in acts], "capa_assigned",
@@ -344,7 +471,8 @@ class QualityMixin:
         busy = {a["planned_by"] for a in acts} | {a["done_by"] for a in acts}
         self._qnotify_project(ctx, o["project_id"], ("gip", "rp"), "claim_check",
                               f"Рекламация № {o['claim_no']}: нужна проверка эффективности", o["id"], "claim",
-                              extra=tuple(self._users_with_role(ctx.conn, "dept_head", ctx.now)), skip=tuple(busy))
+                              extra=tuple(self._users_with_role(ctx.conn, "dept_head", ctx.now)
+                                          + self._users_with_role(ctx.conn, "otk", ctx.now)), skip=tuple(busy))
         return {"claim": self.v_claim(ctx.conn, n)}
 
     def _claim_check(self, ctx, p, ev):
@@ -378,6 +506,132 @@ class QualityMixin:
         self._qnotify_project(ctx, o["project_id"], ("rp",), "claim_checked", title, o["id"], "claim",
                               extra=(o["responsible_id"], o["submitted_by"]))
         return {"claim": self.v_claim(ctx.conn, n)}
+
+    # ------------------------------------------------------------ D-40: классификация, срок и ответы заказчику
+    def _put_terms(self, ctx, o: dict, terms: dict, vals: dict) -> None:
+        """Записать условия рекламации: обновить строку claim_terms или создать её (рекламации до v19 — «экземпляр»)."""
+        vals = {**vals, "updated_by": ctx.user_id, "updated_at": ctx.now}
+        if terms["exists"]:
+            ctx.conn.execute(claim_terms.update().where(claim_terms.c.claim_id == o["id"]).values(**vals))
+        else:
+            ctx.conn.execute(claim_terms.insert().values(claim_id=o["id"], scope="instance", **vals))
+
+    def _claim_classify(self, ctx, p, ev):
+        """claim.classify {id, severity, category?, reason} — уточнить тяжесть и категорию дефекта (с причиной).
+
+        Закрытую рекламацию не переклассифицируют (итог уже проверен). Без изменений — отказ «уже так».
+        """
+        only_keys(p, {"id", "severity", "category", "reason"})
+        o = self._require(ctx.conn, claims, req_uuid(p, "id"), "Рекламация")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "claim.classify", ctx.now, project_id=o["project_id"])
+        self._check_version(o, ev, lambda x: self.v_claim(ctx.conn, x))
+        self._claim_state(ctx.conn, o, "registered", "analysis", "action", "effectiveness_check")
+        d = _q(qa.parse_classification, p, require_category=False)
+        reason = _q(qa._text, p.get("reason"), "reason", "причину изменения классификации", 2000)
+        terms = self._claim_terms(ctx.conn, o)
+        if (d["severity"], d["category"]) == (terms["severity"], terms["category"]):
+            raise Rejected("no_changes", "Классификация уже такая.")
+        if terms["category"] and d["category"] is None:
+            raise Rejected("category_required", "Категорию дефекта можно изменить, но не убрать.", {"field": "category"})
+        self._put_terms(ctx, o, terms, d)
+        n = self._update_versioned(ctx, claims, o, {"updated_by": ctx.user_id, "updated_at": ctx.now})
+        self._qdecide(ctx, "claim", o["id"], "classified",
+                      {"severity": d["severity"], "category": d["category"], "previous": {"severity": terms["severity"],
+                                                                                          "category": terms["category"]},
+                       "reason": reason}, auth)
+        ctx.log("claim", o["id"], auth, o["version"], n["version"], {"event": "ClaimClassified", **d})
+        if d["severity"] == "critical" and terms["severity"] != "critical":
+            # Дефект стал критическим — это должны знать все, кто ведёт рекламацию.
+            self._notify(ctx, self._claim_leads(ctx.conn, o, ctx.now), "claim_critical",
+                         f"Рекламация № {o['claim_no']}: дефект критический", reason, object_type="claim", object_id=o["id"])
+        return {"claim": self.v_claim(ctx.conn, n)}
+
+    def _customer_claim(self, conn, o: dict) -> None:
+        """Срок и ответы — только у рекламации от заказчика (внутренней отвечать некому)."""
+        if o["source"] != "customer":
+            raise Rejected("not_customer_claim", "Срок и ответ заказчику — только у рекламации от заказчика.")
+
+    def _claim_set_due(self, ctx, p, ev):
+        """claim.set_due {id, response_due, reason} — новый срок ответа заказчику (по согласованию с ним или для
+        следующего ответа после промежуточного). Не раньше сегодняшнего дня; отсчёт «ответ дан» — с этого момента."""
+        only_keys(p, {"id", "response_due", "reason"})
+        o = self._require(ctx.conn, claims, req_uuid(p, "id"), "Рекламация")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "claim.set_due", ctx.now, project_id=o["project_id"])
+        self._check_version(o, ev, lambda x: self.v_claim(ctx.conn, x))
+        self._customer_claim(ctx.conn, o)
+        due = _q(qa._date, p.get("response_due"), "response_due", "новый срок ответа")
+        _q(qa.check_due, o["received_date"].isoformat(), due)
+        if date.fromisoformat(due) < (ctx.now - timedelta(days=1)).date():
+            raise Rejected("due_in_past", "Новый срок уже прошёл — укажите сегодняшнюю или будущую дату.", {"field": "response_due"})
+        reason = _q(qa._text, p.get("reason"), "reason", "причину (например, «согласовано с заказчиком письмом № …»)", 2000)
+        terms = self._claim_terms(ctx.conn, o)
+        self._put_terms(ctx, o, terms, {"response_due": date.fromisoformat(due), "due_set_at": ctx.now})
+        n = self._update_versioned(ctx, claims, o, {"updated_by": ctx.user_id, "updated_at": ctx.now})
+        self._qdecide(ctx, "claim", o["id"], "due_set", {"response_due": due, "previous": terms["response_due"],
+                                                          "reason": reason}, auth)
+        ctx.log("claim", o["id"], auth, o["version"], n["version"], {"event": "ClaimResponseDueSet", "response_due": due})
+        return {"claim": self.v_claim(ctx.conn, n)}
+
+    def _claim_respond(self, ctx, p, ev):
+        """claim.respond {id, kind, response_date, summary, reference?} — ответ заказчику отправлен (неизменяемая
+        запись). Ответ после установки срока «закрывает» этот срок; новый срок (например, для окончательного ответа
+        после промежуточного) задаёт claim.set_due."""
+        only_keys(p, {"id", "kind", "response_date", "summary", "reference"})
+        o = self._require(ctx.conn, claims, req_uuid(p, "id"), "Рекламация")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "claim.respond", ctx.now, project_id=o["project_id"])
+        self._check_version(o, ev, lambda x: self.v_claim(ctx.conn, x))
+        self._customer_claim(ctx.conn, o)
+        d = _q(qa.parse_response, p)
+        self._not_future(ctx, d["response_date"], "response_date", "Дата ответа")
+        if date.fromisoformat(d["response_date"]) < o["received_date"]:
+            raise Rejected("response_before_received", "Ответ не может быть раньше получения рекламации.",
+                           {"field": "response_date"})
+        cr = claim_responses
+        seq = (ctx.conn.execute(sa.select(sa.func.max(cr.c.seq)).where(cr.c.claim_id == o["id"])).scalar() or 0) + 1
+        ctx.conn.execute(cr.insert().values(claim_id=o["id"], seq=seq, kind=d["kind"],
+                                            response_date=date.fromisoformat(d["response_date"]), summary=d["summary"],
+                                            reference=d["reference"] or None, authority=auth.describe(),
+                                            responded_by=ctx.user_id, responded_at=ctx.now))
+        n = self._update_versioned(ctx, claims, o, {"updated_by": ctx.user_id, "updated_at": ctx.now})
+        self._qdecide(ctx, "claim", o["id"], "responded", {"seq": seq, "kind": d["kind"], "response_date": d["response_date"],
+                                                            "reference": d["reference"] or None, "note": d["summary"]}, auth)
+        ctx.log("claim", o["id"], auth, o["version"], n["version"], {"event": "ClaimResponded", "seq": seq, "kind": d["kind"]})
+        return {"claim": self.v_claim(ctx.conn, n)}
+
+    def _quality_reminders(self, conn, uid: str, now) -> int:
+        """Напоминания о сроке ответа заказчику — при обновлении (pull) этого пользователя (отдельного планировщика
+        нет). Уведомление «срок подходит» (за DUE_SOON_DAYS дней и в день срока) или «срок прошёл» создаётся один раз
+        на установленный срок и вид — только тем, кто ведёт рекламацию (_claim_leads) и видит её (quality.read).
+        Возвращает число созданных уведомлений.
+        """
+        today = now.date()
+        ct, cr, nt = claim_terms, claim_responses, notifications
+        rows = conn.execute(sa.select(claims, ct.c.response_due, ct.c.due_set_at).join(ct, ct.c.claim_id == claims.c.id)
+                            .where(claims.c.source == "customer", ct.c.response_due.isnot(None),
+                                   ct.c.response_due <= today + timedelta(days=qa.DUE_SOON_DAYS))
+                            .order_by(claims.c.claim_no)).mappings().all()
+        made = 0
+        for r in rows:
+            o = dict(r)
+            answered = conn.execute(sa.select(sa.func.count()).select_from(cr).where(
+                cr.c.claim_id == o["id"], cr.c.responded_at >= o["due_set_at"])).scalar_one()
+            if answered or uid not in self._claim_leads(conn, o, now):
+                continue
+            if not self.policy.can(conn, uid, "quality.read", now, o["project_id"]):
+                continue
+            kind = "claim_overdue" if o["response_due"] < today else "claim_due_soon"
+            seen = conn.execute(sa.select(sa.func.count()).select_from(nt).where(
+                nt.c.user_id == uid, nt.c.kind == kind, nt.c.object_type == "claim", nt.c.object_id == o["id"],
+                nt.c.created_at >= o["due_set_at"])).scalar_one()
+            if seen:
+                continue
+            title = (f"Рекламация № {o['claim_no']}: срок ответа заказчику прошёл ({o['response_due']:%d.%m.%Y})"
+                     if kind == "claim_overdue" else
+                     f"Рекламация № {o['claim_no']}: ответ заказчику — до {o['response_due']:%d.%m.%Y}")
+            conn.execute(nt.insert().values(user_id=uid, kind=kind, title=title[:200], body=None, object_type="claim",
+                                            object_id=o["id"], actor_id=None, created_at=now, read_at=None))
+            made += 1
+        return made
 
     # ------------------------------------------------------------ ECR
     def _ecr_state(self, conn, o: dict, *allowed: str) -> None:
@@ -597,7 +851,8 @@ class QualityMixin:
         self._qdecide(ctx, "eco", o["id"], "implemented", {"results": out}, auth)
         ctx.log("change_order", o["id"], auth, o["version"], n["version"], {"event": "EcoImplemented", "results": len(out)})
         self._qnotify_project(ctx, o["project_id"], ("gip", "rp"), "eco_implemented",
-                              f"Извещение № {o['eco_no']} внедрено — нужна проверка", o["id"], "change_order")
+                              f"Извещение № {o['eco_no']} внедрено — нужна проверка", o["id"], "change_order",
+                              extra=tuple(self._users_with_role(ctx.conn, "otk", ctx.now)))
         return {"change_order": self.v_change_order(ctx.conn, n)}
 
     def _eco_verify(self, ctx, p, ev):
@@ -623,11 +878,31 @@ class QualityMixin:
         """Рекламации, запросы и извещения — по праву quality.read в проекте; справочник для строк извещения
         (документы с номерами версий, техпроцессы с редакциями) — тем, кто может составлять извещения (eco.edit).
         """
-        out: dict[str, Any] = {"claims": [], "change_requests": [], "change_orders": [], "quality_refs": []}
-        pids = [r.id for r in conn.execute(sa.select(projects.c.id).order_by(projects.c.code))]
-        readable = [pid for pid in pids if self.policy.can(conn, uid, "quality.read", now, pid)]
+        out: dict[str, Any] = {"claims": [], "change_requests": [], "change_orders": [], "quality_refs": [],
+                               "quality_projects": [], "quality_otk": [], "claim_batches": []}
+        prs = conn.execute(sa.select(projects.c.id, projects.c.code, projects.c.title).order_by(projects.c.code)).all()
+        readable = [r.id for r in prs if self.policy.can(conn, uid, "quality.read", now, r.id)]
         if not readable:
             return out
+        # D-40: проекты (код и название — ОТК видит качество без права на карточку проекта), где можно регистрировать
+        # рекламации и подавать запросы; сотрудники ОТК (их можно назначать ответственными и исполнителями);
+        # выполненные наряды — для рекламации на партию.
+        reg = set()
+        for r in prs:
+            if r.id in readable:
+                can_reg = self.policy.can(conn, uid, "claim.register", now, r.id)
+                reg |= {r.id} if can_reg else set()
+                out["quality_projects"].append({"id": r.id, "code": r.code, "title": r.title, "can_claim": can_reg,
+                                                "can_ecr": self.policy.can(conn, uid, "ecr.submit", now, r.id)})
+        out["quality_otk"] = self._users_with_role(conn, "otk", now)
+        if reg:
+            for r in conn.execute(sa.select(work_orders, kits.c.code.label("kit_code")).join(kits, kits.c.id == work_orders.c.kit_id)
+                                  .where(work_orders.c.project_id.in_(reg), work_orders.c.status.in_(BATCH_WO_STATES))
+                                  .order_by(work_orders.c.doc_no)):
+                n = conn.execute(sa.select(sa.func.count()).select_from(product_instances)
+                                 .where(product_instances.c.work_order_id == r.id)).scalar_one()
+                out["claim_batches"].append({"id": r.id, "project_id": r.project_id, "doc_no": r.doc_no, "kit_code": r.kit_code,
+                                             "qty": r.qty, "title": r.title, "instances": n})
         for t, key, view, order in ((claims, "claims", self.v_claim, claims.c.claim_no),
                                     (change_requests, "change_requests", self.v_change_request, change_requests.c.ecr_no),
                                     (change_orders, "change_orders", self.v_change_order, change_orders.c.eco_no)):

@@ -26,7 +26,8 @@ ROLE_LABELS = {"admin": "Администратор", "gip": "ГИП", "rp": "Р
                "lead_engineer": "Ведущий инженер", "engineer": "Инженер", "designer": "Конструктор",
                "technologist": "Технолог", "production": "Производство", "warehouse": "Склад",
                "procurement": "Закупка", "accountant": "Бухгалтерия",
-               "po_approver": "Согласование закупок"}
+               "po_approver": "Согласование закупок",
+               "otk": "Технический контроль (ОТК)"}
 PROJECT_ROLE_LABELS = {"gip": "ГИП проекта", "rp": "РП проекта", "participant": "Участник проекта"}
 OFFLINE_LABELS = {"queued": "можно без связи (очередь)", "online_required": "только при связи",
                   "offline_full": "полностью офлайн"}
