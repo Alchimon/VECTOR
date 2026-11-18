@@ -50,7 +50,8 @@ def test_claim_offline_register_online_decisions_and_independent_check(world, pd
     c.t.online = False
     cid = new_id()
     r = c.execute("claim.register", {"id": cid, "instance_id": inst["id"], "received_date": "2026-01-10",
-                                     "source": "customer", "description": "Не включается вводной автомат"})
+                                     "source": "customer", "description": "Не включается вводной автомат",
+                                     "severity": "major", "response_due": "2026-02-10"})
     assert r.status == "queued"
     row = view(c)["claims"][0]
     assert row["pending"] and row["label"] == "Рекламация (не отправлена)" and not row["can_start"]
@@ -69,7 +70,7 @@ def test_claim_offline_register_online_decisions_and_independent_check(world, pd
     row = view(c)["claims"][0]
     assert row["can_plan"] and row["first_plan"] and row["responsible"]
     aid = new_id()
-    r = c.execute("claim.plan", {"id": cid, "cause": "Брак партии автоматов",
+    r = c.execute("claim.plan", {"id": cid, "cause": "Брак партии автоматов", "category": "purchased",
                                  "actions": [{"id": aid, "kind": "corrective", "description": "Заменить автомат",
                                               "owner_id": u.eng.user_id, "due_date": "2099-01-01"}]}, row["version"])
     assert r.status == "accepted", r
@@ -152,8 +153,12 @@ def test_ecr_offline_eco_draft_chain_and_implement_options(world, pd, made, mk):
 
 
 def test_quality_check_rules_without_server():
-    assert qv.quality_check("claim", {"received_date": "2026-01-10", "source": "customer", "description": "x"})["ok"]
-    r = qv.quality_check("claim", {"received_date": "10.01.2026", "source": "customer", "description": "x"})
+    assert qv.quality_check("claim", {"received_date": "2026-01-10", "source": "customer", "description": "x",
+                                      "instance_id": "i", "severity": "minor", "response_due": "2026-01-20"})["ok"]
+    r = qv.quality_check("claim", {"scope": "batch", "received_date": "2026-01-10", "source": "internal", "description": "x",
+                                   "severity": "minor"})
+    assert (r["ok"], r["field"]) == (False, "work_order_id")
+    r = qv.quality_check("claim", {"received_date": "10.01.2026", "source": "customer", "description": "x", "instance_id": "i"})
     assert not r["ok"] and r["field"] == "received_date"
     acts = [{"id": new_id(), "kind": "preventive", "description": "Входной контроль", "owner_id": new_id(), "due_date": "2099-01-01"}]
     r = qv.quality_check("actions", {"first": True, "cause": "Брак", "actions": acts})

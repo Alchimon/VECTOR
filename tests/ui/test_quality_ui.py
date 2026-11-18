@@ -1,7 +1,8 @@
 """UI-проверки этапа 6 «Качество» (С5 шаг 10, D-39) — настоящий QML, сервер in-process, демо-данные.
 
 Демо: рекламация № 1 по «АТХ № 0001 (серия 2026)» — в состоянии «Действия»: корректирующее действие выполнил
-d.kuznetsov, предупреждающее (исполнитель m.lebedev) ещё не выполнено. Запрос на изменение № 1 по рекламации подал
+d.kuznetsov, предупреждающее (исполнитель m.lebedev) ещё не выполнено. Рекламация № 2 (D-40) — на партию (наряд № 2)
+без номера изделия, зарегистрировала ОТК l.egorova, срок ответа заказчику — завтра. Запрос на изменение № 1 по рекламации подал
 d.kuznetsov — ждёт оценки. m.lebedev сейчас замещает ГИП в проекте (D-35), p.volkov — ГИП, a.smirnova — РП.
 """
 import pytest
@@ -17,6 +18,11 @@ def _qv(ui):
     return _v(ui.backend, "qualityOverview")
 
 
+def _claim(ui, label):
+    """Рекламация из представления по номеру (порядок списка зависит от сроков и состояний)."""
+    return next(c for c in _qv(ui)["claims"] if c["label"] == label)
+
+
 def _confirm(ui, form):
     """Нажать «подтвердить» в форме и дождаться ответа сервера."""
     QMetaObject.invokeMethod(form, "confirmed")
@@ -27,7 +33,7 @@ def test_action_owner_marks_done_and_sees_why_he_cannot_check(ui, qml_warnings):
     """Исполнитель действия CAPA отмечает его; после отправки на проверку он же проверять не может — и видит почему."""
     ui.login("m.lebedev")
     assert ui.nav()["Качество"] is True
-    c = _qv(ui)["claims"][0]
+    c = _claim(ui, "Рекламация № 1")
     assert (c["label"], c["status_label"], c["instance_label"]) == ("Рекламация № 1", "Выполнение действий", "АТХ № 0001 (серия 2026)")
     assert [a["done"] for a in c["actions"]] == [True, False] and not c["can_submit"]
     ui.go("quality", c["id"])
@@ -42,11 +48,11 @@ def test_action_owner_marks_done_and_sees_why_he_cannot_check(ui, qml_warnings):
     _popup(ui, "actionResult").setProperty("text", "Выпущена версия 4 схемы с нумерацией по маркировке шкафа")
     ui.wait_idle()
     _confirm(ui, df)
-    c = _qv(ui)["claims"][0]
+    c = _claim(ui, "Рекламация № 1")
     assert [a["done"] for a in c["actions"]] == [True, True] and c["can_submit"]    # замещает ГИП — ведёт рекламацию
     ui.backend.qualityCommand("t-sub", "claim.submit_check", {"id": c["id"]}, c["version"])
     ui.wait_idle()
-    c = _qv(ui)["claims"][0]
+    c = _claim(ui, "Рекламация № 1")
     assert c["status"] == "effectiveness_check" and c["may_check"] and not c["can_check"]
     assert "вы выполняли действия" in c["check_block"] and "вы отправили" in c["check_block"]
     assert qml_warnings == []
@@ -103,7 +109,7 @@ def test_rp_registers_claim_offline(ui, qml_warnings):  # noqa: F811
     """РП регистрирует рекламацию без связи — она в очереди и видна как «не отправлена»; после связи — с номером."""
     ui.login("a.smirnova")
     v = _qv(ui)
-    assert v["may_claim"] and len(v["claims"]) == 1
+    assert v["may_claim"] and len(v["claims"]) == 2
     ui.go("quality")
     ui.transport.online = False
     f = _popup(ui, "claimForm")
@@ -112,6 +118,10 @@ def test_rp_registers_claim_offline(ui, qml_warnings):  # noqa: F811
     assert f.property("canConfirm") is False                      # суть не заполнена
     _popup(ui, "claimDescription").setProperty("text", "Шум вентилятора шкафа управления")
     ui.wait_idle()
+    assert f.property("canConfirm") is False                      # тяжесть и срок ответа заказчику не указаны (D-40)
+    _popup(ui, "claimSeverity").setProperty("current", "minor")
+    _call(f, "plusDays", 10)
+    ui.wait_idle()
     assert f.property("canConfirm") is True
     _confirm(ui, f)
     new = [c for c in _qv(ui)["claims"] if c["pending"]]
@@ -119,7 +129,9 @@ def test_rp_registers_claim_offline(ui, qml_warnings):  # noqa: F811
     ui.transport.online = True
     ui.backend.syncNow()
     ui.wait_idle()
-    assert sorted(c["label"] for c in _qv(ui)["claims"]) == ["Рекламация № 1", "Рекламация № 2"]
+    assert sorted(c["label"] for c in _qv(ui)["claims"]) == ["Рекламация № 1", "Рекламация № 2", "Рекламация № 3"]
+    c3 = _claim(ui, "Рекламация № 3")
+    assert (c3["severity_label"], c3["deadline"]) == ("Незначительный", "ok")
     assert qml_warnings == []
 
 
@@ -128,4 +140,57 @@ def test_section_hidden_for_warehouse(ui, qml_warnings):  # noqa: F811
     ui.login("i.belova")
     assert ui.nav().get("Качество") is False
     assert _qv(ui)["claims"] == []
+    assert qml_warnings == []
+
+
+def test_otk_answers_customer_and_reclassifies_batch_claim(ui, qml_warnings):  # noqa: F811
+    """ОТК (D-40): видит рекламацию на партию со сроком «подходит», записывает ответ заказчику — срок закрыт;
+    уточняет тяжесть дефекта (причина обязательна)."""
+    ui.login("l.egorova")
+    assert ui.nav()["Качество"] is True
+    c = _claim(ui, "Рекламация № 2")
+    assert (c["scope"], c["scope_label"], c["deadline"], c["deadline_alert"]) == ("batch", "Партия (наряд)", "soon", True)
+    assert c["can_respond"] and c["can_classify"] and c["can_set_due"]
+    assert _qv(ui)["counts"]["due_alert"] >= 1
+    ui.go("quality", c["id"])
+    rf = _popup(ui, "claimRespondForm")
+    _call(rf, "openFor")
+    ui.wait_idle()
+    assert rf.property("canConfirm") is False                      # нет текста ответа
+    _popup(ui, "respondSummary").setProperty("text", "Таблички будут закреплены при сервисном визите 20.11")
+    ui.wait_idle()
+    assert rf.property("canConfirm") is True
+    _confirm(ui, rf)
+    c = _claim(ui, "Рекламация № 2")
+    assert c["deadline"] == "answered" and [r["kind_label"] for r in c["responses"]] == ["Промежуточный ответ"]
+    cf = _popup(ui, "claimClassifyForm")
+    _call(cf, "openFor")
+    ui.wait_idle()
+    _popup(ui, "classifySeverity").setProperty("current", "major")
+    ui.wait_idle()
+    assert cf.property("canConfirm") is False                      # причина изменения обязательна
+    _popup(ui, "classifyReason").setProperty("text", "Без табличек шкафы на объекте путают — риск ошибки оператора")
+    ui.wait_idle()
+    _confirm(ui, cf)
+    assert _claim(ui, "Рекламация № 2")["severity_label"] == "Значительный"
+    assert qml_warnings == []
+
+
+def test_rp_registers_batch_claim_without_serial(ui, qml_warnings):  # noqa: F811
+    """РП (D-40): рекламация на партию (наряд) — без выбора экземпляра; заводской номер не нужен."""
+    ui.login("a.smirnova")
+    v = _qv(ui)
+    assert [s["id"] for s in v["scopes"]] == ["instance", "batch", "project"] and v["batch_options"]
+    ui.go("quality")
+    f = _popup(ui, "claimForm")
+    _call(f, "openFor")
+    _popup(ui, "claimScope").setProperty("current", "batch")
+    _popup(ui, "claimSource").setProperty("current", "internal")
+    _popup(ui, "claimSeverity").setProperty("current", "major")
+    _popup(ui, "claimDescription").setProperty("text", "На входном контроле партии — ослабленные клеммы")
+    ui.wait_idle()
+    assert f.property("canConfirm") is True                        # внутренняя рекламация — без срока ответа
+    _confirm(ui, f)
+    c = _claim(ui, "Рекламация № 3")
+    assert (c["scope"], c["deadline"], c["customer"]) == ("batch", "none", False)
     assert qml_warnings == []

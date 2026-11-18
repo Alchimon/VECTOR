@@ -41,6 +41,8 @@ ACCOUNTS = [
     ("a.grishin", "Гришин Алексей", "technologist", "Технолог"),
     ("k.pavlov", "Павлов Кирилл", "production", "Производство (сборщик-монтажник)"),
     ("r.sergeev", "Сергеев Роман", "production", "Производство (наладчик)"),
+    # Отдел технического контроля (D-40, ответ владельца на A-46): ведёт рекламации и проверяет эффективность действий.
+    ("l.egorova", "Егорова Людмила", "otk", "Технический контроль (ОТК)"),
     ("n.sokolov", "Соколов Никита", None, "Без роли; при первом входе должен сменить пароль"),
 ]
 
@@ -395,7 +397,7 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
                                             "reason": "Командировка на объект (приказ № 118-к)"})["delegation"]
     prod = _seed_production(cmd, login, people, svc, kits, atx_v1)
     prod.update(_seed_lifecycle(cmd, login, people, svc, prod["tech_processes"][0], items, whs, docs))
-    prod.update(_seed_quality(cmd, login, people, svc, prod["product_instances"][0], kits))
+    prod.update(_seed_quality(cmd, login, people, svc, prod["product_instances"][0], kits, prod["lifecycle_work_order"]))
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
             "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
             "suppliers": sups, "contracts": contracts, "delegations": [deleg["id"], pdeleg["id"]],
@@ -493,7 +495,7 @@ def _seed_lifecycle(cmd, login, people, svc, tp_id, items, whs, docs) -> dict:
     return {"lifecycle_work_order": wo["id"], "product_instances": [inst["id"]], "passports": [pp["id"]]}
 
 
-def _seed_quality(cmd, login, people, svc, instance_id, kits) -> dict:
+def _seed_quality(cmd, login, people, svc, instance_id, kits, batch_wo) -> dict:
     """Рекламация, CAPA и запрос на изменение (С5 шаг 10, D-39). Номера писем и тексты ВЫМЫШЛЕНЫ.
 
     * Рекламация № 1 по «АТХ № 0001 (серия 2026)» — от заказчика (письмо): зарегистрировала РП a.smirnova, анализ
@@ -501,28 +503,46 @@ def _seed_quality(cmd, login, people, svc, instance_id, kits) -> dict:
       выполнено) и предупреждающее (исполнитель m.lebedev — ещё не выполнено). Состояние «Действия»: дальше —
       отметка второго действия, затем проверка эффективности ДРУГИМ человеком (например, ГИП p.volkov).
     * Запрос на изменение № 1 по этой рекламации подал d.kuznetsov — ждёт оценки влияния (РП или ГИП проекта).
+    * D-40: у рекламации № 1 тяжесть «значительный», категория «документация» (указана при плане), срок ответа
+      заказчику — через 10 дней, промежуточный ответ уже отправлен (срок закрыт).
+    * D-40: рекламация № 2 — на партию (наряд № 2) без заводского номера; зарегистрировала ОТК l.egorova, тяжесть
+      «незначительный», срок ответа — завтра (видно «срок подходит»), ответа ещё нет.
     """
-    rp, eng = login("a.smirnova"), login("d.kuznetsov")
+    rp, eng, otk = login("a.smirnova"), login("d.kuznetsov"), login("l.egorova")
     today = svc.now().date()
     cid = str(uuid.uuid4())
     c = cmd(rp, "claim.register", {"id": cid, "instance_id": instance_id, "received_date": today.isoformat(), "source": "customer",
-                                   "reference": "Письмо заказчика № 45 (пилотный комплект)",
+                                   "reference": "Письмо заказчика № 45 (пилотный комплект)", "severity": "major",
+                                   "response_due": (today + timedelta(days=10)).isoformat(),
                                    "description": "При пуске насоса шкаф управления не переходит в автоматический режим; "
                                                   "на панели — сообщение об отсутствии сигнала датчика давления."})["claim"]
     c = cmd(rp, "claim.start_analysis", {"id": cid, "responsible_id": people["m.lebedev"]}, c["version"])["claim"]
     a1, a2 = str(uuid.uuid4()), str(uuid.uuid4())
     due = (today + timedelta(days=14)).isoformat()
-    c = cmd(rp, "claim.plan", {"id": cid, "cause": "Перепутаны жилы кабеля датчика давления на клеммнике: в схеме подключения "
+    c = cmd(rp, "claim.plan", {"id": cid, "category": "design", "cause": "Перепутаны жилы кабеля датчика давления на клеммнике: в схеме подключения "
                                                    "нумерация клемм не совпадает с маркировкой шкафа.",
                                "actions": [{"id": a1, "kind": "corrective", "owner_id": people["d.kuznetsov"], "due_date": due,
                                             "description": "Переподключить датчик на объекте, проверить автоматический режим"},
                                            {"id": a2, "kind": "preventive", "owner_id": people["m.lebedev"], "due_date": due,
                                             "description": "Привести нумерацию клемм в схеме подключения к маркировке шкафа"}]},
             c["version"])["claim"]
-    cmd(eng, "claim.action_done", {"id": cid, "action_id": a1, "result": "Датчик переподключён, автоматический режим работает"})
+    c = cmd(eng, "claim.action_done", {"id": cid, "action_id": a1, "result": "Датчик переподключён, автоматический режим работает"})["claim"]
+    cmd(rp, "claim.respond", {"id": cid, "kind": "interim", "response_date": today.isoformat(), "reference": "Исх. № 12 (пилотный комплект)",
+                              "summary": "Причина найдена, датчик на объекте переподключён; схема будет исправлена новой версией."}, c["version"])
+    cid2 = str(uuid.uuid4())
+    cmd(otk, "claim.register", {"id": cid2, "scope": "batch", "work_order_id": batch_wo, "received_date": today.isoformat(),
+                                "source": "customer", "severity": "minor", "response_due": (today + timedelta(days=1)).isoformat(),
+                                "reference": "Письмо заказчика № 47 (пилотный комплект)",
+                                "description": "На дверцах шкафов партии не закреплены таблички с обозначением шкафа; номера изделий "
+                                               "заказчик не указал."})
     rid = str(uuid.uuid4())
     cmd(eng, "ecr.submit", {"id": rid, "project_id": c["project_id"], "kit_id": kits["АТХ"], "claim_id": cid,
                             "title": "Нумерация клемм в схеме подключения",
                             "reason": "Рекламация № 1: нумерация клемм в схеме не совпадает с маркировкой шкафа.",
                             "proposal": "Выпустить новую версию схемы АТХ-001 с нумерацией по маркировке шкафа."})
-    return {"claims": [cid], "change_requests": [rid]}
+    # Напоминания о сроке ответа создаются при обновлении (pull) тех, кто ведёт рекламацию. Создаём их сразу — как
+    # если бы РП, ГИП, его замещающий и ОТК уже входили: самопроверка стенда (только чтение) ничего не добавит.
+    with svc.engine.begin() as c:
+        for lg in ("a.smirnova", "p.volkov", "m.lebedev", "l.egorova"):
+            svc._quality_reminders(c, people[lg], svc.now())
+    return {"claims": [cid, cid2], "change_requests": [rid]}

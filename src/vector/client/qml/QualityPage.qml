@@ -13,6 +13,10 @@ import QtQuick.Layouts
 //    техпроцесса → утверждено (ГИП, не составитель и не правивший) → внедрено (на какие версии заменены) →
 //    проверено (не тот, кто внедрял). Видно, каких экземпляров касается изменение.
 //
+// D-40 (ответ владельца на A-46): рекламация бывает и без заводского номера — на партию (наряд) или на проект; у неё
+// есть тяжесть и категория дефекта, срок ответа заказчику (видно «срок подходит / прошёл») и ответы заказчику.
+// ОТК (отдел технического контроля) ведёт рекламации и проверяет эффективность наравне с РП и ГИП.
+//
 // Без связи можно зарегистрировать рекламацию, подать запрос и править черновик извещения (очередь); решения,
 // отметки и проверки — только при связи. Кнопки — подсказка по ролям; решает сервер, отказ приходит понятным текстом.
 MasterDetail {
@@ -35,6 +39,9 @@ MasterDetail {
         selectedId = id
     }
     Component.onCompleted: if (shell && shell.navTarget.page === "quality") openObject(shell.navTarget.id)
+    // Переход к объекту, когда раздел уже открыт (например, ОТК начинает с «Качества» и открывает уведомление о сроке).
+    Connections { target: shell; ignoreUnknownSignals: true
+                  function onNavTargetChanged() { if (shell.navTarget.page === "quality" && shell.navTarget.id) page.openObject(shell.navTarget.id) } }
     tab: "claims"
     tabsName: "qualityTabs"
     tabs: [{ id: "claims", label: "Рекламации и CAPA", icon: "shield-x", tip: "Рекламации по экземплярам изделий и корректирующие и предупреждающие действия (CAPA)." },
@@ -47,7 +54,7 @@ MasterDetail {
     hasSelection: sel !== null
     emptyIcon: tab === "claims" ? "shield-x" : tab === "ecrs" ? "file-pen-line" : "file-check"
     emptyTitle: tab === "claims" ? "Рекламаций нет" : tab === "ecrs" ? "Запросов на изменение нет" : "Извещений нет"
-    emptyText: tab === "claims" ? (qv.may_claim ? "Рекламация регистрируется по экземпляру изделия с заводским номером." : "Рекламации регистрирует РП или ГИП проекта, в котором есть экземпляры изделий.")
+    emptyText: tab === "claims" ? (qv.may_claim ? "Рекламация регистрируется по экземпляру изделия, по партии (наряду) или по проекту, если номера нет." : "Рекламации регистрируют РП и ГИП проекта, ОТК (отдел технического контроля) и руководитель отдела.")
              : tab === "ecrs" ? "Запрос на изменение может подать любой участник проекта — например, по итогам анализа рекламации."
              : "Извещение составляется по принятому запросу на изменение."
     emptyAction: tab === "claims" && qv.may_claim === true ? "Зарегистрировать рекламацию" : tab === "ecrs" && qv.may_ecr === true ? "Подать запрос" : ""
@@ -56,16 +63,16 @@ MasterDetail {
     headerActions: [
         VButton { text: "Обновить"; iconName: "refresh-cw"; onClicked: backend.syncNow() },
         VButton { objectName: "btnClaimNew"; visible: page.tab === "claims" && page.qv.may_claim === true; text: "Зарегистрировать рекламацию"; kind: "primary"; iconName: "plus"
-                  tip: "Рекламация по конкретному экземпляру изделия. Можно и без связи — уйдёт с очередью."; onClicked: claimForm.openFor() },
+                  tip: "Рекламация по экземпляру изделия, по партии (наряду) или по проекту без номера изделия. Можно и без связи — уйдёт с очередью."; onClicked: claimForm.openFor() },
         VButton { objectName: "btnEcrNew"; visible: page.tab === "ecrs" && page.qv.may_ecr === true; text: "Подать запрос"; kind: "primary"; iconName: "plus"
                   tip: "Запрос на изменение (ECR): что и почему изменить. Можно и без связи."; onClicked: ecrForm.openFor(null) }
     ]
     list.model: items
     list.delegate: ListRow {
         title: modelData.label + (modelData.project_code ? "  ·  " + modelData.project_code : "")
-        subtitle: page.tab === "claims" ? modelData.instance_label + "  ·  " + modelData.title : modelData.title
+        subtitle: page.tab === "claims" ? (modelData.deadline_alert === true ? modelData.deadline_short + "  ·  " : "") + modelData.instance_label + "  ·  " + modelData.title : modelData.title
         iconName: page.tab === "claims" ? "shield-x" : page.tab === "ecrs" ? "file-pen-line" : "file-check"
-        chipText: modelData.status_label; chipTone: modelData.status_tone
+        chipText: modelData.status_label; chipTone: modelData.deadline === "overdue" ? "danger" : modelData.status_tone
         pending: modelData.pending === true
         selected: modelData.id === page.selectedId
         onClicked: page.selectedId = modelData.id
@@ -116,8 +123,38 @@ MasterDetail {
         Banner { visible: sel !== null && (sel.submit_block || "") !== "" && sel.manage === true; tone: "info"; text: sel ? sel.submit_block || "" : "" }
         Cmd { id: subCmd; tag: "claim-submit" }   // итог (успех или причина отказа) показывает всплывающее уведомление
 
+        Banner { objectName: "claimDeadlineBanner"; visible: sel !== null && page.tab === "claims" && sel.deadline_alert === true
+                 tone: sel && sel.deadline === "overdue" ? "danger" : "warning"
+                 text: sel && sel.deadline_alert === true ? "Ответ заказчику: " + String(sel.deadline_label || "").toLowerCase() + ". Запишите ответ или согласуйте с заказчиком новый срок." : "" }
+        Flow {
+            Layout.fillWidth: true; spacing: 8
+            VButton { objectName: "btnClaimRespond"; visible: sel !== null && sel.can_respond === true; text: "Ответ заказчику"; kind: sel && sel.deadline_alert ? "primary" : "soft"; iconName: "mail-check"
+                      tip: "Записать отправленный заказчику ответ (промежуточный или окончательный). Ответ после установки срока закрывает срок."
+                      onClicked: respondForm.openFor() }
+            VButton { objectName: "btnClaimDue"; visible: sel !== null && sel.can_set_due === true; text: "Изменить срок ответа"; kind: "soft"; iconName: "calendar-clock"
+                      tip: "Новый срок ответа заказчику — по согласованию с ним или для следующего (окончательного) ответа. Причина обязательна."
+                      onClicked: dueForm.openFor() }
+            VButton { objectName: "btnClaimClassify"; visible: sel !== null && sel.can_classify === true; text: "Классификация дефекта"; kind: "soft"; iconName: "tag"
+                      tip: "Уточнить тяжесть и категорию дефекта. Причина изменения попадёт в историю."
+                      onClicked: classifyForm.openFor() }
+        }
         SectionTitle { text: "Рекламация"; iconName: "shield-x" }
-        KeyValue { kWidth: 170; k: "Экземпляр"; v: sel ? sel.instance_label || "—" : "" }
+        KeyValue { kWidth: 170; k: "Охват"; v: sel ? sel.scope_label || "" : "" }
+        KeyValue { kWidth: 170; k: sel && sel.scope === "batch" ? "Партия" : sel && sel.scope === "project" ? "Проект" : "Экземпляр"; v: sel ? sel.instance_label || "—" : "" }
+        KeyValue { kWidth: 170; visible: sel !== null && sel.scope === "batch"; k: "Экземпляры партии"
+                   v: sel && (sel.batch_instances || []).length ? sel.batch_instances.map(i => i.label).join(", ") : "номера не зарегистрированы" }
+        RowLayout { Layout.fillWidth: true; spacing: 12
+            Text { text: "Тяжесть дефекта"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs; Layout.preferredWidth: 170
+                   VTipArea { text: "Насколько дефект опасен для людей, оборудования и работы изделия: критический, значительный, незначительный." } }
+            VChip { objectName: "claimSeverityChip"; text: sel ? sel.severity_label || "не указана" : ""; tone: sel ? sel.severity_tone || "neutral" : "neutral"; iconName: sel ? sel.severity_icon || "" : "" }
+            Item { Layout.fillWidth: true } }
+        KeyValue { kWidth: 170; k: "Категория дефекта"; v: sel ? sel.category_label || "пока не указана" : ""; muted: sel !== null && !sel.category_label
+                   tip: "Откуда дефект: документация, изготовление, покупные комплектующие, программа, транспортировка, эксплуатация. Обычно ясна после анализа причины." }
+        RowLayout { visible: sel !== null && sel.customer === true; Layout.fillWidth: true; spacing: 12
+            Text { text: "Срок ответа заказчику"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs; Layout.preferredWidth: 170; wrapMode: Text.Wrap
+                   VTipArea { text: "До какой даты заказчику нужно ответить. «Ответ дан» — после установки срока записан ответ заказчику." } }
+            VChip { objectName: "claimDeadlineChip"; text: sel ? sel.deadline_label || "Срок не задан" : ""; tone: sel ? sel.deadline_tone || "neutral" : "neutral"; iconName: "calendar-clock" }
+            Item { Layout.fillWidth: true } }
         KeyValue { kWidth: 170; k: "Получена"; v: sel ? sel.received_label + "  ·  " + sel.source_label : "" }
         KeyValue { kWidth: 170; visible: sel !== null && sel.reference !== ""; k: "Документ заказчика"; v: sel ? sel.reference || "" : "" }
         KeyValue { kWidth: 170; k: "Ответственный"; v: sel && sel.responsible ? sel.responsible : "ещё не назначен" }
@@ -158,6 +195,20 @@ MasterDetail {
                     Text { text: crow.modelData.who + "  ·  " + crow.modelData.when; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsXs } } }
         }
         Text { visible: sel !== null && (sel.closure_note || "") !== ""; text: sel ? sel.closure_note || "" : ""; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+
+        SectionTitle { visible: sel !== null && sel.customer === true; text: "Ответы заказчику"; iconName: "mail" }
+        Text { visible: sel !== null && sel.customer === true && (sel.responses || []).length === 0; text: "Ответов ещё не было."; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsS }
+        Repeater {
+            model: sel && page.tab === "claims" ? sel.responses || [] : []
+            delegate: RowLayout { id: rrow; required property var modelData
+                objectName: "claimResponseRow"
+                Layout.fillWidth: true; spacing: 10
+                VChip { text: rrow.modelData.kind_label; tone: rrow.modelData.kind === "final" ? "success" : "info"; Layout.alignment: Qt.AlignTop }
+                ColumnLayout { spacing: 2; Layout.fillWidth: true
+                    Text { text: rrow.modelData.summary; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    Text { text: "Отправлен " + rrow.modelData.date_label + (rrow.modelData.reference ? "  ·  " + rrow.modelData.reference : "") + "  ·  записал " + rrow.modelData.who
+                           color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsXs; wrapMode: Text.Wrap; Layout.fillWidth: true } } }
+        }
 
         SectionTitle { visible: sel !== null && (sel.change_requests || []).length > 0; text: "Запросы на изменение по рекламации"; iconName: "file-pen-line" }
         Repeater {
@@ -277,25 +328,66 @@ MasterDetail {
         }
     }
 
+    // Регистрация рекламации (D-40): охват — экземпляр (заводской номер), партия (наряд) или проект без номера изделия;
+    // тяжесть дефекта обязательна, категория — если уже ясна; для рекламации от заказчика — срок ответа.
     FormDialog {
         id: claimForm
         objectName: "claimForm"
         title: "Новая рекламация"
-        subtitle: "По конкретному экземпляру изделия. Можно и без связи — уйдёт с очередью."
+        subtitle: "По экземпляру, партии (наряду) или проекту без номера изделия. Можно и без связи — уйдёт с очередью."
         confirmText: "Зарегистрировать рекламацию"
-        readonly property var chk: visible ? backend.qualityCheck("claim", { received_date: clDate.text.trim(), source: clSrc.current, description: clDesc.text, reference: clRef.text }) : ({ ok: true })
-        canConfirm: clInst.currentValue !== "" && chk.ok
+        formWidth: 880        // две колонки; выбор тяжести (три варианта) помещается в колонку
+        readonly property string target: clScope.current === "batch" ? clBatch.currentValue : clScope.current === "project" ? clProj.currentValue : clInst.currentValue
+        readonly property var payload: ({ scope: clScope.current, instance_id: clScope.current === "instance" ? clInst.currentValue : "",
+                                          work_order_id: clScope.current === "batch" ? clBatch.currentValue : "",
+                                          project_id: clScope.current === "project" ? clProj.currentValue : "",
+                                          received_date: clDate.text.trim(), source: clSrc.current, description: clDesc.text, reference: clRef.text,
+                                          severity: clSev.current, category: clCat.currentValue,
+                                          response_due: clSrc.current === "customer" ? clDue.text.trim() : "" })
+        readonly property var chk: visible ? backend.qualityCheck("claim", payload) : ({ ok: true })
+        canConfirm: target !== "" && chk.ok
         note: chk.ok ? "" : chk.message
-        function openFor() { clInst.currentIndex = 0; clSrc.current = "customer"; clDate.text = page.today(); clDesc.text = ""; clRef.text = ""; open() }
-        onConfirmed: clCmd.run("claim.register", { instance_id: clInst.currentValue, received_date: clDate.text.trim(), source: clSrc.current, description: clDesc.text, reference: clRef.text }, 0)
-        VSelect { id: clInst; objectName: "claimInstance"; label: "Экземпляр изделия"; model: page.qv.instance_options || []
+        function plusDays(n) { var b = clDate.text.trim(); var d = /^\d{4}-\d{2}-\d{2}$/.test(b) ? new Date(b + "T00:00:00") : new Date(); d.setDate(d.getDate() + n)
+                               clDue.text = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0") }
+        function openFor() { clScope.current = (page.qv.instance_options || []).length ? "instance" : (page.qv.batch_options || []).length ? "batch" : "project"
+                             clInst.currentIndex = 0; clBatch.currentIndex = 0; clProj.currentIndex = 0; clSrc.current = "customer"; clDate.text = page.today()
+                             clDue.text = ""; clSev.current = ""; clCat.currentIndex = 0; clDesc.text = ""; clRef.text = ""; open() }
+        onConfirmed: clCmd.run("claim.register", payload, 0)
+        // Поля в две колонки — форма помещается в окно 1440×900 без прокрутки.
+        Text { text: "К чему относится"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS
+               VTipArea { text: "Если заводской номер неизвестен — выберите партию (наряд, по которому изделия выпущены) или проект." } }
+        VSegmented { id: clScope; objectName: "claimScope"; model: page.qv.scopes || []; current: "instance"; onPicked: id => current = id }
+        VSelect { id: clInst; objectName: "claimInstance"; visible: clScope.current === "instance"; label: "Экземпляр изделия"; model: page.qv.instance_options || []; Layout.fillWidth: true
                   hint: "Заводской номер изделия, по которому пришла рекламация." }
-        VSegmented { id: clSrc; objectName: "claimSource"; model: page.qv.sources || []; current: "customer"; onPicked: id => current = id }
-        VField { id: clDate; label: "Дата получения"; required: true; placeholder: "ГГГГ-ММ-ДД"; hint: "Не позже сегодняшнего дня." }
-        VField { id: clRef; label: "Документ заказчика"; placeholder: "Письмо № 45 от 12.11.2026 (необязательно)" }
+        VSelect { id: clBatch; objectName: "claimBatch"; visible: clScope.current === "batch"; label: "Партия (наряд)"; model: page.qv.batch_options || []; Layout.fillWidth: true
+                  hint: "Выполненный наряд: рекламация на изделия, выпущенные по нему, без заводского номера." }
+        VSelect { id: clProj; objectName: "claimProject"; visible: clScope.current === "project"; label: "Проект"; model: page.qv.claim_projects || []; Layout.fillWidth: true
+                  hint: "Нет ни номера, ни партии — рекламация на поставку по проекту в целом." }
+        GridLayout {
+            Layout.fillWidth: true; columns: 2; columnSpacing: 16; rowSpacing: 10
+            ColumnLayout { spacing: 4; Layout.fillWidth: true; Layout.preferredWidth: 1
+                Text { text: "Источник"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS }
+                VSegmented { id: clSrc; objectName: "claimSource"; model: page.qv.sources || []; current: "customer"; onPicked: id => current = id } }
+            ColumnLayout { spacing: 4; Layout.fillWidth: true; Layout.preferredWidth: 1
+                Text { text: "Тяжесть дефекта *"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS
+                       VTipArea { text: "Критический — опасен или изделие не работает; значительный — работает с ограничениями; незначительный — на работу не влияет." } }
+                VSegmented { id: clSev; objectName: "claimSeverity"; model: page.qv.severities || []; current: ""; onPicked: id => current = id } }
+            VField { id: clDate; label: "Дата получения"; required: true; placeholder: "ГГГГ-ММ-ДД"; hint: "Не позже сегодняшнего дня."; Layout.fillWidth: true; Layout.preferredWidth: 1 }
+            ColumnLayout { spacing: 2; Layout.fillWidth: true; Layout.preferredWidth: 1
+                VField { id: clDue; objectName: "claimDue"; enabled: clSrc.current === "customer"; label: "Срок ответа заказчику"; required: clSrc.current === "customer"
+                         placeholder: clSrc.current === "customer" ? "ГГГГ-ММ-ДД" : "не нужен для внутренней"; Layout.fillWidth: true
+                         hint: "Из договора или письма заказчика; программа срок не подставляет." }
+                RowLayout { visible: clSrc.current === "customer"; spacing: 4
+                    VButton { text: "+5 дн."; kind: "ghost"; compact: true; tip: "Срок — через 5 дней от даты получения."; onClicked: claimForm.plusDays(5) }
+                    VButton { text: "+10 дн."; kind: "ghost"; compact: true; tip: "Срок — через 10 дней от даты получения."; onClicked: claimForm.plusDays(10) }
+                    VButton { text: "+30 дн."; kind: "ghost"; compact: true; tip: "Срок — через 30 дней от даты получения."; onClicked: claimForm.plusDays(30) } } }
+            VSelect { id: clCat; objectName: "claimCategory"; label: "Категория дефекта"; model: page.qv.categories || []; Layout.fillWidth: true; Layout.preferredWidth: 1
+                      hint: "Если пока не ясно — укажете при плане действий." }
+            VField { id: clRef; label: "Документ заказчика"; placeholder: "Письмо № 45 от 12.11.2026"; hint: "Необязательно."; Layout.fillWidth: true; Layout.preferredWidth: 1 }
+        }
         Text { text: "Суть рекламации *"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS
                VTipArea { text: "Что не так: признаки неисправности, когда и при каких условиях проявилась." } }
-        ScrollView { Layout.fillWidth: true; Layout.preferredHeight: 90
+        ScrollView { Layout.fillWidth: true; Layout.preferredHeight: 70
             TextArea { id: clDesc; objectName: "claimDescription"; placeholderText: "Что не так и при каких условиях"; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; wrapMode: TextEdit.Wrap
                        background: Rectangle { radius: Theme.radiusS; color: Theme.surface; border.color: clDesc.activeFocus ? Theme.primary : Theme.border } } }
     }
@@ -323,19 +415,25 @@ MasterDetail {
         title: sel && sel.first_plan ? "Причина и план CAPA" : "Дополнительные действия"
         subtitle: "CAPA — корректирующие (устраняют причину) и предупреждающие (не дают ей повториться) действия. Нужно хотя бы одно корректирующее."
         confirmText: "Утвердить план"
-        readonly property var chk: { rev; return visible ? backend.qualityCheck("actions", { first: sel ? sel.first_plan === true : false, cause: plCause.text, actions: collect() }) : ({ ok: true, rows: {} }) }
+        readonly property var chk: { rev; return visible ? backend.qualityCheck("actions", { first: sel ? sel.first_plan === true : false, cause: plCause.text, actions: collect(),
+                                                                                           need_category: sel ? sel.needs_category === true : false, category: plCat.currentValue }) : ({ ok: true, rows: {} }) }
         canConfirm: am.count > 0 && chk.ok
         note: chk.ok ? "" : chk.message
         ListModel { id: am }
         function collect() { var out = []; for (var i = 0; i < am.count; i++) { var r = am.get(i); out.push({ kind: r.kind, description: r.description, owner_id: r.owner_id, due_date: r.due_date }) } return out }
         function addRow(kind) { am.append({ kind: kind, description: "", owner_id: page.team.length ? page.team[0].id : "", due_date: "" }); rev++ }
-        function openFor() { am.clear(); plCause.text = sel ? sel.cause || "" : ""; addRow("corrective"); open() }
-        onConfirmed: { var p = { id: sel.id, actions: collect() }; if (sel.first_plan) p.cause = plCause.text; plCmd.run("claim.plan", p, sel.version) }
+        function openFor() { am.clear(); plCause.text = sel ? sel.cause || "" : ""; plCat.currentIndex = 0; addRow("corrective"); open() }
+        onConfirmed: { var p = { id: sel.id, actions: collect() }; if (sel.first_plan) p.cause = plCause.text
+                       if (sel.needs_category && plCat.currentValue) p.category = plCat.currentValue
+                       plCmd.run("claim.plan", p, sel.version) }
         Text { visible: sel !== null && sel.first_plan === true; text: "Найденная причина *"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS }
         ScrollView { visible: sel !== null && sel.first_plan === true; Layout.fillWidth: true; Layout.preferredHeight: 70
             TextArea { id: plCause; objectName: "claimCauseEdit"; placeholderText: "Почему это произошло"; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; wrapMode: TextEdit.Wrap
                        onTextChanged: planForm.rev++
                        background: Rectangle { radius: Theme.radiusS; color: Theme.surface; border.color: plCause.activeFocus ? Theme.primary : Theme.border } } }
+        VSelect { id: plCat; objectName: "planCategory"; visible: sel !== null && sel.needs_category === true; label: "Категория дефекта *"
+                  model: (page.qv.categories || []).filter(c => c.id !== ""); onCurrentIndexChanged: planForm.rev++
+                  hint: "Откуда дефект — по найденной причине: документация, изготовление, покупные комплектующие и т. д." }
         Repeater {
             model: am
             delegate: Rectangle { id: prow; required property int index; required property var model
@@ -394,6 +492,62 @@ MasterDetail {
         VField { id: chEv; objectName: "checkEvidence"; label: "Чем подтверждено"; required: true; placeholder: "Повторные испытания, протокол № 35 — замечаний нет" }
     }
     QCmd { id: chCmd; dialog: checkForm; tag: "claim-check" }
+
+    // Классификация дефекта (D-40): тяжесть и категория, причина изменения обязательна.
+    FormDialog {
+        id: classifyForm
+        objectName: "claimClassifyForm"
+        title: "Классификация дефекта"
+        subtitle: sel ? sel.label + " · сейчас: " + (sel.severity_label || "") + (sel.category_label ? ", " + sel.category_label : "") : ""
+        confirmText: "Сохранить классификацию"
+        readonly property var chk: visible ? backend.qualityCheck("classify", { severity: cfSev.current, category: cfCat.currentValue, reason: cfReason.text }) : ({ ok: true })
+        canConfirm: chk.ok
+        note: chk.ok ? "" : chk.message
+        function openFor() { cfSev.current = sel.severity || ""; var cats = page.qv.categories || []; var i = cats.findIndex(c => c.id === (sel.category || ""))
+                             cfCat.currentIndex = i >= 0 ? i : 0; cfReason.text = ""; open() }
+        onConfirmed: cfCmd.run("claim.classify", { id: sel.id, severity: cfSev.current, category: cfCat.currentValue, reason: cfReason.text }, sel.version)
+        VSegmented { id: cfSev; objectName: "classifySeverity"; model: page.qv.severities || []; current: ""; onPicked: id => current = id }
+        VSelect { id: cfCat; objectName: "classifyCategory"; label: "Категория дефекта"; model: page.qv.categories || []
+                  hint: "Откуда дефект. Указанную категорию можно сменить, но не убрать." }
+        VField { id: cfReason; objectName: "classifyReason"; label: "Причина изменения"; required: true; placeholder: "Анализ показал перегрев клемм — опасно" }
+    }
+    QCmd { id: cfCmd; dialog: classifyForm; tag: "claim-classify" }
+
+    // Новый срок ответа заказчику (D-40): по согласованию с заказчиком или для следующего (окончательного) ответа.
+    FormDialog {
+        id: dueForm
+        objectName: "claimDueForm"
+        title: "Срок ответа заказчику"
+        subtitle: sel ? sel.label + (sel.due_label ? " · сейчас: до " + sel.due_label : "") : ""
+        confirmText: "Установить срок"
+        readonly property var chk: visible ? backend.qualityCheck("due", { response_due: duDate.text.trim(), received_date: sel ? sel.received_date : "", reason: duReason.text }) : ({ ok: true })
+        canConfirm: chk.ok
+        note: chk.ok ? "" : chk.message
+        function openFor() { duDate.text = ""; duReason.text = ""; open() }
+        onConfirmed: duCmd.run("claim.set_due", { id: sel.id, response_due: duDate.text.trim(), reason: duReason.text }, sel.version)
+        VField { id: duDate; objectName: "dueDate"; label: "Новый срок"; required: true; placeholder: "ГГГГ-ММ-ДД"; hint: "Не раньше сегодняшнего дня. Отсчёт «ответ дан» начнётся заново." }
+        VField { id: duReason; objectName: "dueReason"; label: "Причина"; required: true; placeholder: "Согласовано с заказчиком письмом № 15 / окончательный ответ" }
+    }
+    QCmd { id: duCmd; dialog: dueForm; tag: "claim-due" }
+
+    // Ответ заказчику (D-40): неизменяемая запись — вид, дата отправки, что ответили, номер письма.
+    FormDialog {
+        id: respondForm
+        objectName: "claimRespondForm"
+        title: "Ответ заказчику"
+        subtitle: sel ? sel.label + (sel.deadline_label ? " · " + sel.deadline_label : "") : ""
+        confirmText: "Записать ответ"
+        readonly property var chk: visible ? backend.qualityCheck("respond", { kind: rsKind.current, response_date: rsDate.text.trim(), summary: rsSummary.text, reference: rsRef.text }) : ({ ok: true })
+        canConfirm: chk.ok
+        note: chk.ok ? "" : chk.message
+        function openFor() { rsKind.current = (sel.responses || []).length ? "final" : "interim"; rsDate.text = page.today(); rsSummary.text = ""; rsRef.text = ""; open() }
+        onConfirmed: rsCmd.run("claim.respond", { id: sel.id, kind: rsKind.current, response_date: rsDate.text.trim(), summary: rsSummary.text, reference: rsRef.text }, sel.version)
+        VSegmented { id: rsKind; objectName: "respondKind"; model: page.qv.response_kinds || []; current: "interim"; onPicked: id => current = id }
+        VField { id: rsDate; label: "Дата отправки"; required: true; placeholder: "ГГГГ-ММ-ДД"; hint: "Не позже сегодняшнего дня и не раньше получения рекламации." }
+        VField { id: rsRef; label: "Номер письма"; placeholder: "Исх. № 12 от 14.11.2026 (необязательно)" }
+        VField { id: rsSummary; objectName: "respondSummary"; label: "Что ответили"; required: true; placeholder: "Приняли в работу, анализ причины — до 30.11" }
+    }
+    QCmd { id: rsCmd; dialog: respondForm; tag: "claim-respond" }
 
     FormDialog {
         id: ecrForm

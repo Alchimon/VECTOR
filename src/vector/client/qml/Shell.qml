@@ -21,7 +21,9 @@ Item {
         var rs = backend.me.roles || []
         if (page === "tenders" && !backend.hint("tender.read", backend.permRevision))
             // Технолог и производство (D-36) начинают с раздела «Производство».
+            // ОТК (отдел технического контроля, D-40) — с раздела «Качество».
             page = rs.some(r => r === "production" || r === "technologist") ? "production"
+                 : rs.some(r => r === "otk") ? "quality"
                  : backend.hint("stock.read", backend.permRevision) ? "stock" : "projects"
     }
     Component.onCompleted: pickStart()

@@ -202,7 +202,12 @@ def test_demo_seed_only_into_fresh_db(setup):
     # Качество (D-39): рекламация № 1 по этому экземпляру — «Действия» (одно из двух действий CAPA выполнено),
     # запрос на изменение № 1 по рекламации ждёт оценки.
     assert [(c["claim_no"], c["status"], c["instance_label"], [a["status"] for a in c["actions"]]) for c in pull["claims"]] == \
-        [(1, "action", "АТХ № 0001 (серия 2026)", ["done", "open"])]
+        [(1, "action", "АТХ № 0001 (серия 2026)", ["done", "open"]), (2, "registered", "Партия: наряд № 2 — АТХ, 1 шт.", [])]
+    # D-40: № 1 — значительный, документация, ответ дан; № 2 — на партию без номера изделия, срок ответа — завтра.
+    assert [(c["scope"], c["severity"], c["category"], c["deadline"]) for c in pull["claims"]] == \
+        [("instance", "major", "design", "answered"), ("batch", "minor", None, "soon")]
+    # Напоминание о сроке создано при заполнении демо (как если бы РП уже входила) — самопроверка ничего не добавит.
+    assert any(x["kind"] == "claim_due_soon" for x in pull["notifications"])
     assert [(r["ecr_no"], r["status"], r["claim_no"]) for r in pull["change_requests"]] == [(1, "submitted", 1)]
     n = svc.handle({"type": "login", "login": "n.sokolov", "password": DEMO_PWD, "device_id": "t"}, "t")
     assert n["must_change_password"] is True

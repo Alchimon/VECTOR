@@ -500,6 +500,19 @@ def main():
         h.shot(out / f"{theme}-44-quality-ecr.png")
         h.backend.logout()
         h.wait_idle()
+        # Рекламация на партию без номера изделия, срок ответа «подходит» (D-40): ОТК — карточка рекламации № 2 и форма
+        # регистрации (охват, тяжесть, срок ответа заказчику).
+        h.login("l.egorova")
+        h.go("quality", h.ids["claims"][1])
+        h.shot(out / f"{theme}-45-quality-batch-claim.png")
+        cf = next(o for o in h.win.findChildren(QObject) if o.objectName() == "claimForm")
+        QMetaObject.invokeMethod(cf, "openFor")
+        h.wait_idle()
+        h.shot(out / f"{theme}-46-quality-claim-form.png")
+        cf.setProperty("visible", False)
+        h.wait_idle()
+        h.backend.logout()
+        h.wait_idle()
         # Настройки компании (D-26, A-26): администратор, вкладка «Настройки компании».
         h.login("admin")
         h.go("admin")

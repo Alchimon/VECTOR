@@ -84,7 +84,8 @@ def test_fresh_stand_is_ready_and_check_is_read_only(stand, svc, capsys):
     assert "заказ № 5 на согласовании" in out and "m.lebedev замещает ГИП в П-2026-014" in out
     assert "без сертификата стенда соединение отклоняется" in out
     assert "k.pavlov: операций в «Мои операции» — 1, одна в работе" in out and "техпроцессов: 2 (утверждённых 1)" in out
-    assert "рекламаций: 1 (закрыто 0), запросов на изменение: 1, извещений: 0" in out   # раздел 7 (D-39)
+    assert "рекламаций: 2 (закрыто 0), запросов на изменение: 1, извещений: 0" in out   # раздел 7 (D-39)
+    assert "l.egorova: вход, роль «otk»" in out and "на партию (без номера изделия): 1" in out   # раздел 8 (D-40)
     assert _counts(svc) == before          # ни «прочитано», ни заказы, ни замещения не изменились
 
 

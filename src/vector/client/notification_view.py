@@ -20,13 +20,16 @@ KIND_ICONS = {"po_submitted": "shield-check", "po_approved": "circle-check", "po
               "claim_new": "shield-x", "claim_assigned": "user-check", "capa_assigned": "list-checks",
               "claim_check": "clipboard-check", "claim_checked": "circle-check", "ecr_new": "file-pen-line",
               "ecr_assessed": "sliders-horizontal", "ecr_decided": "gavel", "eco_approval": "file-check",
-              "eco_approved": "circle-check", "eco_implemented": "check-check", "eco_verified": "clipboard-check"}
+              "eco_approved": "circle-check", "eco_implemented": "check-check", "eco_verified": "clipboard-check",
+              # D-40: срок ответа заказчику подходит / прошёл; зарегистрирована критическая рекламация.
+              "claim_due_soon": "calendar-clock", "claim_overdue": "triangle-alert", "claim_critical": "octagon-x"}
 KIND_TONES = {"po_submitted": "warning", "po_approved": "success", "po_returned": "danger",
               "po_withdrawn": "neutral", "delegation_created": "info", "delegation_revoked": "neutral",
               "tp_approved": "success", "wo_assigned": "info", "wo_problem": "danger", "wo_completed": "success",
               "claim_new": "warning", "claim_assigned": "info", "capa_assigned": "info", "claim_check": "primary",
               "claim_checked": "success", "ecr_new": "info", "ecr_assessed": "info", "ecr_decided": "success",
-              "eco_approval": "warning", "eco_approved": "success", "eco_implemented": "primary", "eco_verified": "success"}
+              "eco_approval": "warning", "eco_approved": "success", "eco_implemented": "primary", "eco_verified": "success",
+              "claim_due_soon": "warning", "claim_overdue": "danger", "claim_critical": "danger"}
 # Куда ведёт «Открыть»: раздел оболочки по типу объекта.
 TARGET_PAGES = {"purchase_order": "procurement", "delegation": "delegations", "tech_process": "production",
                 "work_order": "production", "claim": "quality", "change_request": "quality", "change_order": "quality"}

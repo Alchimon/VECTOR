@@ -1,4 +1,4 @@
-"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-15).
+"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-16).
 
 Запускается ПОСЛЕ установки, при запущенном сервере стенда, Python-ом из окружения стенда:
 
@@ -33,6 +33,8 @@ DEMO = [("a.smirnova", "rp"), ("p.volkov", "gip"), ("e.orlova", "dept_head"), ("
 # это предупреждение, а не ошибка (новые демо-данные при обновлении не добавляются).
 DEMO_D36 = [("t.fedorova", "technologist"), ("a.grishin", "technologist"), ("k.pavlov", "production"),
             ("r.sergeev", "production")]
+# Учётка отдела технического контроля (D-40) — тоже только в демо новой версии.
+DEMO_D40 = [("l.egorova", "otk")]
 PROJECT = "П-2026-014"   # проект демо-данных, где p.volkov — ГИП, а m.lebedev его замещает (D-35)
 FRESH_HINT = ("так бывает на стенде, обновлённом со старой версии (новые демо-данные при обновлении не добавляются), "
               "или если демо уже проверяли. Для этой проверки поставьте свежий стенд в новый каталог: "
@@ -257,6 +259,28 @@ def main(argv: list[str] | None = None) -> int:
                f"запросов на изменение: {len(ecrs)}, извещений: {len(ecos)}")
     else:
         rep.warn("рекламаций нет — " + FRESH_HINT)
+
+    print("\n8. Рекламации без номера изделия, сроки ответа, ОТК — отдел технического контроля (D-40, П-16)")
+    otk = None
+    for login, role in DEMO_D40:
+        c = client(str(ca))
+        r = c.login(login, pwd)
+        if r.status != "accepted":
+            rep.warn(f"нет учётки {login} — " + FRESH_HINT)
+            continue
+        c.pull()
+        roles = (c.get_meta("me") or {}).get("roles") or []
+        rep.ok(f"{login}: вход, роль «{role}»") if role in roles else rep.fail(f"{login}: нет роли «{role}»")
+        otk = c
+    if otk is not None:
+        mine = otk.list_local("claim")
+        batch = [c for c in mine if c.get("scope") == "batch"]
+        due = [c for c in mine if c.get("response_due")]
+        if batch and due:
+            rep.ok(f"l.egorova видит рекламаций: {len(mine)}; на партию (без номера изделия): {len(batch)}; "
+                   f"со сроком ответа заказчику: {len(due)}")
+        else:
+            rep.warn("нет рекламации на партию или со сроком ответа — " + FRESH_HINT)
     return finish(rep, tmp)
 
 
@@ -272,7 +296,7 @@ def finish(rep: Report, tmp=None) -> int:
         print(f"ИТОГ: стенд работает; предупреждений {len(rep.warnings)} — часть сценариев на этих данных не проверить "
               "(см. выше).")
     else:
-        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-15; сценарии — test-pc.md § 6).")
+        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-16; сценарии — test-pc.md § 6).")
     return 0
 
 

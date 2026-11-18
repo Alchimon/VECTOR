@@ -35,7 +35,8 @@ log = logging.getLogger("vector.client")
 ROLE_LABELS = {"admin": "Администратор", "gip": "ГИП", "rp": "РП", "dept_head": "Руководитель отдела",
                "lead_engineer": "Ведущий инженер", "engineer": "Инженер", "designer": "Конструктор", "technologist": "Технолог",
                "production": "Производство", "warehouse": "Склад", "procurement": "Закупка", "accountant": "Бухгалтерия",
-               "po_approver": "Согласование закупок"}
+               "po_approver": "Согласование закупок",
+               "otk": "Технический контроль (ОТК)"}
 # Русские названия полей команд — для экрана конфликта «моё / на сервере».
 FIELD_LABELS = {"name": "Наименование", "short_name": "Краткое наименование", "inn": "ИНН", "kpp": "КПП", "note": "Примечание",
                 "contact": "Контакт", "title": "Название", "deadline": "Срок подачи", "customer_id": "Заказчик", "tender_id": "Тендер",
@@ -780,18 +781,23 @@ class Backend(QObject):
             self._data.get("claim", []), self._data.get("change_request", []), self._data.get("change_order", []),
             self._data.get("product_instance", []), st.get("quality_refs") or [], self._data.get("project", []),
             self._data.get("kit", []), self._assignments, st.get("project_deputies") or [], self._people, self._me,
-            self._online and self._session_mode == "online", self._last_pull))
+            self._online and self._session_mode == "online", self._last_pull,
+            # D-40: проекты качества, сотрудники ОТК (отдел технического контроля), наряды для рекламации на партию.
+            st.get("quality_projects") or [], st.get("quality_otk") or [], st.get("claim_batches") or []))
 
     @Slot(str, "QVariantMap", result="QVariantMap")
     def qualityCheck(self, kind: str, payload) -> dict:
-        """Проверка формы качества без сервера (те же правила ядра): kind — claim / actions / ecr / check / eco."""
+        """Проверка формы качества без сервера (те же правила ядра): kind — claim / actions / classify / due / respond /
+        ecr / check / eco."""
         p = payload.toVariant() if hasattr(payload, "toVariant") else payload
         return qml_safe(quality_view.quality_check(kind, _plain(p)))
 
     # Команды качества, которые форма может отправить через qualityCommand (остальные — отдельными слотами).
     _QUALITY_COMMANDS = frozenset({"claim.register", "claim.start_analysis", "claim.plan", "claim.action_done",
                                    "claim.submit_check", "claim.check", "ecr.submit", "ecr.assess", "ecr.decide",
-                                   "eco.approve", "eco.implement", "eco.verify"})
+                                   "eco.approve", "eco.implement", "eco.verify",
+                                   # D-40: классификация дефекта, срок и ответ заказчику.
+                                   "claim.classify", "claim.set_due", "claim.respond"})
 
     @Slot(str, str, "QVariantMap", int)
     def qualityCommand(self, tag: str, command: str, payload, version: int):
@@ -803,6 +809,13 @@ class Backend(QObject):
         p = _plain(payload)
         if command in ("claim.register", "ecr.submit") and not p.get("id"):
             p["id"] = self.newId()
+        if command == "claim.register":
+            # Пустые необязательные поля формы не отправляются (охват определяет, какой объект нужен; категория и
+            # срок ответа могут быть не заданы).
+            p = {k: v for k, v in p.items() if not (k in ("instance_id", "work_order_id", "project_id", "category",
+                                                           "response_due", "reference") and v in ("", None))}
+        if command == "claim.classify" and not p.get("category"):
+            p.pop("category", None)
         if command == "claim.plan":
             p["actions"] = [{**a, "id": a.get("id") or self.newId()} for a in p.get("actions") or []]
         self.execute(tag, command, p, int(version))
