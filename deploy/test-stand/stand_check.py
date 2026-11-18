@@ -1,4 +1,4 @@
-"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-13).
+"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-14).
 
 Запускается ПОСЛЕ установки, при запущенном сервере стенда, Python-ом из окружения стенда:
 
@@ -236,6 +236,18 @@ def main(argv: list[str] | None = None) -> int:
                f"нарядов: {len(smirnova.list_local('work_order'))}")
     elif prod:
         rep.warn("техпроцессов нет — " + FRESH_HINT)
+
+    print("\n6. Изделия и паспорта (D-38, П-14)")
+    insts = smirnova.list_local("product_instance")
+    if insts:
+        bad = [i for i in insts if i.get("composition_ok") is False]
+        pps = smirnova.list_local("passport")
+        rep.ok(f"экземпляров изделий: {len(insts)}, паспортов-черновиков: {len(pps)}, "
+               f"передано заказчику: {sum(i.get('status') == 'handed_over' for i in insts)}")
+        if bad:
+            rep.fail(f"состав экземпляра не совпадает с контрольной суммой (SHA-256): {len(bad)} — сообщите разработчику")
+    else:
+        rep.warn("экземпляров изделий нет — " + FRESH_HINT)
     return finish(rep, tmp)
 
 
@@ -251,7 +263,7 @@ def finish(rep: Report, tmp=None) -> int:
         print(f"ИТОГ: стенд работает; предупреждений {len(rep.warnings)} — часть сценариев на этих данных не проверить "
               "(см. выше).")
     else:
-        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-13; сценарии — test-pc.md § 6).")
+        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-14; сценарии — test-pc.md § 6).")
     return 0
 
 

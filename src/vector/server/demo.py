@@ -21,7 +21,7 @@ import uuid
 
 import sqlalchemy as sa
 
-from .db import calc_versions, customers, users
+from .db import calc_versions, customers, users, work_orders
 
 DEVICE = "demo-seed"
 
@@ -394,6 +394,7 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
                                             "valid_until": (today + timedelta(days=6)).isoformat(),
                                             "reason": "Командировка на объект (приказ № 118-к)"})["delegation"]
     prod = _seed_production(cmd, login, people, svc, kits, atx_v1)
+    prod.update(_seed_lifecycle(cmd, login, people, svc, prod["tech_processes"][0], items, whs, docs))
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
             "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
             "suppliers": sups, "contracts": contracts, "delegations": [deleg["id"], pdeleg["id"]],
@@ -446,3 +447,46 @@ def _seed_production(cmd, login, people, svc, kits, atx_v1) -> dict:
     ev(k1, 20, "problem", 25, note="Не хватает наконечников НШВИ 1,5 — взял со склада участка, нужна выдача на наряд")
     # r.sergeev пока не начинал: операция 30 ждёт выполнения операции 20.
     return {"tech_processes": [tp1["id"], tp2["id"]], "work_orders": [wo["id"]]}
+
+
+def _seed_lifecycle(cmd, login, people, svc, tp_id, items, whs, docs) -> dict:
+    """Экземпляры изделий и паспорт (С5 шаги 7–9, D-38). Номера, даты, получатели и тексты ВЫМЫШЛЕНЫ.
+
+    * Наряд № 2 по ТП АТХ на 1 комплект («Пилотный комплект — котельная № 1»): выпустила a.smirnova, все операции
+      выполнил k.pavlov (вчера), материалы со склада выданы на наряд (перед выдачей кладовщик принял на СК-1 ровно
+      столько ШУ-1 и АРМ, сколько нужно, — остатки, резервы и потребность прочих демо-данных не меняются), наряд закрыт.
+    * Экземпляр «АТХ № 0001 (серия 2026)» зарегистрирован по наряду № 2; паспорт-черновик (составил ведущий инженер
+      m.lebedev): технические данные и свидетельство о приёмке заполнены, раздел о гарантиях — пусто (текст утверждает
+      компания), одно испытание, ссылка на схему АТХ-001 (версия 3). Экземпляр передан заказчику по акту.
+    * Наряд № 1 (в работе) — без изменений: на нём по-прежнему показываются операции, проблема и невыданные материалы.
+    """
+    rp, k1, wh, lead = login("a.smirnova"), login("k.pavlov"), login("i.belova"), login("m.lebedev")
+    r = cmd(rp, "wo.release", {"id": str(uuid.uuid4()), "tp_id": tp_id, "qty": 1, "title": "Пилотный комплект — котельная № 1",
+                               "assignees": {str(n): people["k.pavlov"] for n in (10, 20, 30, 40)}})
+    wo, ops = r["work_order"], sorted(r["wo_operations"], key=lambda o: o["op_no"])
+    start = svc.now() - timedelta(days=1, hours=8)
+    for i, op in enumerate(ops):
+        t0 = start + timedelta(minutes=150 * i)
+        cmd(k1, "wo.op_event", {"id": op["id"], "kind": "start", "device_time": t0.isoformat()})
+        cmd(k1, "wo.op_event", {"id": op["id"], "kind": "finish", "device_time": (t0 + timedelta(minutes=120)).isoformat(), "qty_done": 1})
+    # Материалы на наряд: складские позиции снимка (ШУ-1 ×3, АРМ ×2 на комплект) — приход «под наряд» и выдача.
+    for code, qty, src in (("ШУ-1", "3", "ТН № 431 от ООО «Шкафы-Про» (пилотный комплект)"),
+                           ("АРМ", "2", "ТН № 81 от ООО «ИТ-Снаб» (пилотный комплект)")):
+        cmd(wh, "stock.receive", {"id": str(uuid.uuid4()), "warehouse_id": whs["СК-1"], "item_id": items[code], "qty": qty, "source_doc": src})
+        cmd(wh, "stock.issue", {"id": str(uuid.uuid4()), "warehouse_id": whs["СК-1"], "item_id": items[code], "qty": qty,
+                                "project_id": wo["project_id"], "work_order_id": wo["id"], "reason": "Выдача на наряд № 2"})
+    with svc.engine.connect() as c:
+        ver = c.execute(sa.select(work_orders.c.version).where(work_orders.c.id == wo["id"])).scalar_one()
+    wo = cmd(rp, "wo.close", {"id": wo["id"]}, ver)["work_order"]
+    inst = cmd(rp, "instance.register", {"work_order_id": wo["id"], "series": "2026",
+                                         "items": [{"id": str(uuid.uuid4()), "serial_no": "0001"}]})["product_instances"][0]
+    day = (svc.now() - timedelta(days=1)).date().isoformat()
+    pp = cmd(lead, "passport.create", {"id": str(uuid.uuid4()), "instance_id": inst["id"], "fields": {
+        "tech_data": "Напряжение питания 380 В, 50 Гц; потребляемая мощность до 2,5 кВт; степень защиты оболочки IP54.",
+        "packing": "Упакован на участке сборки, тара — деревянный ящик.",
+        "acceptance": "Комплект изготовлен и принят в соответствии с технологическим процессом и признан годным к эксплуатации."},
+        "tests": [{"name": "Проверка сопротивления изоляции", "result": "pass", "date": day, "protocol": "031-2026"}],
+        "documents": [{"document_id": docs["АТХ-001"], "version_no": 3}]})["passport"]
+    inst = cmd(rp, "instance.handover", {"id": inst["id"], "date": svc.now().date().isoformat(), "recipient": "Иванов П. С., главный инженер",
+                                         "document": "Акт приёма-передачи № 27 (пилотный комплект)"}, inst["version"])["product_instance"]
+    return {"lifecycle_work_order": wo["id"], "product_instances": [inst["id"]], "passports": [pp["id"]]}

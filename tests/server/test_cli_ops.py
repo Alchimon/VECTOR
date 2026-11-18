@@ -193,6 +193,12 @@ def test_demo_seed_only_into_fresh_db(setup):
     assert lg["status"] == "accepted" and lg["must_change_password"] is False
     pull = svc.handle({"type": "query", "token": lg["token"], "query": "pull"}, "t")["result"]
     assert any(p["code"] == "П-2026-014" for p in pull["projects"])
+    # Изделия и паспорт (D-38): по закрытому наряду № 2 — экземпляр «АТХ № 0001 (серия 2026)», передан заказчику,
+    # с паспортом-черновиком; наряд № 1 по-прежнему в работе.
+    assert [(i["kit_code"], i["serial_no"], i["status"], i["wo_doc_no"], i["composition_ok"]) for i in pull["product_instances"]] == \
+        [("АТХ", "0001", "handed_over", 2, True)]
+    assert [(p["status"], p["template_ok"], len(p["tests"])) for p in pull["passports"]] == [("draft", True, 1)]
+    assert sorted((w["doc_no"], w["status"]) for w in pull["work_orders"]) == [(1, "in_progress"), (2, "closed")]
     n = svc.handle({"type": "login", "login": "n.sokolov", "password": DEMO_PWD, "device_id": "t"}, "t")
     assert n["must_change_password"] is True
     # Склад и закупка (С4): у кладовщика — остатки и журнал со сторно, у закупщика — потребность АТХ v1.

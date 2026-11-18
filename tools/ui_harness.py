@@ -471,6 +471,24 @@ def main():
         h.shot(out / f"{theme}-40-glossary.png")
         h.backend.logout()
         h.wait_idle()
+        # Изделия и паспорта (D-38): РП — карточка экземпляра «АТХ № 0001 (серия 2026)» (связи, паспорт, история);
+        # ведущий инженер — редактор черновика паспорта.
+        h.login("a.smirnova")
+        h.go("products", h.ids["product_instances"][0])
+        h.shot(out / f"{theme}-41-product-instance.png")
+        h.backend.logout()
+        h.wait_idle()
+        h.login("m.lebedev")
+        h.go("products", h.ids["product_instances"][0])
+        pe = next(o for o in h.win.findChildren(QObject) if o.objectName() == "passportEditor")
+        pp = _plain(h.backend.property("lifecycleOverview"))["items"][0]["passport"]
+        QMetaObject.invokeMethod(pe, "openFor", Q_ARG("QVariant", pp))
+        h.wait_idle()
+        h.shot(out / f"{theme}-42-passport-editor.png")
+        pe.setProperty("visible", False)
+        h.wait_idle()
+        h.backend.logout()
+        h.wait_idle()
         # Настройки компании (D-26, A-26): администратор, вкладка «Настройки компании».
         h.login("admin")
         h.go("admin")
