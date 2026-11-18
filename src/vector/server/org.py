@@ -14,16 +14,16 @@
     org.member_set   {user_id, unit_id?, position?}                       — включить сотрудника в подразделение,
                                                                           перевести или (unit_id пусто) вывести
 
-Право org.manage — администратор (временное правило D-44: справочник оргструктуры ведёт тот, кто ведёт учётные
-записи; вопрос владельцу A-50). Читают все вошедшие (pull: org_units, org_members, org_events — справочник
+Право org.manage — у всех, у кого есть роль «Администратор» (ответ владельца на A-50 п. 1, D-45). Читают все вошедшие (pull: org_units, org_members, org_events — справочник
 компании, без прав и контактов).
 
-Главное следствие (D-44): дневной отчёт сотрудника, включённого в оргструктуру, уходит руководителю ЕГО
+Главное следствие (D-44, D-45): дневной отчёт сотрудника, включённого в оргструктуру, уходит руководителю ЕГО
 подразделения (или ближайшего вышестоящего — если своего нет, он отключён или это сам автор), а не всем
-руководителям отделов. Принять или вернуть отчёт может руководитель любого подразделения выше по цепочке (или его
-замещающий, D-34) — при роли «Руководитель отдела». Руководитель подразделения без этой роли в маршруте
-пропускается (отчёт идёт выше). Сотрудники вне оргструктуры и те, у кого по цепочке нет ни одного руководителя с
-ролью, — по прежнему правилу D-42 (все руководители отделов): отчёт никогда не «повисает» (A-37).
+руководителям отделов. Принять или вернуть отчёт может руководитель любого подразделения выше по цепочке или
+замещающий руководителя по роли (D-34). Отдельная роль для этого не нужна: руководитель подразделения проверяет
+отчёты своих сотрудников потому, что он их руководитель (ответ владельца на A-50 п. 2). Сотрудники вне
+оргструктуры и те, у кого по цепочке нет ни одного руководителя, — по прежнему правилу D-42 (все руководители
+отделов по роли): отчёт никогда не «повисает» (A-37).
 """
 from __future__ import annotations
 
@@ -35,8 +35,8 @@ import sqlalchemy as sa
 from vector.core import org as og
 from vector.core.errors import Denied, Rejected
 
-from .authz import Authority, active_delegated, active_grants
-from .db import org_events, org_members, org_units, role_delegations, role_grants, users
+from .authz import Authority, active_delegated
+from .db import org_events, org_members, org_units, role_delegations, users
 from .validation import iso, only_keys, req_uuid
 
 # Сколько последних изменений оргструктуры приходит в pull (история на экране «Оргструктура»).
@@ -67,16 +67,16 @@ class OrgMixin:
         """Подразделение сотрудника (основное место работы) или None — вне оргструктуры."""
         return conn.execute(sa.select(org_members.c.unit_id).where(org_members.c.user_id == user_id)).scalar()
 
-    def _reviewer_ids(self, conn, now) -> set[str]:
-        """Кто может быть проверяющим по маршруту: активная учётная запись и СВОЯ действующая роль «Руководитель
-        отдела». Руководитель подразделения без этой роли (например, коммерческий директор во главе службы) в маршруте
-        пропускается — отчёт идёт выше, а если выше никого — по общему правилу D-42; так отчёт никогда не уходит
-        тому, кто не может его принять (A-37)."""
-        rg = role_grants
-        q = (sa.select(rg.c.user_id).join(users, users.c.id == rg.c.user_id)
-             .where(rg.c.role == "dept_head", users.c.active == sa.true(), rg.c.revoked_at.is_(None),
-                    rg.c.valid_from <= now, sa.or_(rg.c.valid_until.is_(None), rg.c.valid_until > now)))
-        return {r.user_id for r in conn.execute(q)}
+    def _active_user_ids(self, conn) -> set[str]:
+        """Активные учётные записи. Проверяющим по маршруту может быть только тот, кто может войти: отключённый
+        руководитель пропускается — отчёт идёт выше (A-37: отсутствие человека не останавливает работу)."""
+        return {r.id for r in conn.execute(sa.select(users.c.id).where(users.c.active == sa.true()))}
+
+    def _is_org_head(self, conn, uid: str) -> bool:
+        """Руководит ли пользователь хотя бы одним действующим подразделением (D-45: этого достаточно, чтобы видеть и
+        проверять отчёты своих сотрудников — отдельная роль не нужна)."""
+        return conn.execute(sa.select(org_units.c.id).where(org_units.c.head_user_id == uid,
+                                                            org_units.c.active == sa.true()).limit(1)).first() is not None
 
     def v_org_unit(self, u: dict, members: int = 0) -> dict:
         """Подразделение для клиента: вид, название, код, «входит в», руководитель, действует ли, версия."""
@@ -88,24 +88,29 @@ class OrgMixin:
     # ------------------------------------------------------------ маршрут дневного отчёта (D-44)
     def _report_route(self, conn, author_id: str, now) -> Optional[dict]:
         """Кто проверяет отчёты автора: {unit_id, head_user_id} — руководитель его подразделения или ближайшего
-        вышестоящего (без самого автора; только тот, кто может принять — _reviewer_ids); None — автор вне
-        оргструктуры или выше никого."""
+        вышестоящего (без самого автора, только активная учётная запись); None — автор вне оргструктуры или выше
+        никого. Роль «Руководитель отдела» для этого не нужна (ответ владельца на A-50 п. 2, D-45)."""
         unit = self._org_unit_of(conn, author_id)
         if unit is None:
             return None
-        ok = self._reviewer_ids(conn, now)
+        ok = self._active_user_ids(conn)
         return og.review_route(self._org_units(conn), unit, author_id, lambda u: u in ok)
 
-    def _chain_heads(self, conn, author_id: str, now) -> Optional[list[str]]:
-        """Руководители подразделений по цепочке вверх от подразделения автора (действующие подразделения, без самого
-        автора, только те, кто может принять — _reviewer_ids) — кто вправе принять или вернуть его отчёт. None —
-        автор вне оргструктуры или по цепочке нет ни одного такого руководителя: тогда действует общее правило D-42
-        (все руководители отделов), чтобы отчёт никогда не «повисал» (A-37)."""
+    def _chain(self, conn, author_id: str) -> Optional[list[tuple[str, str]]]:
+        """Руководители по цепочке вверх от подразделения автора: [(id подразделения, руководитель)] — действующие
+        подразделения, активные учётные записи, без самого автора и без повторов; первый — тот, кому уходит отчёт.
+        Все они вправе принять или вернуть отчёт (руководители выше — для статистики и подстраховки). None — автор
+        вне оргструктуры или по цепочке нет ни одного руководителя: тогда действует общее правило D-42 (все
+        руководители отделов по роли), чтобы отчёт никогда не «повисал» (A-37)."""
         unit = self._org_unit_of(conn, author_id)
         if unit is None:
             return None
-        ok = self._reviewer_ids(conn, now)
-        return og.chain_heads(self._org_units(conn), unit, author_id, lambda u: u in ok) or None
+        units, ok, out = self._org_units(conn), self._active_user_ids(conn), []
+        for uid in og.ancestors(units, unit):
+            head = units[uid].get("head_user_id")
+            if units[uid]["active"] and head and head != author_id and head in ok and head not in {h for _, h in out}:
+                out.append((uid, head))
+        return out or None
 
     def _deputies_of(self, conn, holder_ids: list[str], now) -> list[str]:
         """Кто сейчас замещает роль «Руководитель отдела» у кого-то из holder_ids (D-34) — они получают отчёты наравне
@@ -133,16 +138,20 @@ class OrgMixin:
                                           if d != author_id]
 
     def _review_authority(self, conn, uid: str, author_id: str, now) -> Optional[Authority]:
-        """Основание принять / вернуть отчёт автора, если автор в оргструктуре: руководитель подразделения по цепочке
-        со СВОЕЙ ролью «Руководитель отдела» или замещающий такого руководителя (основание — замещение, «за кого»).
+        """Основание принять / вернуть отчёт автора, если автор в оргструктуре (D-44, D-45):
+
+        * руководитель подразделения по цепочке автора — основание «руководитель подразделения» (org_head), роль
+          «Руководитель отдела» не нужна (ответ владельца на A-50 п. 2: «отчёт должен уходить руководителю отдела»);
+        * замещающий такого руководителя по роли «Руководитель отдела» (D-34) — основание «замещение, за кого».
+
         None — автор вне оргструктуры (проверка — по матрице прав, как в D-42). Нет права — Denied."""
-        heads = self._chain_heads(conn, author_id, now)
-        if heads is None:
+        chain = self._chain(conn, author_id)
+        if chain is None:
             return None
-        if uid in heads:
-            for gid, role in active_grants(conn, uid, now):
-                if role == "dept_head":
-                    return Authority("global_role", role, gid)
+        for unit_id, head in chain:
+            if head == uid:
+                return Authority("org_head", "org_head", 0, unit_id=unit_id)
+        heads = {h for _, h in chain}
         for gid, role, did, holder in active_delegated(conn, uid, now):
             if role == "dept_head" and holder in heads:
                 return Authority("delegated_role", role, gid, did, holder)
@@ -150,20 +159,21 @@ class OrgMixin:
                                       "либо его замещающий. Сотрудник — не из ваших подразделений.",
                      {"author_id": author_id})
 
-    def _review_scope(self, conn, uid: str, now):
-        """Функция «видит ли руководитель uid отправленные отчёты автора»: автор вне оргструктуры (или без
-        руководителей по цепочке) — да (правило D-42); иначе — если uid или тот, кого он замещает в роли
-        «Руководитель отдела» (D-34), руководит подразделением по цепочке автора. Считается один раз на pull."""
+    def _review_scope(self, conn, uid: str, now, by_role: bool):
+        """Функция «видит ли uid отправленные отчёты автора». Автор вне оргструктуры (или без руководителей по
+        цепочке) — только руководители отделов по роли (by_role, правило D-42); иначе — если uid или тот, кого он
+        замещает в роли «Руководитель отдела» (D-34), руководит подразделением по цепочке автора. Считается один раз
+        на pull."""
         units = self._org_units(conn)
         placed = {r.user_id: r.unit_id for r in conn.execute(sa.select(org_members.c.user_id, org_members.c.unit_id))}
-        ok = self._reviewer_ids(conn, now)
+        ok = self._active_user_ids(conn)
         heads = {uid} | {holder for _, role, _, holder in active_delegated(conn, uid, now) if role == "dept_head"}
 
         def visible(author_id: str) -> bool:
             if author_id not in placed:
-                return True
+                return by_role
             chain = og.chain_heads(units, placed[author_id], author_id, lambda u: u in ok)
-            return not chain or bool(heads & set(chain))
+            return bool(heads & set(chain)) if chain else by_role
         return visible
 
     # ------------------------------------------------------------ журнал

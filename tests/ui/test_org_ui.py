@@ -79,3 +79,18 @@ def test_admin_creates_unit_and_places_employee(ui, qml_warnings):  # noqa: F811
     assert [(m["name"], m["position"]) for m in card["members_list"]] == [("Соколов Никита", "Наладчик")]
     assert "Соколов Никита" not in [p["label"] for p in _v(page, "ov")["unplaced"]]
     assert qml_warnings == []
+
+
+def test_unit_head_without_role_reviews_own_staff(ui, qml_warnings):  # noqa: F811
+    """D-45 (ответ на A-50 п. 2): v.zaitseva руководит «Коммерческой службой» без роли «Руководитель отдела» — у неё
+    в «Рабочем времени» есть вкладка «На проверке»; отчёты i.belova теперь проверяет она."""
+    ui.login("v.zaitseva")
+    ui.go("worktime")
+    wv = _v(ui.backend, "worktimeOverview")
+    assert wv["reviewer"] is True and [t["id"] for t in wv["tabs"]] == ["mine", "review"]
+    ui.backend.logout()
+    ui.wait_idle()
+    ui.login("i.belova")
+    page = _page(ui)
+    assert _v(page, "ov")["mine"]["text"].endswith("Дневные отчёты проверяет Зайцева Вера.")
+    assert qml_warnings == []

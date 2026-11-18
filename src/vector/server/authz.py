@@ -43,13 +43,16 @@ class Authority:
     * role — код роли (gip, rp, warehouse…);
     * ref_id — id выдачи роли / назначения (для замещения — выдача роли или назначение НОСИТЕЛЯ). Отзыв и повторная выдача дают
       новый id, поэтому старые согласования не «оживают» (решение владельца);
-    * delegation_id, on_behalf_of — замещение и носитель роли (только для delegated_role / delegated_project_role).
+    * delegation_id, on_behalf_of — замещение и носитель роли (только для delegated_role / delegated_project_role);
+    * unit_id — подразделение, которым руководит пользователь (только для org_head: руководитель подразделения
+      проверяет дневные отчёты своих сотрудников без отдельной роли — D-45, ответ владельца на A-50 п. 2).
     """
-    kind: str      # global_role | delegated_role | project_role | delegated_project_role | self
+    kind: str      # global_role | delegated_role | project_role | delegated_project_role | org_head | self
     role: str
     ref_id: int
     delegation_id: Optional[int] = None
     on_behalf_of: Optional[str] = None
+    unit_id: Optional[str] = None
 
     def describe(self) -> str:
         """Короткая машинная запись основания для журнала: «global_role:warehouse#grant:9»,
@@ -57,6 +60,8 @@ class Authority:
         """
         if self.kind == "self":
             return "self"
+        if self.kind == "org_head":
+            return f"org_head#unit:{self.unit_id}"
         if self.kind == "delegated_role":
             return f"{self.kind}:{self.role}#grant:{self.ref_id}#delegation:{self.delegation_id}"
         if self.kind == "delegated_project_role":

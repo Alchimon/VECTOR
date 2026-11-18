@@ -351,6 +351,15 @@ def check_org(rep: Report, sessions: dict) -> None:
     else:
         rep.warn("отчёты d.kuznetsov проверяет не e.orlova — оргструктуру меняли; маршрут: «Оргструктура» → строка "
                  "под заголовком")
+    # D-45 (ответ владельца на A-50 п. 2): руководитель подразделения проверяет отчёты своих сотрудников без роли.
+    head_wo_role = sessions.get("v.zaitseva")
+    if head_wo_role is not None and any(u.get("head_user_id") == head_wo_role.user_id and u.get("active") for u in units):
+        if head_wo_role.get_meta("worktime_reviewer") is True:
+            rep.ok("v.zaitseva (руководитель коммерческой службы, без роли «Руководитель отдела») проверяет отчёты "
+                   "своих сотрудников")
+        else:
+            rep.fail("v.zaitseva руководит подразделением, но не может проверять отчёты сотрудников — сервер старой "
+                     "версии? Обновите стенд (update.cmd) и повторите")
 
 
 def finish(rep: Report, tmp=None) -> int:

@@ -1036,6 +1036,11 @@ class Backend(QObject):
             return "—"
         if authority == "self":
             return "собственная учётная запись"
+        # Руководитель подразделения (D-45): проверяет отчёты своих сотрудников без отдельной роли.
+        d = re.fullmatch(r"org_head#unit:([\w-]+)", authority)
+        if d:
+            unit = next((u for u in self._stock.get("org_units") or [] if u.get("id") == d.group(1)), None)
+            return f"руководитель подразделения «{unit['name']}»" if unit else "руководитель подразделения"
         # Замещение (D-34): роль носителя, полученная на срок.
         d = re.fullmatch(r"delegated_role:([a-z_]+)#grant:(\w+)#delegation:(\w+)", authority)
         if d:

@@ -337,16 +337,24 @@ class WorktimeMixin:
     def _report_review(self, ctx, p, ev):
         """report.review {id, decision (accept|return), comment?} — руководитель отдела, не автор: «Принят» или
         «Возвращён» (причина обязательна). Уведомление автору. Автор в оргструктуре — проверяет руководитель
-        подразделения по его цепочке или замещающий такого руководителя (D-44); вне оргструктуры — любой
-        руководитель отдела (D-42)."""
+        подразделения по его цепочке (роль для этого не нужна — D-45, ответ владельца на A-50 п. 2) или замещающий
+        такого руководителя (D-44); вне оргструктуры — любой руководитель отдела по роли (D-42)."""
         only_keys(p, {"id", "decision", "comment"})
-        auth = self.policy.check(ctx.conn, ctx.user_id, "report.review", ctx.now)
+        by_role = self.policy.can(ctx.conn, ctx.user_id, "report.review", ctx.now)
+        if not by_role and not self._is_org_head(ctx.conn, ctx.user_id):
+            self.policy.check(ctx.conn, ctx.user_id, "report.review", ctx.now)   # не руководитель — отказ по матрице прав
+        auth = self.policy.check(ctx.conn, ctx.user_id, "report.review", ctx.now) if by_role else None
         o = self._require(ctx.conn, daily_reports, req_uuid(p, "id"), "Дневной отчёт")
         self._check_version(o, ev, lambda x: self.v_daily_report(ctx.conn, x))
         self._report_state(ctx.conn, o, "submitted")
         if o["user_id"] == ctx.user_id:
             raise Denied("four_eyes", "Свой дневной отчёт проверяет другой руководитель («четыре глаза»).")
         auth = self._review_authority(ctx.conn, ctx.user_id, o["user_id"], ctx.now) or auth
+        if auth is None:
+            # Руководитель подразделения без роли, а автор вне оргструктуры: такой отчёт — руководителям отделов (D-42).
+            raise Denied("not_your_unit", "Этот сотрудник не включён в оргструктуру — его отчёт проверяет руководитель "
+                                          "отдела (по роли). Сотрудник — не из ваших подразделений.",
+                         {"author_id": o["user_id"]})
         dec = p.get("decision")
         if dec not in ("accept", "return"):
             raise Rejected("invalid_decision", "Решение — «Принять» или «Вернуть».", {"field": "decision"})
@@ -367,12 +375,14 @@ class WorktimeMixin:
 
     # ------------------------------------------------------------ pull
     def _pull_worktime(self, conn, uid: str, now) -> dict:
-        """Свои отчёты за PULL_DAYS дней; руководителю отдела — ещё и отправленные (не черновики и не на самопроверке)
-        чужие — сотрудников его подразделений и вне оргструктуры (D-44); проекты, где
-        сотрудник участник (для строк отчёта); может ли он проверять отчёты."""
+        """Свои отчёты за PULL_DAYS дней; проверяющему — ещё и отправленные (не черновики и не на самопроверке) чужие:
+        руководителю подразделения — сотрудников по цепочке вниз (D-44, D-45: роль не нужна), руководителю отдела по
+        роли — ещё и вне оргструктуры (D-42); проекты, где сотрудник участник (для строк отчёта); может ли он
+        проверять отчёты."""
         since = (now - timedelta(days=PULL_DAYS)).date()
         dr = daily_reports
-        reviewer = self.policy.can(conn, uid, "worktime.read_all", now)
+        by_role = self.policy.can(conn, uid, "worktime.read_all", now)
+        reviewer = by_role or self._is_org_head(conn, uid)
         cond = dr.c.user_id == uid
         if reviewer:
             # Черновики и отчёты на самопроверке — личное дело автора, пока он их не отправил.
@@ -380,7 +390,7 @@ class WorktimeMixin:
         rows = list(conn.execute(sa.select(dr).where(cond, dr.c.work_date >= since).order_by(dr.c.work_date.desc(), dr.c.user_id)))
         if reviewer:
             # Оргструктура (D-44): чужие отчёты — только сотрудников своих подразделений (и вне оргструктуры).
-            visible = self._review_scope(conn, uid, now)
+            visible = self._review_scope(conn, uid, now, by_role)
             rows = [r for r in rows if r.user_id == uid or visible(r.user_id)]
         mine = [{"id": r.id, "code": r.code, "title": r.title}
                 for r in conn.execute(sa.select(projects.c.id, projects.c.code, projects.c.title).order_by(projects.c.code))

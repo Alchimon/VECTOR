@@ -1,6 +1,7 @@
 """Оргструктура (этап 7, R-21; D-44 — ответ владельца на A-48 п. 1): подразделения (филиалы, структуры, отделы),
 связи «входит в» без кругов, руководители и сотрудники, архив, журнал; маршрут дневного отчёта — руководителю
-своего подразделения (или вышестоящего), а не всем руководителям отделов; замещение руководителя; pull."""
+своего подразделения (или вышестоящего, роль для этого не нужна — D-45), а не всем руководителям отделов; замещение
+руководителя; pull."""
 import sqlalchemy as sa
 
 from conftest import new_id
@@ -160,22 +161,40 @@ def test_pull_org_for_everyone(world, proj):  # noqa: F811
     assert pull(world.admin)["org_me"]["manage"] is True
 
 
-def test_head_without_review_role_is_skipped(world, proj):  # noqa: F811
-    """Руководитель подразделения без роли «Руководитель отдела» (ГИП во главе группы) отчёт принять не может — он
-    пропускается, отчёт уходит выше; выше никого — по общему правилу (отчёт не «повисает», A-37)."""
+def test_unit_head_reviews_without_role(world, proj):  # noqa: F811
+    """D-45 (ответ владельца на A-50 п. 2: «отчёт должен уходить руководителю отдела»): руководитель подразделения
+    проверяет отчёты своих сотрудников БЕЗ роли «Руководитель отдела» — получает уведомление, видит отчёт в pull и
+    принимает его; основание в истории — «руководитель подразделения». Чужие отчёты (вне оргструктуры, соседний отдел)
+    он не видит и проверить не может. Отключённый руководитель пропускается — отчёт уходит выше (A-37)."""
     a, u = world.admin, world.users
     o = org(world)
     grp = unit(a, "department", "Группа ГИП", o["D1"], u["gip1"])
     a.ok("org.member_set", {"user_id": u["eng1"], "unit_id": grp})
-    assert pull(proj.eng)["org_me"]["reviewer_id"] == u["head1"]
+    gip = world.login("gip1")
+    assert pull(proj.eng)["org_me"]["reviewer_id"] == u["gip1"]
     rid = create(proj.eng)["result"]["daily_report"]["id"]
     proj.eng.ok("report.submit", {"id": rid, "self_check": SC}, expected_version=1)
-    assert notes(world, u["head1"], "report_submitted") and not notes(world, u["gip1"], "report_submitted")
-    # Корневой отдел, где руководитель — без роли: проверяют все руководители отделов.
-    top = unit(a, "department", "Бухгалтерия", None, u["gip1"])
-    a.ok("org.member_set", {"user_id": u["acc1"], "unit_id": top})
+    assert notes(world, u["gip1"], "report_submitted") and not notes(world, u["head1"], "report_submitted")
+    st = pull(gip)
+    assert st["worktime_reviewer"] is True and [r["id"] for r in st["daily_reports"] if r["user_id"] == u["eng1"]] == [rid]
+    # Сотрудник вне оргструктуры: его отчёт — руководителям отделов по роли; руководитель без роли его не видит.
     acc = world.login("acc1")
-    rid = create(acc)["result"]["daily_report"]["id"]
-    acc.ok("report.submit", {"id": rid, "self_check": SC}, expected_version=1)
-    assert notes(world, u["head2"], "report_submitted")
-    world.login("head2").ok("report.review", {"id": rid, "decision": "accept"}, expected_version=2)
+    other = create(acc)["result"]["daily_report"]["id"]
+    acc.ok("report.submit", {"id": other, "self_check": SC}, expected_version=1)
+    assert other not in [r["id"] for r in pull(gip)["daily_reports"]]
+    assert gip.cmd("report.review", {"id": other, "decision": "accept"}, expected_version=2)["code"] == "not_your_unit"
+    # Свой сотрудник — принимает; основание — руководитель подразделения (без выдачи роли).
+    r = gip.ok("report.review", {"id": rid, "decision": "accept"}, expected_version=2)["daily_report"]
+    assert r["status"] == "accepted"
+    with world.svc.engine.connect() as c:
+        auth = c.execute(sa.select(db.daily_report_events.c.authority).where(
+            db.daily_report_events.c.report_id == rid, db.daily_report_events.c.decision == "accepted")).scalar()
+    assert auth == f"org_head#unit:{grp}"
+    # Руководители выше по цепочке (head1 — руководитель «Отдела АСУ ТП») тоже видят отчёт — для статистики.
+    assert rid in [x["id"] for x in pull(world.login("head1"))["daily_reports"]]
+    # Не руководитель и без роли — отказ по матрице прав, как раньше.
+    assert world.login("rp1").cmd("report.review", {"id": rid, "decision": "accept"}, expected_version=3)["status"] == "denied"
+    # Отключённый руководитель группы пропускается: отчёт уходит руководителю «Отдела АСУ ТП».
+    with world.svc.engine.begin() as c:
+        c.execute(sa.update(db.users).where(db.users.c.id == u["gip1"]).values(active=False))
+    assert pull(proj.eng)["org_me"]["reviewer_id"] == u["head1"]

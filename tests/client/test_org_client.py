@@ -63,3 +63,14 @@ def test_events_labels_and_cache_keys():
     assert (v["events"][0]["object"], v["events"][0]["unit"], v["events"][0]["who"]) == ("Кузнецов Дмитрий", "Отдел АСУ ТП", "Орлова Елена")
     assert v["events"][0]["when"].startswith("сегодня") and v["events"][1]["object"] == "Отдел АСУ ТП"
     assert {"org_units", "org_members", "org_events", "org_me"} <= set(STOCK_META)
+
+
+def test_authority_label_for_unit_head():
+    """«Основание доступа» в истории отчёта (D-45): руководитель подразделения — с названием из кэша, без кодов."""
+    from types import SimpleNamespace
+
+    from vector.client.backend import Backend
+    fn = Backend.__dict__["authorityLabel"]
+    me = SimpleNamespace(_stock={"org_units": [{"id": "11111111-2222-3333-4444-555555555555", "name": "Отдел АСУ ТП"}]})
+    assert fn(me, "org_head#unit:11111111-2222-3333-4444-555555555555") == "руководитель подразделения «Отдел АСУ ТП»"
+    assert fn(SimpleNamespace(_stock={}), "org_head#unit:abc") == "руководитель подразделения"
