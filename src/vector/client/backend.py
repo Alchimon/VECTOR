@@ -864,7 +864,7 @@ class Backend(QObject):
     def saveReport(self, tag: str, payload):
         """«Сохранить отчёт»: через очередь (можно без связи); создание или правка — решает SyncClient.save_report_draft.
         payload — форма {id?, work_date, shift_start, shift_end, break_minutes, comment, lines: [{project_id, task_id,
-        hours, note}]}; часы переводятся в минуты здесь (те же правила, что в проверке формы)."""
+        hours, note, source?, orig?}]}; часы переводятся в минуты здесь (те же правила, что в проверке формы)."""
         p = _plain(payload.toVariant() if hasattr(payload, "toVariant") else payload)
         f = worktime_view.report_form(p)
         if not f["ok"]:
@@ -879,12 +879,16 @@ class Backend(QObject):
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, "report.save", res))
 
-    @Slot(str, str)
-    def submitReport(self, tag: str, report_id: str):
-        """«Отправить на проверку»: report.submit через очередь (можно без связи); версия — по цепочке очереди."""
+    @Slot(str, str, "QVariantMap")
+    def submitReport(self, tag: str, report_id: str, self_check):
+        """«Самопроверка и отправка»: report.submit {id, self_check} через очередь (можно без связи); версия — по цепочке
+        очереди. self_check — отметки формы {shift, lines, hours} (A-48 п. 4: все обязательны, проверит и сервер)."""
+        sc = _plain(self_check.toVariant() if hasattr(self_check, "toVariant") else self_check) or {}
+        sc = {k: v is True for k, v in sc.items()}
+
         def job():
             """Отправить отчёт в рабочем потоке и снять снимок данных."""
-            r = self.client.submit_report(report_id)
+            r = self.client.submit_report(report_id, sc)
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, "report.submit", res))
 
@@ -1214,6 +1218,10 @@ class Backend(QObject):
                     self.toast.emit("info", "Нет связи с сервером. Изменения сохранены в очереди.")
                 elif rep.get("accepted"):
                     self.toast.emit("success", f"Отправлено изменений: {rep['accepted']}.")
+                if rep.get("assembled"):
+                    # D-43: программа собрала отчёты за прошедшие дни — их надо проверить (раздел «Рабочее время»).
+                    self.toast.emit("info", f"Собрано дневных отчётов по вашим действиям: {rep['assembled']} — "
+                                            "проверьте их в разделе «Рабочее время».")
         self._run(lambda: self._snapshot(True), done)
 
     @Slot()

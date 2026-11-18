@@ -84,6 +84,8 @@ KIND_LABELS_RU = {
     "report_accepted": "Дневной отчёт принят",
     "report_returned": "Дневной отчёт возвращён",
     "report_reopened": "Принятый отчёт исправляется",
+    # D-43: программа собрала отчёт за прошедший день — сотруднику пройти самопроверку.
+    "report_assembled": "Отчёт собран — проверьте",
 }
 
 
@@ -126,8 +128,11 @@ class NotificationMixin:
 
     # ------------------------------------------------------------ создание
     def _notify(self, ctx, user_ids: Iterable[Optional[str]], kind: str, title: str, body: Optional[str] = None,
-                object_type: Optional[str] = None, object_id: Optional[str] = None) -> int:
+                object_type: Optional[str] = None, object_id: Optional[str] = None, include_actor: bool = False) -> int:
         """Создать уведомление каждому из user_ids (без повторов, кроме автора действия и отключённых учёток).
+
+        include_actor — уведомить и самого автора действия: программа сотрудника собрала его отчёт без него
+        (D-43, «Отчёт собран — проверьте»), напоминание должно остаться в его уведомлениях.
 
         Вызывается из обработчика команды — запись идёт в транзакции команды. Возвращает число созданных записей.
         """
@@ -136,7 +141,7 @@ class NotificationMixin:
         seen: set[str] = set()
         n = 0
         for uid in user_ids:
-            if not uid or uid == ctx.user_id or uid in seen:
+            if not uid or (uid == ctx.user_id and not include_actor) or uid in seen:
                 continue
             seen.add(uid)
             u = self._get(ctx.conn, users, uid)

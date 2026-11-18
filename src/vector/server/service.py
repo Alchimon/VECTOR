@@ -1234,11 +1234,12 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             k = self._get(conn, table, oid)
             pid = k["project_id"] if k else None
         if otype == "daily_report":
-            # Дневной отчёт: автор — всегда; руководитель отдела — отправленный (не черновик) чужой (D-42).
+            # Дневной отчёт: автор — всегда; руководитель отдела — отправленный чужой (не черновик и не на
+            # самопроверке — D-42, D-43).
             r = self._get(conn, db.daily_reports, oid)
             if r is not None and r["user_id"] == uid:
                 action = "report.create"
-            elif r is not None and r["status"] == "draft":
+            elif r is not None and r["status"] in ("draft", "self_check"):
                 action = None
         if not action or not self.policy.can(conn, uid, action, now, pid):
             return {"status": "denied", "code": "no_authority", "message_ru": "Нет права на просмотр истории этого объекта."}

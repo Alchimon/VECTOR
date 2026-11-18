@@ -1,4 +1,4 @@
-"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-17).
+"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-18).
 
 Запускается ПОСЛЕ установки, при запущенном сервере стенда, Python-ом из окружения стенда:
 
@@ -291,14 +291,15 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 rep.warn("нет рекламации на партию или со сроком ответа — " + FRESH_HINT)
 
-    print("\n9. Рабочее время: дневные отчёты и проверка руководителем отдела (D-42, П-17)")
+    print("\n9. Рабочее время: дневные отчёты, собранный программой отчёт и проверка руководителем отдела (D-42, D-43, П-17)")
     check_worktime(rep, sessions)
     return finish(rep, tmp)
 
 
 def check_worktime(rep: Report, sessions: dict) -> None:
     """Раздел 9: руководитель отдела e.orlova может проверять отчёты и видит отправленные; у d.kuznetsov есть свои
-    отчёты. Только чтение (pull уже сделан в разделе 2) — самопроверка ничего не меняет."""
+    отчёты; среди них — собранный программой «На самопроверке» (D-43), руководителю он не виден. Только чтение (pull
+    уже сделан в разделе 2; сборку отчётов запускает только синхронизация клиента) — самопроверка ничего не меняет."""
     head, eng = sessions.get("e.orlova"), sessions.get("d.kuznetsov")
     if head is None or eng is None:
         rep.warn("нет входа e.orlova или d.kuznetsov — раздел «Рабочее время» не проверить")
@@ -314,6 +315,13 @@ def check_worktime(rep: Report, sessions: dict) -> None:
         rep.ok(f"e.orlova: отчётов на проверке — {len(waiting)}; у d.kuznetsov своих отчётов — {len(own)}")
     else:
         rep.warn("нет дневных отчётов на проверке — " + FRESH_HINT)
+    auto = [r for r in own if r.get("status") == "self_check" and r.get("origin") == "auto"]
+    if auto and any(r.get("status") == "self_check" for r in head.list_local("daily_report") if r.get("user_id") != me):
+        rep.fail("руководитель отдела видит чужой отчёт «На самопроверке» — он должен быть виден только автору")
+    elif auto:
+        rep.ok(f"d.kuznetsov: собранных программой отчётов на самопроверке — {len(auto)}; руководителю не видны")
+    else:
+        rep.warn("нет отчёта, собранного программой (D-43) — " + FRESH_HINT)
 
 
 def finish(rep: Report, tmp=None) -> int:
@@ -328,7 +336,7 @@ def finish(rep: Report, tmp=None) -> int:
         print(f"ИТОГ: стенд работает; предупреждений {len(rep.warnings)} — часть сценариев на этих данных не проверить "
               "(см. выше).")
     else:
-        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-17; сценарии — test-pc.md § 6).")
+        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-18; сценарии — test-pc.md § 6).")
     return 0
 
 

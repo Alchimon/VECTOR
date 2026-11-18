@@ -208,7 +208,7 @@ def _plain(v):
 
 
 def main():
-    """Снять скриншоты 01–48 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
+    """Снять скриншоты 01–50 в светлой и тёмной теме в каталог --out (по умолчанию docs/screenshots)."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "docs" / "screenshots"))
     args = ap.parse_args()
@@ -530,6 +530,16 @@ def main():
         h.wait_idle()
         h.shot(out / f"{theme}-48-worktime-editor.png")
         ed.setProperty("visible", False)
+        h.wait_idle()
+        # D-43: отчёт за позавчера, собранный программой («На самопроверке», источники строк), и форма самопроверки.
+        h.go("worktime", h.ids["daily_reports"][4])
+        h.shot(out / f"{theme}-49-worktime-assembled.png")
+        sf = next(o for o in h.win.findChildren(QObject) if o.objectName() == "reportSubmitForm")
+        QMetaObject.invokeMethod(sf, "openFor")
+        sf.setProperty("marks", {"shift": True, "lines": True})
+        h.wait_idle()
+        h.shot(out / f"{theme}-50-worktime-self-check.png")
+        sf.setProperty("visible", False)
         h.wait_idle()
         h.backend.logout()
         h.wait_idle()

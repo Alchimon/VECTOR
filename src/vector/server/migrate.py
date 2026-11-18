@@ -15,6 +15,10 @@
    Единственное исключение — v18 → v19 (D-40, ответ владельца на A-46 «рекламации без серийного номера бывают»):
    у claims.instance_id снимается ограничение NOT NULL. Данные при этом не меняются (существующие строки уже
    удовлетворяют более слабому ограничению), ограничение только ослабляется; см. _relax_claim_instance.
+   Так же v20 → v21 (D-43, ответы владельца на A-48): у daily_reports ослабляются два CHECK-ограничения — статус
+   «на самопроверке» и ночная смена (_replace_checks); существующие строки им уже удовлетворяют. Столбцы
+   существующих таблиц не добавляются (копия и восстановление берут список столбцов из описания схемы) — новые
+   данные лежат в новых таблицах.
 4. **Fail-closed.** Неизвестная/более новая версия, незавершённое восстановление, уже существующая таблица,
    которую шаг должен создать, — отказ без изменений.
 
@@ -81,6 +85,8 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     19: [db.claim_terms, db.claim_responses],
     # Рабочее время: дневные отчёты, их строки и журнал шагов (D-42).
     20: [db.daily_reports, db.daily_report_lines, db.daily_report_events],
+    # Отчёт, собранный программой, и источник времени строк (D-43). Плюс ограничения и индекс — см. STEPS[20].
+    21: [db.daily_report_auto, db.daily_report_line_sources],
 }
 
 
@@ -181,6 +187,73 @@ def _v18_to_v19(conn) -> list[str]:
     return _create_tables(ADDED_IN[19])(conn)
 
 
+# Ограничения daily_reports, которые ослабляет шаг v20 → v21: имя (по naming_convention) → (было, стало).
+_V21_CHECKS = {"ck_daily_reports_status": (db.REPORT_STATUS_CHECK_V20, db.REPORT_STATUS_CHECK),
+               "ck_daily_reports_shift": (db.REPORT_SHIFT_CHECK_V20, db.REPORT_SHIFT_CHECK)}
+
+
+def _check_names(conn, table: str) -> set[str]:
+    """Имена CHECK-ограничений таблицы в РЕАЛЬНОЙ БД."""
+    return {c["name"] for c in sa.inspect(conn).get_check_constraints(table) if c.get("name")}
+
+
+def _replace_checks(conn, table: str, changes: dict[str, tuple[str, str]]) -> None:
+    """Заменить CHECK-ограничения таблицы более слабыми (существующие строки им уже удовлетворяют). Данные не меняются.
+
+    * PostgreSQL, MS SQL — ALTER TABLE … DROP CONSTRAINT имя; ADD CONSTRAINT имя CHECK (новое) — внутри общей
+      транзакции миграции; ограничение с таким именем должно существовать;
+    * SQLite — правка текста CREATE TABLE в sqlite_master (writable_schema, как в _relax_claim_instance): каждое
+      прежнее определение «CONSTRAINT имя CHECK (было)» должно встретиться ровно один раз (или уже стоит новое —
+      таблицу создал более ранний шаг той же миграции), иначе — отказ без изменений (fail-closed); затем проверка
+      целостности.
+    """
+    name = conn.dialect.name
+    have = _check_names(conn, table)
+    missing = [n for n in changes if n not in have]
+    if missing:
+        raise MigrationError(f"В таблице {table} нет ограничений {', '.join(missing)} — БД в непредусмотренном "
+                             "состоянии, миграция отменена, изменений нет.")
+    if name in ("postgresql", "mssql"):
+        for cname, (_old, new) in changes.items():
+            conn.exec_driver_sql(f"ALTER TABLE {table} DROP CONSTRAINT {cname}")
+            conn.exec_driver_sql(f"ALTER TABLE {table} ADD CONSTRAINT {cname} CHECK ({new})")
+    elif name == "sqlite":
+        sql = conn.exec_driver_sql("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).scalar() or ""
+        todo = 0
+        for cname, (old, new) in changes.items():
+            frag, done = f"CONSTRAINT {cname} CHECK ({old})", f"CONSTRAINT {cname} CHECK ({new})"
+            if sql.count(done) == 1:
+                continue                  # уже новое (таблицу создал более ранний шаг этой же миграции)
+            if sql.count(frag) != 1:
+                raise MigrationError(f"Определение ограничения {cname} не такое, как ожидалось (SQLite) — миграция "
+                                     "отменена, изменений нет.")
+            sql, todo = sql.replace(frag, done), todo + 1
+        if not todo:
+            return
+        ver = conn.exec_driver_sql("PRAGMA schema_version").scalar()
+        conn.exec_driver_sql("PRAGMA writable_schema=ON")
+        try:
+            conn.exec_driver_sql("UPDATE sqlite_master SET sql=? WHERE type='table' AND name=?", (sql, table))
+            conn.exec_driver_sql(f"PRAGMA schema_version={int(ver) + 1}")
+        finally:
+            conn.exec_driver_sql("PRAGMA writable_schema=OFF")
+        if conn.exec_driver_sql("PRAGMA integrity_check").scalar() != "ok":
+            raise MigrationError("Проверка целостности SQLite после правки схемы не прошла — миграция отменена.")
+    else:  # pragma: no cover — другие СУБД не поддерживаются (db.SUPPORTED)
+        raise MigrationError(f"СУБД {name} не поддерживается.")
+    if not set(changes) <= _check_names(conn, table):
+        raise MigrationError(f"Не удалось заменить ограничения таблицы {table} — миграция отменена, изменений нет.")
+
+
+def _v20_to_v21(conn) -> list[str]:
+    """Шаг v20 → v21 (D-43, ответы на A-48): статус «на самопроверке» и ночная смена (ослабить ограничения
+    daily_reports), индекс журнала аудита «сотрудник + время», таблицы daily_report_auto и daily_report_line_sources."""
+    _replace_checks(conn, "daily_reports", _V21_CHECKS)
+    if db.AUDIT_ACTOR_INDEX.name not in {i["name"] for i in sa.inspect(conn).get_indexes("audit_log")}:
+        db.AUDIT_ACTOR_INDEX.create(conn)
+    return _create_tables(ADDED_IN[21])(conn)
+
+
 # Шаг «из версии N в N+1».
 STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(ADDED_IN[5]),
                               5: _create_tables(ADDED_IN[6]), 6: _create_tables(ADDED_IN[7]),
@@ -189,7 +262,7 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               12: _create_tables(ADDED_IN[13]), 13: _create_tables(ADDED_IN[14]),
                               14: _create_tables(ADDED_IN[15]), 15: _create_tables(ADDED_IN[16]),
                               16: _create_tables(ADDED_IN[17]), 17: _create_tables(ADDED_IN[18]),
-                              18: _v18_to_v19, 19: _create_tables(ADDED_IN[20])}
+                              18: _v18_to_v19, 19: _create_tables(ADDED_IN[20]), 20: _v20_to_v21}
 
 
 @dataclass

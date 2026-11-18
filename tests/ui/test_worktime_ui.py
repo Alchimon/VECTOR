@@ -1,7 +1,8 @@
-"""UI-проверки раздела «Рабочее время» (этап 7, D-42) — настоящий QML, сервер in-process, демо-данные.
+"""UI-проверки раздела «Рабочее время» (этап 7, D-42, D-43) — настоящий QML, сервер in-process, демо-данные.
 
-Демо (_seed_worktime): у d.kuznetsov отчёт за вчера на проверке и черновик за сегодня; у m.lebedev отчёт за позавчера
-принят, за вчера — возвращён с причиной. Проверяет руководитель отдела e.orlova.
+Демо (_seed_worktime): у d.kuznetsov отчёт за вчера на проверке, черновик за сегодня и отчёт за позавчера, собранный
+программой («На самопроверке»); у m.lebedev отчёт за позавчера принят, за вчера — возвращён с причиной. Проверяет
+руководитель отдела e.orlova. Отправка — через форму самопроверки (все отметки обязательны).
 """
 import pytest
 from PySide6.QtCore import QMetaObject
@@ -28,7 +29,7 @@ def test_engineer_fills_today_offline_and_submits(ui, qml_warnings):  # noqa: F8
     ui.login("d.kuznetsov")
     assert ui.nav()["Рабочее время"] is True
     v = _wv(ui)
-    assert [r["status"] for r in v["mine"]] == ["draft", "submitted"] and v["tabs"] == []
+    assert [r["status"] for r in v["mine"]] == ["draft", "submitted", "self_check"] and v["tabs"] == []
     today = v["mine"][0]
     assert today["id"] == v["today_id"] and today["problems"] == [] and today["unallocated_label"] == "5 ч"
     ui.go("worktime", today["id"])
@@ -49,6 +50,12 @@ def test_engineer_fills_today_offline_and_submits(ui, qml_warnings):  # noqa: F8
     today = _wv(ui)["mine"][0]
     assert today["pending"] and today["total_label"] == "8 ч" and today["can_submit"]
     sf = _popup(ui, "reportSubmitForm")
+    _call(sf, "openFor")
+    ui.wait_idle()
+    assert sf.property("canConfirm") is False                       # без самопроверки — не отправить
+    sf.setProperty("marks", {"shift": True, "lines": True, "hours": True})
+    ui.wait_idle()
+    assert sf.property("canConfirm") is True
     _confirm(ui, sf)
     today = _wv(ui)["mine"][0]
     assert today["status"] == "submitted" and ui.backend.property("pendingCount") == 2
@@ -115,4 +122,38 @@ def test_everyone_sees_section_without_projects(ui, qml_warnings):  # noqa: F811
     ui.go("worktime")
     page = ui.find("worktimePage")
     assert page.property("emptyAction") == "Отчёт за сегодня"
+    assert qml_warnings == []
+
+
+def test_assembled_report_self_check_keeps_sources_and_submits(ui, qml_warnings):  # noqa: F811
+    """D-43: собранный программой отчёт — баннер «собран программой», строки «по таймеру» / «оценка программы»;
+    в редакторе отметка источника сохраняется у неизменённой строки и снимается у исправленной; отправка — после
+    самопроверки (форма с отметками); руководитель отдела видит отчёт только после отправки."""
+    ui.login("d.kuznetsov")
+    auto = next(r for r in _wv(ui)["mine"] if r["status"] == "self_check")
+    assert auto["origin"] == "auto" and auto["assembled_label"].startswith("по 14 действиям")
+    assert [ln["source_label"] for ln in auto["lines"]] == ["по таймеру", "оценка программы", "оценка программы"]
+    ui.go("worktime", auto["id"])
+    assert ui.find("reportAssembled").property("visible") is True
+    ed = _popup(ui, "reportEditor")
+    _call(ed, "openFor", auto, auto["work_date"])
+    ui.wait_idle()
+    lines = [{"project_id": ln["project_id"], "task_id": ln["task_id"], "hours": ln["hours_input"], "note": ln["note"],
+              "source": ln["source"], "orig": {"project_id": ln["project_id"], "task_id": ln["task_id"],
+                                               "minutes": ln["minutes"], "note": ln["note"]}} for ln in auto["lines"]]
+    lines[1]["hours"] = "3"                                          # уточнил оценку программы
+    form = {"id": auto["id"], "work_date": auto["work_date"], "shift_start": auto["shift_start"],
+            "shift_end": auto["shift_end"], "break_minutes": str(auto["break_minutes"]), "comment": "", "lines": lines}
+    chk = ui.backend.reportCheck(form)
+    assert [ln.get("source") for ln in chk["data"]["lines"]] == ["measured", None, "estimated"]
+    ui.backend.saveReport("t-save", form)
+    ui.wait_idle()
+    auto = next(r for r in _wv(ui)["mine"] if r["id"] == auto["id"])
+    assert auto["status"] == "self_check" and [ln["source"] for ln in auto["lines"]] == ["measured", "", "estimated"]
+    sf = _popup(ui, "reportSubmitForm")
+    _call(sf, "openFor")
+    sf.setProperty("marks", {"shift": True, "lines": True, "hours": True})
+    ui.wait_idle()
+    _confirm(ui, sf)
+    assert next(r for r in _wv(ui)["mine"] if r["id"] == auto["id"])["status"] == "submitted"
     assert qml_warnings == []

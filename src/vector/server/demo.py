@@ -564,30 +564,43 @@ def _seed_worktime(cmd, login, people, svc, pid) -> dict:
       руководителя отдела e.orlova; за сегодня — черновик (смена и одна строка, можно дополнить и отправить).
     * m.lebedev: отчёт за позавчера принят e.orlova; отчёт за вчера возвращён с причиной — его нужно исправить и
       отправить снова.
+    * D-43: у d.kuznetsov за позавчера — отчёт, собранный программой по действиям за день («На самопроверке»: строка
+      «по таймеру» и строки «оценка программы»); руководителю он уйдёт после самопроверки. Отправка всех отчётов —
+      с отметками самопроверки (A-48 п. 4).
     """
     eng, lead, head = login("d.kuznetsov"), login("m.lebedev"), login("e.orlova")
     today = svc.now().date()
     with svc.engine.connect() as c:
         task_id = c.execute(sa.select(tasks.c.id).where(tasks.c.project_id == pid).order_by(tasks.c.title)).scalar()
 
-    def report(tok, days_ago, lines, start="09:00", end="18:00", brk=60, comment=None):
+    sc = {"shift": True, "lines": True, "hours": True}      # самопроверка перед отправкой — все отметки
+
+    def report(tok, days_ago, lines, start="09:00", end="18:00", brk=60, comment=None, **extra):
         """Создать отчёт за день (days_ago дней назад) и вернуть его (с версией)."""
         return cmd(tok, "report.create", {"id": str(uuid.uuid4()), "work_date": (today - timedelta(days=days_ago)).isoformat(),
                                           "shift_start": start, "shift_end": end, "break_minutes": brk, "lines": lines,
-                                          **({"comment": comment} if comment else {})})["daily_report"]
+                                          **({"comment": comment} if comment else {}), **extra})["daily_report"]
 
     r1 = report(eng, 1, [{"project_id": pid, "task_id": task_id, "minutes": 330, "note": "Схема автоматизации: раздел насосной"},
                          {"project_id": pid, "minutes": 90, "note": "Совещание с заказчиком по замечаниям"},
                          {"minutes": 60, "note": "Обучение по охране труда"}])
-    cmd(eng, "report.submit", {"id": r1["id"]}, r1["version"])
+    cmd(eng, "report.submit", {"id": r1["id"], "self_check": sc}, r1["version"])
     r2 = report(eng, 0, [{"project_id": pid, "task_id": task_id, "minutes": 180, "note": "Схема автоматизации: щит управления"}],
                 end="18:00", comment="Вторую половину дня допишу вечером")
     r3 = report(lead, 2, [{"project_id": pid, "minutes": 420, "note": "Проверка схем подключения"},
                           {"minutes": 60, "note": "Планёрка отдела"}])
-    r3 = cmd(lead, "report.submit", {"id": r3["id"]}, r3["version"])["daily_report"]
+    r3 = cmd(lead, "report.submit", {"id": r3["id"], "self_check": sc}, r3["version"])["daily_report"]
     cmd(head, "report.review", {"id": r3["id"], "decision": "accept"}, r3["version"])
     r4 = report(lead, 1, [{"project_id": pid, "minutes": 480, "note": "Работа по проекту"}], start="08:00", end="17:00")
-    r4 = cmd(lead, "report.submit", {"id": r4["id"]}, r4["version"])["daily_report"]
+    r4 = cmd(lead, "report.submit", {"id": r4["id"], "self_check": sc}, r4["version"])["daily_report"]
     cmd(head, "report.review", {"id": r4["id"], "decision": "return",
                                 "comment": "Распишите по задачам: «работа по проекту» — слишком общо."}, r4["version"])
-    return {"daily_reports": [r1["id"], r2["id"], r3["id"], r4["id"]]}
+    # Собран программой (как это делает клиент сотрудника назавтра): смена по первому и последнему действию.
+    r5 = report(eng, 2, [{"project_id": pid, "minutes": 95, "note": "Наряд · Сборка шкафа управления", "source": "measured"},
+                         {"project_id": pid, "task_id": task_id, "minutes": 240, "source": "estimated",
+                          "note": "Изменить задачу: «Схема автоматизации»; добавить версию документа"},
+                         {"minutes": 125, "source": "estimated", "note": "Прочие действия в программе: уведомления, поиск"}],
+                start="08:45", end="17:15", brk=50, origin="auto",
+                comment="Собран программой по 14 действиям за день — проверьте.",
+                summary={"actions": 14, "measured_minutes": 95, "lines": 3})
+    return {"daily_reports": [r1["id"], r2["id"], r3["id"], r4["id"], r5["id"]]}

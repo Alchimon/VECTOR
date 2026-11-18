@@ -4,6 +4,7 @@
 вносятся обычными командами сервиса (они не касаются таблиц расчётов).
 """
 import uuid
+from datetime import date
 from decimal import Decimal
 
 import pytest
@@ -634,8 +635,8 @@ def test_v19_to_v20_adds_worktime_tables(backend, tmp_path, clock, keys):
                                            password_changed_at=now, failed_attempts=0, active=True, created_at=now))
     before = counts(eng, mg.tables_of_version(19))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
-    assert (rep.from_version, rep.to_version) == (19, 20)
-    assert rep.created_tables == ["daily_reports", "daily_report_lines", "daily_report_events"]
+    assert (rep.from_version, rep.to_version) == (19, db.SCHEMA_VERSION)
+    assert rep.created_tables[:3] == ["daily_reports", "daily_report_lines", "daily_report_events"]
     after = counts(eng, mg.tables_of_version(19))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
 
@@ -658,3 +659,67 @@ def test_v19_to_v20_adds_worktime_tables(backend, tmp_path, clock, keys):
     bad(db.daily_report_events.update().values(decision="x"))                                 # журнал неизменяем
     bad(db.daily_report_events.delete())
     assert db.check_schema(eng) == db.SCHEMA_VERSION
+
+
+def _v20_checks(monkeypatch):
+    """Ограничения daily_reports — как в схеме v20 (до ответов на A-48): без self_check, смена в пределах суток."""
+    old = {"status": db.REPORT_STATUS_CHECK_V20, "shift": db.REPORT_SHIFT_CHECK_V20}
+    for ck in db.daily_reports.constraints:
+        if isinstance(ck, sa.CheckConstraint) and str(ck.name).split("_")[-1] in old:
+            monkeypatch.setattr(ck, "sqltext", sa.text(old[str(ck.name).split("_")[-1]]))
+
+
+def test_v20_to_v21_self_check_night_shift_and_auto_tables(backend, tmp_path, clock, keys, monkeypatch):
+    """v20 → v21 (D-43, ответы на A-48): статус «на самопроверке» и ночная смена (ослабленные ограничения), отметка
+    «собран программой» (неизменяема) и источник времени строк; данные v20 не меняются; индекс журнала по сотруднику."""
+    _v20_checks(monkeypatch)
+    eng = make_v3(backend, tmp_path, clock, version=20)
+    monkeypatch.undo()
+    now, uid, rid = clock.now(), new_id(), new_id()
+    r = dict(user_id=uid, status="draft", break_minutes=0, total_minutes=0, version=1, created_by=uid, created_at=now,
+             updated_by=uid, updated_at=now)
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x", must_change_password=False,
+                                           password_changed_at=now, failed_attempts=0, active=True, created_at=now))
+        c.execute(db.daily_reports.insert().values(id=rid, work_date=now.date(), shift_start=510, shift_end=1050, **r))
+    # До миграции: ночная смена и «на самопроверке» запрещены (схема v20).
+    bad(db.daily_reports.insert().values(id=new_id(), work_date=date(2026, 11, 1), shift_start=1320, shift_end=1800, **r))
+    bad(db.daily_reports.insert().values(id=new_id(), work_date=date(2026, 11, 2), **{**r, "status": "self_check"}))
+    before = counts(eng, mg.tables_of_version(20))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version, rep.created_tables) == (20, 21, ["daily_report_auto", "daily_report_line_sources"])
+    assert rep.backup_path.name.startswith("vector-premigrate-v20-")
+    after = counts(eng, mg.tables_of_version(20))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    with eng.begin() as c:
+        c.execute(db.daily_reports.insert().values(id=new_id(), work_date=date(2026, 11, 1), shift_start=1320, shift_end=1800, **r))
+        c.execute(db.daily_reports.insert().values(id=new_id(), work_date=date(2026, 11, 2), **{**r, "status": "self_check"}))
+        c.execute(db.daily_report_auto.insert().values(report_id=rid, assembled_at=now, summary_json="{}"))
+        c.execute(db.daily_report_line_sources.insert().values(report_id=rid, line_no=1, source="measured"))
+        assert "ix_audit_actor_at" in {i["name"] for i in sa.inspect(c).get_indexes("audit_log")}
+    bad(db.daily_reports.insert().values(id=new_id(), work_date=date(2026, 11, 3), shift_start=600, shift_end=2100, **r))  # > суток
+    bad(db.daily_reports.insert().values(id=new_id(), work_date=date(2026, 11, 4), shift_start=1440, shift_end=1500, **r))
+    bad(db.daily_reports.insert().values(id=new_id(), work_date=date(2026, 11, 5), **{**r, "status": "in_review"}))
+    bad(db.daily_report_line_sources.insert().values(report_id=rid, line_no=2, source="guess"))
+    bad(db.daily_report_auto.update().values(summary_json="[]"))                              # отметка неизменяема
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
+
+
+def test_v20_to_v21_refuses_unexpected_check_definition(tmp_path, clock, keys, monkeypatch):
+    """SQLite: определение ограничения не такое, как ожидалось (правили вручную), — отказ без изменений."""
+    _v20_checks(monkeypatch)
+    for ck in db.daily_reports.constraints:
+        if isinstance(ck, sa.CheckConstraint) and str(ck.name).endswith("status"):
+            monkeypatch.setattr(ck, "sqltext", sa.text("status IN ('draft','submitted','accepted','returned','x')"))
+    eng = make_v3("sqlite", tmp_path, clock, version=20)
+    monkeypatch.undo()
+    with pytest.raises(mg.MigrationError, match="не такое, как ожидалось"):
+        mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    with eng.connect() as c:
+        assert mg.current_version(eng) == 20 and "daily_report_auto" not in sa.inspect(c).get_table_names()

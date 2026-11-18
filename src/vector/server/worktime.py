@@ -3,12 +3,15 @@
 Модуль — примесь (mixin) к `Service`, как quality.py: транзакция, идемпотентность по operation_id, аудит и проверка
 версий — в service.py; здесь только правила домена (сами правила — в vector.core.worktime, общие с клиентом).
 
-Поток работы:
+Поток работы (ответы владельца на A-48 — D-43: отчёт собирает программа, сотрудник проверяет его сам, затем отчёт
+уходит руководителю отдела):
 
+    программа сотрудника (клиент, по данным pull «worktime_activity» — свои действия и таймеры за последние дни):
+        report.create {origin: "auto"} (можно без связи) — собранный отчёт за прошедший день («На самопроверке»)
     сотрудник (любой вошедший, только свой отчёт):
-        report.create (можно без связи) — отчёт за рабочий день: смена, строки «на что ушло время» («Черновик»)
-        report.save   (можно без связи) — правка черновика или возвращённого отчёта
-        report.submit (можно без связи) — на проверку руководителю отдела («На проверке»)
+        report.create (можно без связи) — отчёт вручную: смена, строки «на что ушло время» («Черновик»)
+        report.save   (можно без связи) — правка отчёта на самопроверке, черновика или возвращённого
+        report.submit (можно без связи) — самопроверка (все отметки) → на проверку руководителю отдела
         report.reopen (при связи)       — исправить отправленный или принятый отчёт: с основанием → «Черновик»
     руководитель отдела (dept_head, в т. ч. замещающий), НЕ автор:
         report.review (при связи) — «Принят» или «Возвращён» (причина обязательна)
@@ -16,7 +19,8 @@
 Главные инварианты (каждый закреплён тестом в tests/server/test_worktime.py):
 
 * один отчёт на сотрудника за день (уникальность в БД); чужой отчёт не правится и не отправляется;
-* отправить можно только полный отчёт: смена указана, есть строки, часов в строках не больше смены без перерыва;
+* отправить можно только полный отчёт и только после самопроверки: смена указана, есть строки, часов в строках не
+  больше смены без перерыва, смена не пересекается со сменой соседнего дня (ночные смены), все отметки самопроверки;
 * проект строки — тот, где сотрудник сейчас участник (своё назначение или замещение в проекте); задача — этого
   проекта;
 * принять или вернуть — только руководитель отдела и не свой отчёт («четыре глаза»); возврат — с причиной;
@@ -38,7 +42,9 @@ from vector.core import worktime as wt
 from vector.core.errors import Conflict, Denied, Rejected
 
 from .authz import project_member
-from .db import daily_report_events, daily_report_lines, daily_reports, projects, tasks
+from . import db as _db
+from .db import (audit_log, daily_report_auto, daily_report_events, daily_report_line_sources, daily_report_lines,
+                 daily_reports, projects, tasks, wo_operations, wo_timer_events, work_orders)
 from .validation import canon, iso, only_keys, req_uuid
 
 # Подписи шагов журнала отчёта (история карточки).
@@ -48,6 +54,39 @@ DECISION_LABELS_RU = {"created": "Создан", "saved": "Изменён", "sub
 PULL_DAYS = 93
 # Поля содержимого отчёта (что заменяет report.save).
 CONTENT_KEYS = ("shift_start", "shift_end", "break_minutes", "lines", "comment")
+# Действия, которые не считаются работой для собранного отчёта: сам отчёт, прочтение уведомлений, смена своего пароля.
+ACTIVITY_SKIP_PREFIXES = ("report.", "notification.", "account.")
+ACTIVITY_LIMIT = 3000      # не больше стольких действий в pull (самые свежие)
+
+
+def _activity_objects() -> dict[str, tuple]:
+    """Как по записи журнала найти проект, задачу и название объекта: тип объекта → (таблица, столбец проекта,
+    функция «строка → название»). Тип без проекта — работа «не по проекту» (закупка, склад, тендеры…)."""
+    t = _db
+    return {
+        "project": (t.projects, "id", lambda r: r.code),
+        "task": (t.tasks, "project_id", lambda r: f"«{r.title}»"),
+        "document": (t.documents, "project_id", lambda r: f"{r.code} «{r.title}»"),
+        "kit": (t.kits, "project_id", lambda r: r.code),
+        "calc_draft": (t.calc_drafts, "project_id", lambda r: "расчёт комплекта"),
+        "tech_process": (t.tech_processes, "project_id", lambda r: f"«{r.title}»"),
+        "work_order": (t.work_orders, "project_id", lambda r: f"наряд № {r.doc_no}"),
+        "product_instance": (t.product_instances, "project_id", lambda r: f"№ {r.serial_no}"),
+        "passport": (t.passports, "project_id", lambda r: "паспорт"),
+        "claim": (t.claims, "project_id", lambda r: f"рекламация № {r.claim_no}"),
+        "change_request": (t.change_requests, "project_id", lambda r: f"запрос № {r.ecr_no}"),
+        "change_order": (t.change_orders, "project_id", lambda r: f"извещение № {r.eco_no}"),
+        "procurement_need": (t.procurement_needs, "project_id", lambda r: "потребность"),
+        "stock_reservation": (t.stock_reservations, "project_id", lambda r: "резерв"),
+        "stock_movement": (t.stock_movements, "project_id", lambda r: f"движение № {r.doc_no}"),
+        "tender": (t.tenders, None, lambda r: f"«{r.title}»"),
+        "tkp": (t.tkp, None, lambda r: f"«{r.label}»"),
+        "customer": (t.customers, None, lambda r: f"«{r.name}»"),
+        "supplier": (t.suppliers, None, lambda r: f"«{r.name}»"),
+        "purchase_order": (t.purchase_orders, None, lambda r: f"заказ № {r.order_no}"),
+        "stock_item": (t.stock_items, None, lambda r: f"{r.code}"),
+        "warehouse": (t.warehouses, None, lambda r: f"{r.code}"),
+    }
 
 
 def _w(fn, *a, **kw):
@@ -77,7 +116,10 @@ class WorktimeMixin:
         out = []
         for r in conn.execute(sa.select(ev).where(ev.c.report_id == rid).order_by(ev.c.seq)):
             b = self._basis(conn, "daily_report_event", f"{rid}#{r.seq}")
-            out.append({"seq": r.seq, "decision": r.decision, "label": DECISION_LABELS_RU.get(r.decision, r.decision),
+            d = json.loads(r.details_json)
+            label = "Собран программой" if r.decision == "created" and d.get("origin") == "auto" else \
+                DECISION_LABELS_RU.get(r.decision, r.decision)
+            out.append({"seq": r.seq, "decision": r.decision, "label": label,
                         "details": json.loads(r.details_json), "authority": r.authority, "by": r.decided_by,
                         "at": iso(r.decided_at), "on_behalf_of": b["on_behalf_of"] if b else None})
         return out
@@ -86,6 +128,8 @@ class WorktimeMixin:
     def _report_lines(self, conn, rid: str) -> list[dict]:
         """Строки отчёта по порядку — с кодом проекта и названием задачи (руководитель отдела может не видеть сам
         проект, но должен понимать, на что ушло время)."""
+        src = {r.line_no: r.source for r in conn.execute(sa.select(daily_report_line_sources)
+                                                         .where(daily_report_line_sources.c.report_id == rid))}
         rows = conn.execute(sa.select(daily_report_lines, projects.c.code.label("project_code"),
                                       projects.c.title.label("project_title"), tasks.c.title.label("task_title"))
                             .outerjoin(projects, projects.c.id == daily_report_lines.c.project_id)
@@ -93,12 +137,15 @@ class WorktimeMixin:
                             .where(daily_report_lines.c.report_id == rid).order_by(daily_report_lines.c.line_no))
         return [{"line_no": r.line_no, "project_id": r.project_id, "project_code": r.project_code,
                  "project_title": r.project_title, "task_id": r.task_id, "task_title": r.task_title,
-                 "minutes": r.minutes, "note": r.note} for r in rows]
+                 "minutes": r.minutes, "note": r.note, "source": src.get(r.line_no)} for r in rows]
 
     def v_daily_report(self, conn, o: dict) -> dict:
         """Дневной отчёт для клиента: смена «ЧЧ:ММ», строки, итоги, статус, проверка и история."""
+        auto = self._get(conn, daily_report_auto, o["id"], "report_id")
         return {"id": o["id"], "user_id": o["user_id"], "work_date": o["work_date"].isoformat(), "status": o["status"],
-                "status_label": wt.STATUS_LABELS_RU[o["status"]],
+                "status_label": wt.STATUS_LABELS_RU[o["status"]], "origin": "auto" if auto else "manual",
+                "assembled": json.loads(auto["summary_json"]) if auto else None,
+                "overnight": wt.overnight(o["shift_start"], o["shift_end"]),
                 "shift_start": wt.time_label(o["shift_start"]) or None, "shift_end": wt.time_label(o["shift_end"]) or None,
                 "break_minutes": o["break_minutes"], "total_minutes": o["total_minutes"], "comment": o["comment"],
                 "lines": self._report_lines(conn, o["id"]), "submitted_at": iso(o["submitted_at"]),
@@ -138,15 +185,18 @@ class WorktimeMixin:
     def _write_report_lines(self, conn, rid: str, lines: list[dict]) -> None:
         """Заменить строки отчёта целиком (только черновик / возвращённый — проверено вызывающим)."""
         conn.execute(daily_report_lines.delete().where(daily_report_lines.c.report_id == rid))
+        conn.execute(daily_report_line_sources.delete().where(daily_report_line_sources.c.report_id == rid))
         for ln in lines:
-            conn.execute(daily_report_lines.insert().values(report_id=rid, **ln))
+            conn.execute(daily_report_lines.insert().values(report_id=rid, **{k: v for k, v in ln.items() if k != "source"}))
+            if ln.get("source"):
+                conn.execute(daily_report_line_sources.insert().values(report_id=rid, line_no=ln["line_no"], source=ln["source"]))
 
     @staticmethod
     def _report_content(o: dict, lines: list[dict]) -> dict:
         """Содержимое отчёта в виде, который принимает vector.core.worktime.parse_report (для слияния с правкой)."""
         return {"shift_start": wt.time_label(o["shift_start"]) or None, "shift_end": wt.time_label(o["shift_end"]) or None,
                 "break_minutes": o["break_minutes"], "comment": o["comment"],
-                "lines": [{k: ln[k] for k in ("project_id", "task_id", "minutes", "note")} for ln in lines]}
+                "lines": [{k: ln.get(k) for k in ("project_id", "task_id", "minutes", "note", "source")} for ln in lines]}
 
     @staticmethod
     def _who_day(name: str, o: dict) -> str:
@@ -155,9 +205,21 @@ class WorktimeMixin:
 
     # ------------------------------------------------------------ команды автора
     def _report_create(self, ctx, p, ev):
-        """report.create {id, work_date, shift_start?, shift_end?, break_minutes?, lines?, comment?} — свой отчёт за
-        день («Черновик»). Один отчёт на сотрудника за день; день — не в будущем и не старше 31 дня."""
-        only_keys(p, {"id", "work_date", *CONTENT_KEYS})
+        """report.create {id, work_date, shift_start?, shift_end?, break_minutes?, lines?, comment?, origin?, summary?} —
+        свой отчёт за день. Один отчёт на сотрудника за день; день — не в будущем и не старше 31 дня.
+
+        origin «auto» — отчёт собрала программа по действиям за день (D-43): статус «На самопроверке», отметка
+        daily_report_auto со сводкой summary ({actions, measured_minutes, lines} — целые) и уведомление автору
+        «проверьте». Без origin — «Черновик», который сотрудник заполняет сам."""
+        only_keys(p, {"id", "work_date", "origin", "summary", *CONTENT_KEYS})
+        origin = p.get("origin") or "manual"
+        if origin not in ("manual", "auto"):
+            raise Rejected("invalid_origin", "Источник отчёта — «manual» или «auto».", {"field": "origin"})
+        summary = p.get("summary") or {}
+        if not isinstance(summary, dict) or set(summary) - {"actions", "measured_minutes", "lines"} or \
+                any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in summary.values()):
+            raise Rejected("invalid_summary", "Сводка собранного отчёта — целые числа actions, measured_minutes, lines.",
+                           {"field": "summary"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "report.create", ctx.now)
         rid = req_uuid(p, "id")
         self._ensure_new(ctx.conn, daily_reports, rid)
@@ -172,13 +234,22 @@ class WorktimeMixin:
         self._check_lines(ctx.conn, ctx.user_id, c["lines"], ctx.now)
         total = sum(x["minutes"] for x in c["lines"])
         ctx.conn.execute(daily_reports.insert().values(
-            id=rid, user_id=ctx.user_id, work_date=date.fromisoformat(day), status="draft",
+            id=rid, user_id=ctx.user_id, work_date=date.fromisoformat(day), status="self_check" if origin == "auto" else "draft",
             shift_start=c["shift_start"], shift_end=c["shift_end"], break_minutes=c["break_minutes"], total_minutes=total,
             comment=c["comment"], version=1, created_by=ctx.user_id, created_at=ctx.now, updated_by=ctx.user_id,
             updated_at=ctx.now))
         self._write_report_lines(ctx.conn, rid, c["lines"])
-        self._wdecide(ctx, rid, "created", {"work_date": day, "total_minutes": total, "lines": len(c["lines"])}, auth)
-        ctx.log("daily_report", rid, auth, None, 1, {"event": "ReportCreated", "work_date": day, "total_minutes": total})
+        if origin == "auto":
+            ctx.conn.execute(daily_report_auto.insert().values(report_id=rid, assembled_at=ctx.now, summary_json=canon(summary)))
+        self._wdecide(ctx, rid, "created", {"work_date": day, "total_minutes": total, "lines": len(c["lines"]),
+                                            **({"origin": "auto", "summary": summary} if origin == "auto" else {})}, auth)
+        ctx.log("daily_report", rid, auth, None, 1, {"event": "ReportCreated", "work_date": day, "total_minutes": total,
+                                                     "origin": origin})
+        if origin == "auto":
+            self._notify(ctx, [ctx.user_id], "report_assembled", f"Отчёт за {wt.date_label(day)} собран — проверьте",
+                         body=f"Программа собрала отчёт по вашим действиям за день ({wt.hours_label(total)}). Проверьте "
+                              "смену и строки, отметьте пункты самопроверки — и отчёт уйдёт руководителю отдела.",
+                         object_type="daily_report", object_id=rid, include_actor=True)
         return {"daily_report": self.v_daily_report(ctx.conn, self._get(ctx.conn, daily_reports, rid))}
 
     def _report_save(self, ctx, p, ev):
@@ -207,19 +278,30 @@ class WorktimeMixin:
         return {"daily_report": self.v_daily_report(ctx.conn, n)}
 
     def _report_submit(self, ctx, p, ev):
-        """report.submit {id} — свой полный отчёт на проверку («На проверке»); уведомление руководителям отдела."""
-        only_keys(p, {"id"})
+        """report.submit {id, self_check: {shift, lines, hours}} — самопроверка (все отметки, A-48 п. 4) и свой полный
+        отчёт на проверку («На проверке»); уведомление руководителям отдела. Смена не должна пересекаться со сменой
+        соседнего дня (ночные смены)."""
+        only_keys(p, {"id", "self_check"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "report.submit", ctx.now)
         o = self._own_report(ctx, req_uuid(p, "id"), ev)
         self._report_state(ctx.conn, o, *wt.EDITABLE)
         lines = self._report_lines(ctx.conn, o["id"])
         r = {"shift_start": o["shift_start"], "shift_end": o["shift_end"], "break_minutes": o["break_minutes"], "lines": lines}
         _w(wt.check_submit, r)
+        checked = _w(wt.parse_self_check, p.get("self_check"))
+        near = {x.work_date: {"work_date": x.work_date.isoformat(), "shift_start": x.shift_start, "shift_end": x.shift_end}
+                for x in ctx.conn.execute(sa.select(daily_reports).where(
+                    daily_reports.c.user_id == ctx.user_id,
+                    daily_reports.c.work_date.in_([o["work_date"] - timedelta(days=1), o["work_date"] + timedelta(days=1)])))}
+        clash = wt.shift_overlap(near.get(o["work_date"] - timedelta(days=1)), {**r, "work_date": o["work_date"].isoformat()},
+                                 near.get(o["work_date"] + timedelta(days=1)))
+        if clash:
+            raise Rejected("shift_overlap", clash, {"field": "shift_start"})
         t = wt.totals(r)
         n = self._update_versioned(ctx, daily_reports, o, {"status": "submitted", "submitted_at": ctx.now, "reviewed_by": None,
                                                            "reviewed_at": None, "updated_by": ctx.user_id, "updated_at": ctx.now})
         self._wdecide(ctx, o["id"], "submitted", {"total_minutes": t["total"], "shift_net": t["net"],
-                                                  "resubmitted": o["status"] == "returned"}, auth)
+                                                  "resubmitted": o["status"] == "returned", "self_check": checked}, auth)
         ctx.log("daily_report", o["id"], auth, o["version"], n["version"], {"event": "ReportSubmitted", "total_minutes": t["total"]})
         who = self._who_day(self._user_name(ctx.conn, ctx.user_id), o)
         self._notify(ctx, self._users_with_role(ctx.conn, "dept_head", ctx.now), "report_submitted",
@@ -276,17 +358,84 @@ class WorktimeMixin:
 
     # ------------------------------------------------------------ pull
     def _pull_worktime(self, conn, uid: str, now) -> dict:
-        """Свои отчёты за PULL_DAYS дней; руководителю отдела — ещё и отправленные (не черновики) чужие; проекты, где
+        """Свои отчёты за PULL_DAYS дней; руководителю отдела — ещё и отправленные (не черновики и не на самопроверке)
+        чужие; проекты, где
         сотрудник участник (для строк отчёта); может ли он проверять отчёты."""
         since = (now - timedelta(days=PULL_DAYS)).date()
         dr = daily_reports
         reviewer = self.policy.can(conn, uid, "worktime.read_all", now)
         cond = dr.c.user_id == uid
         if reviewer:
-            cond = sa.or_(cond, dr.c.status != "draft")
+            # Черновики и отчёты на самопроверке — личное дело автора, пока он их не отправил.
+            cond = sa.or_(cond, dr.c.status.in_(("submitted", "accepted", "returned")))
         rows = conn.execute(sa.select(dr).where(cond, dr.c.work_date >= since).order_by(dr.c.work_date.desc(), dr.c.user_id))
         mine = [{"id": r.id, "code": r.code, "title": r.title}
                 for r in conn.execute(sa.select(projects.c.id, projects.c.code, projects.c.title).order_by(projects.c.code))
                 if project_member(conn, uid, r.id, now)]
         return {"daily_reports": [self.v_daily_report(conn, dict(r._mapping)) for r in rows],
-                "worktime_projects": mine, "worktime_reviewer": reviewer}
+                "worktime_projects": mine, "worktime_reviewer": reviewer,
+                "worktime_activity": self._worktime_activity(conn, uid, now)}
+
+    def _worktime_activity(self, conn, uid: str, now) -> dict:
+        """Свои действия и таймеры за последние дни — из них программа сотрудника собирает дневной отчёт (D-43).
+
+        actions — принятые команды сотрудника из журнала аудита (кроме самого отчёта, уведомлений и пароля) и входы
+        в программу: время, operation_id (клиент подставит время, когда действие сделано без связи), подпись команды
+        из каталога, объект, проект и задача (если объект проектный). timers — интервалы «в работе» операций нарядов
+        по часам устройства (start/resume → pause/finish; незакрытый — end = null). Только свои записи; не больше
+        ACTIVITY_LIMIT самых свежих действий.
+        """
+        since = now - timedelta(days=wt.AUTO_LOOKBACK_DAYS + 2)
+        cat = self.contracts.catalog["commands"]
+        objs = _activity_objects()
+        cache: dict[tuple, tuple] = {}
+        pcodes = {r.id: r.code for r in conn.execute(sa.select(projects.c.id, projects.c.code))}
+
+        def resolve(otype, oid):
+            """(проект, задача, название) объекта записи журнала; неизвестный тип — (None, None, None)."""
+            key = (otype, oid)
+            if key not in cache:
+                spec = objs.get(otype or "")
+                res = (None, None, None)
+                if spec and oid:
+                    table, pcol, name = spec
+                    pk = list(table.primary_key.columns)[0]
+                    row = conn.execute(sa.select(table).where(pk == oid)).first()
+                    if row is not None:
+                        res = (getattr(row, pcol) if pcol else None, oid if otype == "task" else None, name(row))
+                cache[key] = res
+            return cache[key]
+
+        al = audit_log
+        rows = conn.execute(sa.select(al.c.at, al.c.operation_id, al.c.command, al.c.object_type, al.c.object_id)
+                            .where(al.c.actor_user_id == uid, al.c.at >= since, al.c.result == "accepted")
+                            .order_by(al.c.at.desc(), al.c.id.desc()).limit(ACTIVITY_LIMIT * 2)).all()
+        actions = []
+        for r in rows:
+            if r.command.startswith(ACTIVITY_SKIP_PREFIXES) or (r.command not in cat and r.command != "auth.login"):
+                continue
+            pid, tid, obj = resolve(r.object_type, r.object_id) if r.command != "auth.login" else (None, None, None)
+            actions.append({"at": iso(r.at), "operation_id": r.operation_id, "command": r.command,
+                            "label": "Вход в программу" if r.command == "auth.login" else cat[r.command].get("label_ru", r.command),
+                            "object": obj, "project_id": pid, "project_code": pcodes.get(pid), "task_id": tid})
+            if len(actions) >= ACTIVITY_LIMIT:
+                break
+        actions.reverse()
+
+        te, op, wo = wo_timer_events, wo_operations, work_orders
+        evs = conn.execute(sa.select(te.c.wo_operation_id, te.c.kind, te.c.device_time, op.c.name, wo.c.doc_no, wo.c.project_id)
+                           .join(op, op.c.id == te.c.wo_operation_id).join(wo, wo.c.id == op.c.work_order_id)
+                           .where(te.c.user_id == uid, te.c.device_time >= since)
+                           .order_by(te.c.wo_operation_id, te.c.device_time, te.c.id)).all()
+        timers, open_ = [], {}
+        for e in evs:
+            label = f"Наряд № {e.doc_no} · {e.name}"
+            if e.kind in ("start", "resume") and e.wo_operation_id not in open_:
+                open_[e.wo_operation_id] = {"start": iso(e.device_time), "end": None, "project_id": e.project_id,
+                                            "project_code": pcodes.get(e.project_id), "label": label}
+            elif e.kind in ("pause", "finish") and e.wo_operation_id in open_:
+                it = open_.pop(e.wo_operation_id)
+                it["end"] = iso(e.device_time)
+                timers.append(it)
+        timers += list(open_.values())
+        return {"since": iso(since), "actions": actions, "timers": sorted(timers, key=lambda x: x["start"])}

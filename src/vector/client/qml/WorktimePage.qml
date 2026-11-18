@@ -11,6 +11,11 @@ import QtQuick.Layouts
 //  * «На проверке» — руководителю отдела (и замещающему): «Принять» или «Вернуть» с причиной (при связи). Свой отчёт
 //    руководитель не проверяет — это делает другой («четыре глаза»).
 //
+// D-43 (ответы владельца на A-48): за прошедший день, где сотрудник работал в программе, но отчёт не написал,
+// программа собирает отчёт сама — «На самопроверке»; строки помечены «по таймеру» / «оценка программы». Отправка
+// руководителю — только после самопроверки (форма с обязательными отметками) — и для собранного, и для своего отчёта.
+// Ночная смена: конец раньше начала — до утра следующего дня.
+//
 // Часы в строках вводятся как удобно: «2», «1,5» или «1:30». Кнопки — подсказка; решает сервер.
 MasterDetail {
     id: page
@@ -36,7 +41,8 @@ MasterDetail {
     onTabPicked: id => { tab = id; selectedId = "" }
     title: "Рабочее время"
     subtitle: tab === "review" ? "На проверке: " + ((wv.counts || {}).to_review || 0) + "  ·  " + (wv.as_of || "")
-              : "Сегодня " + (wv.today_label || "") + "  ·  " + (wv.week_label || "") + "  ·  " + (wv.as_of || "")
+              : "Сегодня " + (wv.today_label || "") + "  ·  " + (wv.week_label || "")
+                + (((wv.counts || {}).self_check || 0) > 0 ? "  ·  на самопроверке: " + wv.counts.self_check : "") + "  ·  " + (wv.as_of || "")
     hasSelection: sel !== null
     emptyIcon: tab === "review" ? "user-check" : "clock"
     emptyTitle: tab === "review" ? "Нечего проверять" : "Отчётов пока нет"
@@ -79,6 +85,9 @@ MasterDetail {
     }
     Banner { visible: sel !== null && sel.pending === true; tone: "info"
              text: "Есть изменения, которые ещё не подтвердил сервер (очередь синхронизации). Они уйдут при связи." }
+    Banner { objectName: "reportAssembled"; visible: sel !== null && sel.origin === "auto" && sel.status === "self_check"; tone: "info"
+             text: sel ? "Отчёт собран программой " + sel.assembled_label + ". Проверьте смену и строки: «оценка программы» — "
+                         + "время, разделённое по числу действий, его стоит уточнить. Руководителю отдела отчёт уйдёт только после самопроверки." : "" }
     Banner { objectName: "reportReturned"; visible: sel !== null && sel.status === "returned"; tone: "danger"
              text: sel ? "Возвращён: " + sel.review_comment + (sel.reviewed_label ? "  (" + sel.reviewed_label + ")" : "") : "" }
     Banner { objectName: "reportProblems"; visible: sel !== null && sel.is_own && sel.problems.length > 0; tone: "warning"
@@ -94,7 +103,7 @@ MasterDetail {
         visible: sel !== null
         VButton { objectName: "btnEditReport"; visible: sel !== null && sel.can_edit === true; text: "Изменить"; iconName: "pencil"; onClicked: editor.openFor(sel, sel.work_date) }
         VButton { objectName: "btnSubmitReport"; visible: sel !== null && sel.may_submit === true; enabled: sel !== null && sel.can_submit === true
-                  text: "Отправить на проверку"; kind: "primary"; iconName: "send"; onClicked: submitForm.open() }
+                  text: "Самопроверка и отправка"; kind: "primary"; iconName: "list-checks"; onClicked: submitForm.openFor() }
         VButton { objectName: "btnReopenReport"; visible: sel !== null && sel.may_reopen === true; enabled: sel !== null && sel.can_reopen === true
                   text: "Исправить"; iconName: "rotate-ccw"; onClicked: reopenForm.openFor() }
         VButton { objectName: "btnAcceptReport"; visible: sel !== null && sel.may_review === true; enabled: sel !== null && sel.can_review === true
@@ -125,6 +134,8 @@ MasterDetail {
                 Text { text: lrow.modelData.note; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; wrapMode: Text.Wrap; Layout.fillWidth: true }
                 Text { text: lrow.modelData.project_label + (lrow.modelData.task_label ? "  ·  " + lrow.modelData.task_label : "")
                        color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true } }
+            VChip { visible: lrow.modelData.source_label !== ""; text: lrow.modelData.source_label; Layout.alignment: Qt.AlignTop
+                    tone: lrow.modelData.source === "measured" ? "success" : "warning" }
             Text { text: lrow.modelData.hours_label; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold; font.features: { "tnum": 1 }; Layout.alignment: Qt.AlignTop }
         }
     }
@@ -168,12 +179,24 @@ MasterDetail {
     FormDialog {
         id: submitForm
         objectName: "reportSubmitForm"
-        title: "Отправить отчёт на проверку"
-        subtitle: sel ? sel.date_label + "  ·  в строках " + sel.total_label + "  ·  смена без перерыва " + sel.net_label : ""
+        title: "Самопроверка и отправка"
+        subtitle: sel ? sel.date_label + "  ·  смена " + sel.shift_label + "  ·  в строках " + sel.total_label + "  ·  смена без перерыва " + sel.net_label : ""
         confirmText: "Отправить"
         confirmTip: "Отправить отчёт руководителю отдела на проверку. Можно без связи: уйдёт при подключении."
-        note: "Отчёт уйдёт руководителю отдела (можно без связи — отправится при подключении). После отправки править можно только через «Исправить» с основанием."
-        onConfirmed: { working = true; backend.submitReport("report-submit", sel.id) }
+        note: "Отметьте каждый пункт — без самопроверки отчёт не уходит. Отчёт уйдёт руководителю отдела (можно без связи — отправится при подключении). После отправки править можно только через «Исправить» с основанием."
+        // Отметки самопроверки (A-48 п. 4): ключ → отмечено; «Отправить» — только когда отмечены все.
+        property var marks: ({})
+        readonly property bool allMarked: (page.wv.self_check_items || []).every(it => marks[it.id] === true)
+        canConfirm: allMarked
+        function openFor() { marks = ({}); error = ""; open() }
+        onConfirmed: { working = true; backend.submitReport("report-submit", sel.id, marks) }
+        Repeater {
+            model: page.wv.self_check_items || []
+            delegate: CheckBox { required property var modelData
+                objectName: "selfCheck_" + modelData.id
+                text: modelData.label; checked: submitForm.marks[modelData.id] === true
+                onToggled: { var m = Object.assign({}, submitForm.marks); m[modelData.id] = checked; submitForm.marks = m } }
+        }
         Connections { target: backend
             function onCommandDone(t, r) { if (t !== "report-submit") return; submitForm.working = false
                 if (r.status === "accepted" || r.status === "queued") submitForm.close(); else submitForm.error = r.message_ru || "Отчёт не отправлен." } }
@@ -248,14 +271,22 @@ MasterDetail {
             lm.clear()
             var ls = r ? r.lines : []
             for (var i = 0; i < ls.length; i++)
-                lm.append({ project_id: ls[i].project_id || "", task_id: ls[i].task_id || "", hours: ls[i].hours_input, note: ls[i].note })
-            if (lm.count === 0) lm.append({ project_id: "", task_id: "", hours: "", note: "" })
+                // source / orig_* — откуда время строки, собранной программой (D-43): пока строка не изменена, отметка
+                // сохраняется; правка делает строку «своей».
+                lm.append({ project_id: ls[i].project_id || "", task_id: ls[i].task_id || "", hours: ls[i].hours_input, note: ls[i].note,
+                            source: ls[i].source || "", source_label: ls[i].source_label || "", orig_project: ls[i].project_id || "",
+                            orig_task: ls[i].task_id || "", orig_minutes: ls[i].minutes, orig_note: ls[i].note })
+            if (lm.count === 0) lm.append(blank())
             editRev++
             open()
         }
+        // Пустая строка таблицы (все роли ListModel заданы сразу — иначе новые свойства не появятся).
+        function blank() { return { project_id: "", task_id: "", hours: "", note: "", source: "", source_label: "", orig_project: "", orig_task: "", orig_minutes: 0, orig_note: "" } }
         function collect() {
             var out = []
-            for (var i = 0; i < lm.count; i++) { var r = lm.get(i); out.push({ project_id: r.project_id, task_id: r.task_id, hours: r.hours, note: r.note }) }
+            for (var i = 0; i < lm.count; i++) { var r = lm.get(i)
+                out.push({ project_id: r.project_id, task_id: r.task_id, hours: r.hours, note: r.note, source: r.source,
+                           orig: { project_id: r.orig_project, task_id: r.orig_task, minutes: r.orig_minutes, note: r.orig_note } }) }
             return { work_date: workDate, shift_start: startField.text, shift_end: endField.text, break_minutes: breakField.text,
                      comment: commentField.text, lines: out }
         }
@@ -283,7 +314,7 @@ MasterDetail {
                 ColumnLayout { spacing: 2; Layout.fillWidth: true
                     Text { text: (editor.rep ? "Дневной отчёт" : "Новый дневной отчёт") + " · " + editor.workDate.split("-").reverse().join(".")
                            color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsL; font.weight: Font.DemiBold }
-                    Text { text: "Часы в строке — как удобно: 2, 1,5 или 1:30. Проект — только тот, где вы участник; задача — необязательно. Сохранять можно без связи."
+                    Text { text: "Часы в строке — как удобно: 2, 1,5 или 1:30. Проект — только тот, где вы участник; задача — необязательно. Конец смены раньше начала — ночная смена (до утра следующего дня). Сохранять можно без связи."
                            color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true } }
                 VButton { kind: "ghost"; iconName: "x"; compact: true; onClicked: editor.close(); Accessible.name: "Закрыть" }
             }
@@ -342,6 +373,9 @@ MasterDetail {
                             VButton { kind: "ghost"; compact: true; iconName: "trash-2"; Layout.preferredWidth: 34; Accessible.name: "Удалить строку " + (rowItem.index + 1)
                                       onClicked: { lm.remove(rowItem.index); editor.editRev++ } }
                         }
+                        Text { visible: rowItem.model.source !== ""; leftPadding: 4; Layout.fillWidth: true; wrapMode: Text.Wrap
+                               text: "Время строки: " + rowItem.model.source_label + " — если исправить строку, она станет вашей (без отметки)."
+                               color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsXs }
                         Text { visible: rowItem.problem !== ""; text: rowItem.problem; color: Theme.danger; font.family: Theme.family; font.pixelSize: Theme.fsXs; leftPadding: 4; wrapMode: Text.Wrap; Layout.fillWidth: true }
                     }
                 }
@@ -349,10 +383,10 @@ MasterDetail {
             RowLayout {
                 Layout.fillWidth: true; Layout.leftMargin: Theme.padL; Layout.rightMargin: Theme.padL; Layout.topMargin: 8; spacing: 8
                 VButton { objectName: "reportAddLine"; text: "Добавить строку"; iconName: "plus"; kind: "soft"; compact: true
-                          onClicked: { lm.append({ project_id: "", task_id: "", hours: "", note: "" }); editor.editRev++; lv.positionViewAtEnd() } }
+                          onClicked: { lm.append(editor.blank()); editor.editRev++; lv.positionViewAtEnd() } }
                 Item { Layout.fillWidth: true }
                 Text { objectName: "reportEditorTotals"
-                       text: "В строках: " + ((editor.check.totals || {}).total_label || "—") + "  ·  смена без перерыва: " + ((editor.check.totals || {}).net_label || "—")
+                       text: (editor.check.overnight === true ? "Ночная смена  ·  " : "") + "В строках: " + ((editor.check.totals || {}).total_label || "—") + "  ·  смена без перерыва: " + ((editor.check.totals || {}).net_label || "—")
                              + "  ·  не распределено: " + ((editor.check.totals || {}).unallocated_label || "—")
                        color: (editor.check.totals || {}).tone === "danger" ? Theme.danger : Theme.text
                        font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold }

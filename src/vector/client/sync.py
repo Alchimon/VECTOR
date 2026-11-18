@@ -21,7 +21,7 @@ import os
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -113,7 +113,9 @@ STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_
               # технического контроля) и выполненные наряды — для рекламации на партию.
               "quality_projects", "quality_otk", "claim_batches",
               # D-42: проекты, где сотрудник участник (для строк дневного отчёта), и может ли он проверять отчёты.
-              "worktime_projects", "worktime_reviewer")
+              "worktime_projects", "worktime_reviewer",
+              # D-43: свои действия и таймеры за последние дни — из них программа собирает дневной отчёт.
+              "worktime_activity")
 
 
 # Онлайн-команды, которым не нужно сначала отправить очередь (их результат не зависит от неотправленных правок).
@@ -210,6 +212,7 @@ class SyncReport:
     offline: bool = False
     unknown_outcome: bool = False
     pulled: bool = False
+    assembled: int = 0                    # сколько дневных отчётов собрала программа (D-43)
     message_ru: str = ""
 
 
@@ -242,6 +245,8 @@ class SyncClient:
         self.kdf = kdf
         self.token: Optional[str] = None
         self.user_id: Optional[str] = None
+        # Идёт сборка дневных отчётов программой (D-43): внутренняя синхронизация не запускает её повторно.
+        self._assembling = False
         self.login_name: Optional[str] = None
         self.must_change_password = False
         self.max_file_bytes: Optional[int] = None   # предел размера файла с сервера (из ответа входа)
@@ -577,7 +582,8 @@ class SyncClient:
     def save_report_draft(self, payload: dict) -> LocalResult:
         """«Сохранить дневной отчёт»: report.create (отчёта ещё нет ни на сервере, ни в очереди) или report.save — через
         офлайн-очередь (D-42). Цепочка expected_version — как у извещения (save_eco_draft); без изменений в очередь не
-        ставится. payload — {id, work_date, shift_start, shift_end, break_minutes, lines, comment}.
+        ставится. payload — {id, work_date, shift_start, shift_end, break_minutes, lines, comment} и — для отчёта,
+        собранного программой (D-43), — origin «auto» и summary (уходят только с созданием).
         """
         if self.db is None:
             return LocalResult("unauthenticated", message_ru="Войдите в систему.")
@@ -588,9 +594,9 @@ class SyncClient:
             return self.execute("report.create", payload)
         local = self.get_local("daily_report", oid) or {}
         body = {k: payload[k] for k in ("shift_start", "shift_end", "break_minutes", "lines", "comment") if k in payload}
-        keys = ("project_id", "task_id", "minutes", "note")
-        same = lambda k: ([{x: ln.get(x) for x in keys} for ln in local.get(k) or []]  # noqa: E731
-                          == [{x: ln.get(x) for x in keys} for ln in body[k]]) if k == "lines" else (
+        keys = ("project_id", "task_id", "minutes", "note", "source")
+        same = lambda k: ([{x: ln.get(x) or None for x in keys} for ln in local.get(k) or []]  # noqa: E731
+                          == [{x: ln.get(x) or None for x in keys} for ln in body[k]]) if k == "lines" else (
             (local.get(k) or None) == (body[k] or None) if k != "break_minutes" else int(local.get(k) or 0) == int(body[k] or 0))
         if all(same(k) for k in body):
             return LocalResult("accepted", message_ru="Изменений нет — сохранять нечего.", response={"unchanged": True})
@@ -598,15 +604,73 @@ class SyncClient:
         # report.save не принимает work_date: день отчёта не меняется.
         return self.execute("report.save", {"id": oid, **body}, ev)
 
-    def submit_report(self, oid: str) -> LocalResult:
-        """«Отправить на проверку» — report.submit через очередь (можно без связи, D-42). Версия — по той же цепочке:
-        если в очереди есть неотправленное создание или сохранение этого отчёта, отправка основана на нём."""
+    def submit_report(self, oid: str, self_check: Optional[dict] = None) -> LocalResult:
+        """«Самопроверка → отправить на проверку» — report.submit {id, self_check} через очередь (можно без связи, D-42,
+        D-43). self_check — отметки самопроверки {shift, lines, hours} (все обязательны — проверит и сервер). Версия —
+        по той же цепочке: если в очереди есть неотправленное создание или сохранение этого отчёта, отправка основана
+        на нём."""
         if self.db is None:
             return LocalResult("unauthenticated", message_ru="Войдите в систему.")
         row = self.db.execute("SELECT server_version FROM cache WHERE object_type='daily_report' AND id=?", (oid,)).fetchone()
         prev = self._report_prev(oid)
         ev = (prev[0] or 0) + 1 if prev is not None else (row[0] if row else None)
-        return self.execute("report.submit", {"id": oid}, ev)
+        return self.execute("report.submit", {"id": oid, "self_check": self_check or {}}, ev)
+
+    def assemble_missing_reports(self, today: Optional[date] = None, tz=None) -> list[str]:
+        """Собрать дневные отчёты за прошедшие дни, где их нет (A-48 п. 3, D-43): по своим действиям и таймерам из
+        pull («worktime_activity»). Вызывается после успешного обновления (данные свежие).
+
+        Дни — последние AUTO_LOOKBACK_DAYS до вчера включительно (сегодня день ещё идёт); только дни с действиями и
+        без своего отчёта. Отчёт отправляется как report.create {origin: "auto"} — «На самопроверке»: руководителю
+        он уйдёт только после самопроверки сотрудника. Время действия — по очереди этого компьютера, если оно сделано
+        без связи (local_times).
+
+        Только при связи и пустой очереди (список своих отчётов свежий). Собранное программой не должно мешать
+        очереди сотрудника: если сервер его не принял (отчёт за день уже создан на другом компьютере, проект больше
+        не свой), операция сразу отменяется — сотрудник ничего не терял, отчёт за этот день он заполнит сам.
+        Возвращает id принятых отчётов.
+        """
+        from vector.core import worktime as wt
+        if self.db is None or not self.user_id or not self.token or self.pending_count() or self._assembling:
+            return []
+        act = self.get_meta("worktime_activity") or {}
+        if not act.get("actions") and not act.get("timers"):
+            return []
+        today = today or self.now().astimezone(tz).date()
+        have = {r.get("work_date") for r in self.list_local("daily_report") if r.get("user_id") == self.user_id}
+        members = [x["id"] for x in self.get_meta("worktime_projects") or []]
+        local_times = {}
+        for op_id, created in self.db.execute("SELECT operation_id, created_at FROM outbox WHERE state='accepted'"):
+            local_times[op_id] = created
+        made = []
+        for back in range(wt.AUTO_LOOKBACK_DAYS, 0, -1):
+            day = today - timedelta(days=back)
+            if day.isoformat() in have:
+                continue
+            r = wt.assemble_report(day, act, members, self.now(), tz=tz, local_times=local_times)
+            if r is None or not r["lines"]:
+                continue
+            payload = {"id": str(uuid.uuid4()), "work_date": day.isoformat(), "origin": "auto", "summary": r["summary"],
+                       "shift_start": wt.time_label(r["shift_start"]), "shift_end": wt.time_label(r["shift_end"]),
+                       "break_minutes": r["break_minutes"], "comment": r["comment"],
+                       "lines": [{k: ln[k] for k in ("project_id", "task_id", "minutes", "note", "source")} for ln in r["lines"]]}
+            try:
+                wt.parse_report(payload)          # те же правила, что на сервере: заведомо неверное не отправляем
+            except wt.WorktimeError:
+                continue
+            self._assembling = True
+            try:
+                res = self.execute("report.create", payload)
+                if res.status == "accepted":
+                    made.append(payload["id"])
+                elif res.operation_id and self._op_state(res.operation_id)[0] in ("pending", "conflict", "rejected"):
+                    # Если сервер всё же принял (ответ потерян), отчёт придёт с pull — день не соберётся повторно.
+                    self.discard(res.operation_id)
+                    if res.status in ("queued", "unknown_outcome"):
+                        break                     # связь пропала — соберём при следующем обновлении
+            finally:
+                self._assembling = False
+        return made
 
     def _report_prev(self, oid: str):
         """Последняя неотправленная (или отклонённая / в конфликте) операция автора по отчёту — для цепочки версий."""
@@ -703,6 +767,9 @@ class SyncClient:
             rep.stopped_on, rep.stop_status, rep.message_ru = op_id, r["status"], r.get("message_ru", "")
             return rep
         rep.pulled = self.pull()
+        if rep.pulled and not self._assembling:
+            # Отчёты за прошедшие дни без отчёта — собрать по действиям (D-43); каждый уходит своей операцией.
+            rep.assembled = len(self.assemble_missing_reports())
         return rep
 
     def pull(self) -> bool:
@@ -1110,11 +1177,13 @@ def _report_overlay(old: Optional[dict], command: str, payload: dict, user_id: O
     """
     from vector.core import worktime as wt
     data = dict(old or {"user_id": user_id, "status": "draft", "break_minutes": 0, "lines": [], "history": [],
-                        "shift_start": None, "shift_end": None, "comment": None, "version": None})
+                        "shift_start": None, "shift_end": None, "comment": None, "version": None, "origin": "manual"})
     if command == "report.submit":
         data["status"] = "submitted"
     else:
-        data.update({k: v for k, v in payload.items() if k != "lines"})
+        if command == "report.create" and payload.get("origin") == "auto":     # собран программой (D-43)
+            data.update(status="self_check", origin="auto", assembled=payload.get("summary") or {})
+        data.update({k: v for k, v in payload.items() if k not in ("lines", "origin", "summary", "self_check")})
         if "lines" in payload:
             data["lines"] = [{**ln, "line_no": i} for i, ln in enumerate(payload.get("lines") or [], 1)]
         data["break_minutes"] = int(data.get("break_minutes") or 0)

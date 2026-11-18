@@ -1,4 +1,4 @@
-"""Рабочее время на клиенте (Class A, SQLite; D-42): дневной отчёт — создание, правка и отправка без связи (очередь с
+"""Рабочее время на клиенте (Class A, SQLite; D-42, D-43): дневной отчёт — создание, правка и отправка без связи (очередь с
 цепочкой версий, без пустых сохранений); принять / вернуть и исправление — только при связи; представление
 worktime_view (вкладки, флаги, итоги «не распределено») и проверка формы без сервера (часы «1,5», «1:30»).
 """
@@ -16,6 +16,7 @@ from vector.client import worktime_view as wv  # noqa: E402
 
 _ = (BACKENDS, FAST_KDF, SERVER)
 TODAY = date(2026, 11, 16)          # дата часов стенда (FakeClock)
+SC = {"shift": True, "lines": True, "hours": True}      # самопроверка — все отметки (D-43)
 
 
 def view(c):
@@ -49,7 +50,7 @@ def test_offline_draft_chain_submit_then_online_review(world, proj, mk):  # noqa
     assert eng.save_report_draft(more).status == "queued"
     row = view(eng)["mine"][0]
     assert row["total_label"] == "8 ч" and row["can_submit"] and row["unallocated_label"] == "0 мин"
-    assert eng.submit_report(rid).status == "queued"
+    assert eng.submit_report(rid, SC).status == "queued"
     row = view(eng)["mine"][0]
     assert row["status"] == "submitted" and row["may_reopen"] and not row["can_reopen"]       # исправить — при связи
     assert [q["command"] for q in eng.queue()] == ["report.create", "report.save", "report.submit"]
@@ -76,7 +77,7 @@ def test_offline_draft_chain_submit_then_online_review(world, proj, mk):  # noqa
     assert row["status"] == "returned" and row["review_comment"] == "Добавьте задачу" and row["can_edit"]
     assert view(eng)["counts"]["returned"] == 1
     assert eng.save_report_draft({**more, "comment": "Задача уточнена"}).status == "accepted"
-    assert eng.submit_report(rid).status == "accepted"
+    assert eng.submit_report(rid, SC).status == "accepted"
     head.pull()
     r = view(head)["review"][0]
     assert head.execute("report.review", {"id": rid, "decision": "accept"}, r["version"]).status == "accepted"
@@ -115,10 +116,53 @@ def test_report_form_rules_without_server():
     f = wv.report_form({"shift_start": "08:30", "shift_end": "17:30", "break_minutes": "60",
                         "lines": [{"hours": "abc", "note": "x"}, {"hours": "2", "note": ""}]})
     assert not f["ok"] and set(f["rows"]) == {"0", "1"}
-    f = wv.report_form({"shift_start": "18:00", "shift_end": "09:00", "break_minutes": "0", "lines": []})
+    f = wv.report_form({"shift_start": "18:00", "shift_end": "18:00", "break_minutes": "0", "lines": []})
     assert not f["ok"] and f["field"] == "shift_end"
+    # Ночная смена (D-43): конец раньше начала — до утра; итоги считаются через полночь.
+    f = wv.report_form({"shift_start": "22:00", "shift_end": "06:00", "break_minutes": "30",
+                        "lines": [{"hours": "7,5", "note": "Пусконаладка"}]})
+    assert f["ok"] and f["overnight"] and f["totals"]["net_label"] == "7 ч 30 мин" and f["submit_problems"] == []
     f = wv.report_form({"shift_start": "09:00", "shift_end": "18:00", "break_minutes": "x", "lines": []})
     assert not f["ok"] and f["field"] == "break_minutes"
     f = wv.report_form({"shift_start": "09:00", "shift_end": "18:00", "break_minutes": "60",
                         "lines": [{"hours": "10", "note": "x"}]})
     assert f["ok"] and f["totals"]["tone"] == "danger" and f["submit_problems"]      # сохранить можно, отправить — нет
+
+
+def test_program_assembles_missing_report_then_self_check_and_submit(world, proj, mk):  # noqa: F811
+    """D-43 (A-48 п. 3–4): назавтра после рабочего дня программа сама собирает отчёт по действиям — «На
+    самопроверке», руководителю не виден; без отметок не отправить; после самопроверки — у руководителя. Повторно день
+    не собирается; при отказе сервера собранное отменяется и не мешает очереди."""
+    world.clock.advance(seconds=61)
+    base = None
+    rp = mk("rp1")
+    base = rp.base_dir
+    for title in ("Схема насосной", "Спецификация"):
+        assert rp.execute("task.create", {"id": new_id(), "kit_id": proj.kit, "title": title}).status == "accepted"
+        world.clock.advance(minutes=50)
+    assert rp.assemble_missing_reports() == []                       # сегодняшний день ещё идёт
+    world.clock.advance(hours=22)                                     # следующий день; сеанс истёк — вход заново
+    rp = mk("rp1", base=base)
+    rp.t.online = False
+    assert rp.sync().assembled == 0                                   # без связи не собирает
+    rp.t.online = True
+    rep = rp.sync()
+    assert rep.assembled == 1 and rp.pending_count() == 0
+    row = view(rp)["mine"][0]
+    assert (row["work_date"], row["status"], row["origin"]) == ("2026-11-16", "self_check", "auto")
+    assert row["assembled_label"].startswith("по ") and row["lines"] and row["may_submit"]
+    assert {ln["source"] for ln in row["lines"]} <= {"estimated", "measured"} and row["lines"][0]["source_label"]
+    assert view(rp)["counts"]["self_check"] == 1 and view(rp)["self_check_banner"]
+    assert rp.sync().assembled == 0                                   # день уже с отчётом
+    head = world.login("head1")
+    assert all(x["id"] != row["id"] for x in head.query("pull")["result"]["daily_reports"])
+    r = rp.submit_report(row["id"], {"shift": True, "lines": True})
+    assert r.status == "rejected" and "Часы в строках" in r.message_ru
+    rp.discard(r.operation_id)
+    assert rp.submit_report(row["id"], SC).status == "accepted"
+    assert [x["id"] for x in head.query("pull")["result"]["daily_reports"]] == [row["id"]]
+    # Другой компьютер с устаревшими данными собрал тот же день — сервер отказал, операция сразу отменена.
+    orig = rp.list_local
+    rp.list_local = lambda t: [] if t == "daily_report" else orig(t)
+    assert rp.assemble_missing_reports() == [] and rp.problem_count() == 0 and rp.pending_count() == 0
+    assert rp.db.execute("SELECT COUNT(*) FROM outbox WHERE command='report.create' AND state='discarded'").fetchone()[0] == 1

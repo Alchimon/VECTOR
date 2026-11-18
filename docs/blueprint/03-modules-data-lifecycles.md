@@ -106,7 +106,7 @@ ProductInstance 1─* ServiceEvent / Replacement / Claim;  Claim ─* CAPA;  ECR
 > `claims.instance_id` необязателен (рекламация без заводского номера) — единственная миграция, меняющая существующий
 > столбец. Срок «закрыт», когда после его установки записан ответ.
 
-**Дневной отчёт**: `draft → in_review → submitted → accepted | returned`. Реализовано (D-42) упрощённо: `draft → submitted → accepted | returned`; «самопроверку» (`in_review`) выполняет программа перед отправкой; `returned` → правка → `submitted`; `submitted | accepted → draft` — исправление с основанием.
+**Дневной отчёт**: `draft → in_review → submitted → accepted | returned`. Реализовано (D-42, D-43): `draft | self_check → submitted → accepted | returned`; отчёт, собранный программой по действиям сотрудника, создаётся сразу в `self_check` («на самопроверке» — соответствует `in_review`); отправка из любого редактируемого статуса — только с отметками самопроверки сотрудника (A-48 п. 4); `returned` → правка → `submitted`; `submitted | accepted → draft` — исправление с основанием. Смена может идти через полночь (конец хранится > 1440 мин).
 
 **Конфигурация**: `draft → validated → preview → published → superseded`; rollback = публикация
 предыдущей версии новой записью.

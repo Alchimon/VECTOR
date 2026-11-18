@@ -43,7 +43,10 @@ from vector.core import money
 #         классификация дефекта, срок ответа заказчику, неизменяемые ответы заказчику (D-40, ответ на A-46).
 #   v20 — рабочее время (D-42): дневные отчёты сотрудников (смена, строки «на что ушло время»), журнал шагов отчёта
 #         (неизменяемый) — таблицы daily_reports, daily_report_lines, daily_report_events.
-SCHEMA_VERSION = 20
+#   v21 — ответы на A-48 (D-43): отчёт собирает программа (daily_report_auto, источник времени строк
+#         daily_report_line_sources), статус «на самопроверке», ночная смена (ослаблены ограничения daily_reports),
+#         индекс журнала аудита по сотруднику и времени.
+SCHEMA_VERSION = 21
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1321,6 +1324,17 @@ claim_responses = sa.Table("claim_responses", metadata,
 # Дневной отчёт: один на сотрудника за рабочий день. Смена — минуты от полуночи (начало, конец; обе или ни одной),
 # перерыв — минуты; total_minutes — сумма строк (для списков без чтения строк). Статусы: draft → submitted →
 # accepted | returned; submitted / accepted → draft — исправление с основанием (report.reopen).
+# v21 (D-43, ответы на A-48): статус self_check — отчёт собран программой и ждёт самопроверки сотрудника; ночная
+# смена — конец больше 1440 (минуты от полуночи дня начала), смена не длиннее суток. Ограничения status и shift
+# ослаблены миграцией v20 → v21 (migrate._v20_to_v21), данные не меняются. Тексты — константы ниже.
+REPORT_STATUS_CHECK_V20 = "status IN ('draft','submitted','accepted','returned')"
+REPORT_SHIFT_CHECK_V20 = ("(shift_start IS NULL AND shift_end IS NULL) OR (shift_start IS NOT NULL AND shift_end IS NOT NULL "
+                          "AND shift_start >= 0 AND shift_end <= 1440 AND shift_end > shift_start)")
+REPORT_STATUS_CHECK = "status IN ('draft','self_check','submitted','accepted','returned')"
+REPORT_SHIFT_CHECK = ("(shift_start IS NULL AND shift_end IS NULL) OR (shift_start IS NOT NULL AND shift_end IS NOT NULL "
+                      "AND shift_start >= 0 AND shift_start < 1440 AND shift_end > shift_start "
+                      "AND shift_end <= shift_start + 1440)")
+
 daily_reports = sa.Table("daily_reports", metadata,
     sa.Column("id", ID, primary_key=True),
     sa.Column("user_id", ID, sa.ForeignKey("users.id"), nullable=False, index=True),
@@ -1337,9 +1351,8 @@ daily_reports = sa.Table("daily_reports", metadata,
     sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
     sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
     sa.UniqueConstraint("user_id", "work_date", name="uq_daily_reports_day"),
-    sa.CheckConstraint("status IN ('draft','submitted','accepted','returned')", name="status"),
-    sa.CheckConstraint("(shift_start IS NULL AND shift_end IS NULL) OR (shift_start IS NOT NULL AND shift_end IS NOT NULL "
-                       "AND shift_start >= 0 AND shift_end <= 1440 AND shift_end > shift_start)", name="shift"),
+    sa.CheckConstraint(REPORT_STATUS_CHECK, name="status"),
+    sa.CheckConstraint(REPORT_SHIFT_CHECK, name="shift"),
     sa.CheckConstraint("break_minutes >= 0 AND total_minutes >= 0", name="minutes"))
 
 # Строки отчёта «на что ушло время»: проект и задача (если работа проектная), минуты, что сделано. Меняются только
@@ -1369,6 +1382,21 @@ daily_report_events = sa.Table("daily_report_events", metadata,
     sa.Column("decided_at", UtcDateTime, nullable=False),
     sa.UniqueConstraint("report_id", "seq", name="uq_daily_report_events_seq"))
 
+# ------------------------------------------------------------ D-43 (схема v21): отчёт, собранный программой
+# Отметка «отчёт собрала программа» (A-48 п. 3): когда и по скольким действиям; одна строка на отчёт, не меняется.
+daily_report_auto = sa.Table("daily_report_auto", metadata,
+    sa.Column("report_id", ID, sa.ForeignKey("daily_reports.id"), primary_key=True),
+    sa.Column("assembled_at", UtcDateTime, nullable=False),
+    sa.Column("summary_json", T, nullable=False))
+
+# Откуда время строки: measured — по таймеру операции, estimated — оценка программы; нет записи — строку написал
+# сотрудник. Ключ — (отчёт, номер строки): заменяется вместе со строками при сохранении.
+daily_report_line_sources = sa.Table("daily_report_line_sources", metadata,
+    sa.Column("report_id", ID, sa.ForeignKey("daily_reports.id"), primary_key=True),
+    sa.Column("line_no", sa.Integer, primary_key=True),
+    sa.Column("source", U(16), nullable=False),
+    sa.CheckConstraint("source IN ('measured','estimated')", name="source"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -1395,6 +1423,8 @@ audit_log = sa.Table("audit_log", metadata,
     sa.Column("result", U(32), nullable=False),
     sa.Column("details_json", T, nullable=False))
 sa.Index("ix_audit_object", audit_log.c.object_type, audit_log.c.object_id)
+# v21 (D-43): действия сотрудника за день — для отчёта, который собирает программа (pull «worktime_activity»).
+AUDIT_ACTOR_INDEX = sa.Index("ix_audit_actor_at", audit_log.c.actor_user_id, audit_log.c.at)
 
 # Порядок таблиц для резервного копирования/восстановления (родители раньше детей).
 BACKUP_TABLE_ORDER = [t.name for t in metadata.sorted_tables]
@@ -1461,7 +1491,7 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (work_order_snapshots, 50023), (wo_timer_events, 50024), (wo_substitutions, 50025),
                  (work_order_issues, 50026), (instance_compositions, 50027), (instance_events, 50028),
                  (passport_exports, 50029), (effectiveness_checks, 50030), (quality_decisions, 50031),
-                 (claim_responses, 50032), (daily_report_events, 50033)):
+                 (claim_responses, 50032), (daily_report_events, 50033), (daily_report_auto, 50034)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):
