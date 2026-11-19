@@ -1,8 +1,7 @@
-"""Ответы владельца на A-53 (D-49), чистые функции ядра vector.core.workday:
+"""Ответы владельца на A-53 (D-49) и уточнение A-54, чистые функции ядра vector.core.workday:
 
-* п. 1 — «исключить тот факт, что человек заработался и не нажал, а он по факту работал»: пока за компьютером
-  работают, забытый день сам не завершается; ушли — «Завершить» временем последней активности (не раньше
-  напоминания), на перерыве — моментом «Перерыв»; дальше суток от начала день не продлевается;
+* A-54 — ввод с клавиатуры/мыши не отслеживается; после ожидания без ответа «Завершить» записывается по времени
+  напоминания; на перерыве — моментом «Перерыв»; дальше суток от начала день не продлевается;
 * п. 3 — отметки дня: работа в праздничный день, в выходной по графику, сверхурочно (сверх нормы по графику);
 * п. 5 — интервалы напоминания и ожидания — настройки компании (только допустимые значения).
 """
@@ -45,33 +44,27 @@ def test_day_marks_overtime_weekend_holiday_short_and_exempt():
     assert wd.day_marks(S, mon, None, CAL)["mark"] == "" and wd.day_marks(None, mon, 600)["overtime_minutes"] == 120
 
 
-def test_activity_keeps_day_open_and_finish_at_last_activity():
-    """Напоминание в 18:00. Работают за компьютером — день не завершается (remind), сколько бы ни прошло; ушли в
-    19:40 — через 30 минут тишины (20:10) auto, «Завершить» в 19:40. Без активности — как раньше: в 18:30, временем
-    напоминания. Активность до напоминания не сдвигает время раньше него."""
+def test_auto_finish_uses_reminder_boundary_without_input_monitoring():
+    """Без отслеживания клавиатуры и мыши: после ожидания завершаем по напоминанию; на перерыве — по кнопке «Перерыв»."""
     t0 = datetime(2026, 11, 16, 9, 0, tzinfo=UTC)
     due = datetime(2026, 11, 16, 18, 0, tzinfo=UTC)
     st = wd.day_state([{"seq": 1, "event": "start", "device_time": t0.isoformat()}], due)
     at = lambda h, m: datetime(2026, 11, 16, h, m, tzinfo=UTC)          # noqa: E731
-    assert wd.reminder_state(due, at(18, 31)) == "auto"                  # без сведений об активности — как D-47
-    assert wd.auto_finish_time(st, due, at(18, 31)) == due
-    act = at(19, 40)
-    assert wd.reminder_state(due, at(19, 41), last_activity=act) == "remind"
-    assert wd.reminder_state(due, at(20, 9), last_activity=act) == "remind"
-    assert wd.reminder_state(due, at(20, 10), last_activity=act) == "auto"
-    assert wd.auto_finish_time(st, due, at(20, 10), act) == act
-    assert wd.auto_finish_time(st, due, at(18, 31), at(17, 0)) == due     # ушёл раньше — конец по графику
-    # Настройка «ждать час»: в 20:39 ещё напоминание, в 20:40 — завершить.
-    assert wd.reminder_state(due, at(20, 39), timedelta(hours=1), act) == "remind"
-    assert wd.reminder_state(due, at(20, 40), timedelta(hours=1), act) == "auto"
-    # Сутки от начала — предел, даже если за компьютером работают.
+    assert wd.reminder_state(due, at(17, 59)) == "none"
+    assert wd.reminder_state(due, at(18, 29)) == "remind"
+    assert wd.reminder_state(due, at(18, 30)) == "auto"
+    assert wd.auto_finish_time(st, due, at(18, 30)) == due
+    # Настройка «ждать час»: в 18:59 ещё напоминание, в 19:00 — завершить.
+    assert wd.reminder_state(due, at(18, 59), timedelta(hours=1)) == "remind"
+    assert wd.reminder_state(due, at(19, 0), timedelta(hours=1)) == "auto"
+    # Сутки от начала — предел.
     nxt = t0 + wd.MAX_DAY
-    assert wd.reminder_state(due, nxt, last_activity=nxt, hard_stop=nxt) == "auto"
-    assert wd.auto_finish_time(st, due, nxt + timedelta(minutes=5), nxt + timedelta(minutes=5)) == nxt
+    assert wd.reminder_state(due, nxt, hard_stop=nxt) == "auto"
+    assert wd.auto_finish_time(st, due, nxt + timedelta(minutes=5), nxt) == nxt
     # На перерыве — моментом «Перерыв» (перерыв только по кнопке, A-49 п. 3).
     paused = wd.day_state([{"seq": 1, "event": "start", "device_time": t0.isoformat()},
                            {"seq": 2, "event": "pause", "device_time": at(17, 30).isoformat()}], due)
-    assert wd.auto_finish_time(paused, due, at(20, 10), act) == at(17, 30)
+    assert wd.auto_finish_time(paused, due, at(20, 10)) == at(17, 30)
 
 
 def test_settings_minutes_and_snooze_interval():

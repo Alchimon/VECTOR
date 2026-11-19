@@ -620,12 +620,11 @@ def main():
         h.backend.workdayCheckReminder()
         h.wait_idle()
         h.shot(out / f"{theme}-57-workday-end-prompt.png")
-        # D-49 (A-53 п. 1): напоминание без ответа, но за компьютером работают — день сам не завершается.
-        c.workday_note_activity(due + _td(minutes=50))
-        c.clock = _Clock(due + _td(minutes=65))
+        # A-54: никакой активности клавиатуры/мыши не собираем; без ответа день завершается по времени напоминания.
+        c.clock = _Clock(due + _td(minutes=31))
         h.backend.workdayCheckReminder()
         h.wait_idle()
-        h.shot(out / f"{theme}-62-workday-still-working.png")
+        h.shot(out / f"{theme}-62-workday-auto-finish.png")
         h.backend.setWorkdayPromptAuto(False)
         c.clock = None
         h.backend.logout()

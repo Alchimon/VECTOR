@@ -41,7 +41,32 @@ MasterDetail {
     tab: "mine"
     tabsName: "worktimeTabs"
     // Таймер рабочего дня (D-46): подробности дня, «Я начал раньше», руководителю — запросы на начало дня.
-    topContent: [ WorkdayCard { Layout.fillWidth: true } ]
+    topContent: [
+        WorkdayCard { Layout.fillWidth: true },
+        Rectangle {
+            Layout.fillWidth: true
+            visible: page.tab === "review" && (page.wv.weekly_metrics.units || []).length > 0
+            implicitHeight: metricsColumn.implicitHeight + 24
+            radius: 12; color: Theme.surface; border.color: Theme.border
+            ToolTip.visible: metricsHover.hovered
+            ToolTip.text: "Итоги отправленных дневных отчётов за прошлую полную неделю. Данные сгруппированы по подразделениям и включают подчинённые подразделения; персональные действия сотрудников не собираются. Это рабочая метрика, не табель."
+            HoverHandler { id: metricsHover }
+            ColumnLayout {
+                id: metricsColumn
+                anchors.fill: parent; anchors.margins: 12; spacing: 6
+                Text { text: "Недельные итоги подразделений · " + page.wv.weekly_metrics.week_start + " — " + page.wv.weekly_metrics.week_end
+                    color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold }
+                Repeater {
+                    model: page.wv.weekly_metrics.units || []
+                    delegate: RowLayout {
+                        Layout.fillWidth: true
+                        Text { Layout.fillWidth: true; text: modelData.name; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs }
+                        Text { text: modelData.reports + " отчётов · " + modelData.hours_label; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
+                    }
+                }
+            }
+        }
+    ]
     tabs: wv.tabs || []
     onTabPicked: id => { tab = id; selectedId = "" }
     title: "Рабочее время"

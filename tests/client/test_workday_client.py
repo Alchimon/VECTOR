@@ -274,58 +274,37 @@ def test_production_calendar_moves_prompt_and_reminder(world, mk, tmp_path):
     assert next(y for y in cal["years"] if y["year"] == 2027)["state"] == "loaded"
 
 
-def test_activity_postpones_auto_finish_and_company_intervals(world, mk):
-    """D-49 (ответы владельца на A-53 пп. 1, 3, 5). Администратор задал в настройках компании: повтор напоминания —
-    через 30 минут, автоматическое завершение — через час. Сотрудник нажал «Работаю дальше» и заработался: пока за
-    компьютером работают, день не завершается; ушёл в 19:40 — через час тишины день завершается в 19:40 (а не временем
-    напоминания); под таймером — «Сверхурочно» (норма 8 ч)."""
+def test_auto_finish_uses_reminder_without_input_tracking(world, mk):
+    """A-54: no keyboard/mouse monitoring; after configured wait, auto-finish uses the reminder boundary."""
     for key, value in (("workday.reminder_repeat", "30"), ("workday.auto_finish_wait", "60")):
         r = world.admin.cmd("config.publish", {"key": key, "value": value, "reason": "Решение руководства"},
                             expected_version=0)
         assert r["status"] == "accepted", r
     assert world.admin.cmd("config.publish", {"key": "workday.auto_finish_wait", "value": "45", "reason": "x"},
-                           expected_version=1)["code"] == "bad_value"           # только из каталога
-    world.clock.advance(seconds=61)                                      # 09:01 UTC, понедельник
+                           expected_version=1)["code"] == "bad_value"
+    world.clock.advance(seconds=61)
     eng = mk("eng1")
     eng.pull()
     assert eng.workday_intervals() == {"remind": 30, "wait": 60}
-    eng.workday_note_activity(datetime(2026, 11, 16, 8, 0, tzinfo=UTC))  # до начала дня — к нему не относится
     assert eng.workday_mark("start", UTC).status == "accepted"
-    world.clock.advance(hours=9)                                         # 18:01 — напоминание
+    world.clock.advance(hours=9)
     r = eng.workday_reminder(UTC)
     assert (r["state"], r["wait_minutes"], r["active"]) == ("remind", 60, False)
-    assert "Без ответа и без работы за компьютером час программа завершит день сама — в 18:00" in view(eng)["reminder_text"]
-    eng.workday_snooze(r["workday_id"], UTC)                             # «Работаю дальше» — через 30 минут
-    world.clock.advance(minutes=30)                                      # 18:31
+    assert "завершит день автоматически по времени напоминания" in view(eng)["reminder_text"]
+    eng.workday_snooze(r["workday_id"], UTC)
+    world.clock.advance(minutes=30)
     r = eng.workday_reminder(UTC)
     assert (r["state"], r["due_label"]) == ("remind", "18:31")
-    world.clock.advance(minutes=69)                                      # 19:40 — работает за компьютером
-    eng.workday_note_activity(eng.now())
-    eng.workday_note_activity(eng.now() - timedelta(hours=1))           # более раннее время не перезаписывает
-    assert eng.workday_last_activity() == eng.now()
-    world.clock.advance(minutes=59)                                      # 20:39 — тишина 59 минут: ещё напоминание
+    world.clock.advance(minutes=59)
+    assert eng.workday_reminder(UTC)["state"] == "remind"
+    world.clock.advance(minutes=1)
     r = eng.workday_reminder(UTC)
-    assert (r["state"], r["active"], r["auto_label"]) == ("remind", True, "19:40")
-    assert "Вы работаете за компьютером — день сам не завершится" in view(eng)["reminder_text"]
-    assert eng.workday_auto_finish("no_answer", UTC) == []
-    world.clock.advance(minutes=1)                                       # 20:40 — час без работы
-    assert eng.workday_reminder(UTC)["state"] == "auto"
+    assert (r["state"], r["auto_label"]) == ("auto", "18:31")
     res = eng.workday_auto_finish("no_answer", UTC)
     assert [x.status for x in res] in (["accepted"], ["queued"])
     v = view(eng)
-    assert v["status"] == "finished" and "завершён автоматически в 19:40" in v["end_label"]
-    assert "временем последней работы" in v["end_label"]
-    # 09:01:01 → 19:40:01 = 10 ч 39 мин; норма встроенного графика 8 ч → сверхурочно 2 ч 39 мин.
-    assert (v["day_mark"], v["day_mark_tone"]) == ("overtime", "warning")
-    assert v["day_mark_label"] == "Сверхурочно — 2 ч 39 мин (норма по графику 8 ч 00 мин)"
-    # Сервер принимает «Завершить» (auto) позже конца по графику: время — последняя работа, а не 18:00.
-    assert eng.login("eng1", PWD).status == "accepted"
-    eng.sync()
-    assert eng.problem_count() == 0
-    day = [d for d in eng.list_local("workday") if d["work_date"] == "2026-11-16"][0]
-    fin = [e for e in day["events"] if e["event"] == "finish"][0]
-    assert fin["device_time"].startswith("2026-11-16T19:40") and fin["auto"] == "no_answer"
-
+    assert v["worked_seconds"] == (9 * 60 + 30) * 60
+    assert v["status"] == "finished" and v["finished_label"] == "18:31"
 
 def test_weekend_and_holiday_marks_under_timer(world, mk):
     """Работа в выходной день — отметка под таймером (D-49, A-53 п. 3); окна «Начните рабочий день» нет, но начать

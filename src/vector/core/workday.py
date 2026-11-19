@@ -23,10 +23,9 @@
 
 Ответы владельца на A-53 (D-49):
 
-* п. 1 — «да, но надо исключить тот факт, что человек заработался и не нажал, а он по факту работал»: пока за
-  компьютером работают (клавиатура, мышь — программа знает только время последнего нажатия, ничего больше), день
-  сам не завершается; ушли — день завершается **временем последней активности** (не раньше конца по графику или
-  повторного напоминания): reminder_state, auto_finish_time;
+* п. 1 — исходное D-49 предлагало проверять компьютерную активность. Владелец уточнил в A-54: **отслеживание
+  клавиатуры, мыши и программ не используется**. После заданного ожидания без ответа день завершается по времени
+  напоминания; если работали дольше — можно запросить согласование фактического окончания у руководителя.
 * п. 3 — работу в праздничные и выходные дни отметить, время сверх нормы — «сверхурочно»: day_marks;
 * п. 5 — «дать возможность менять» интервалы: повтор напоминания и ожидание до автоматического завершения —
   настройки компании (workday.reminder_repeat, workday.auto_finish_wait; settings_minutes).
@@ -311,40 +310,35 @@ def due_at(state: dict, schedule_end: Optional[datetime], schedule_minutes: int,
 
 
 def reminder_state(due: Optional[datetime], now: datetime, wait: timedelta = AUTO_FINISH_AFTER,
-                   last_activity: Optional[datetime] = None, hard_stop: Optional[datetime] = None) -> str:
-    """none — рано (или день не идёт); remind — показать напоминание о конце дня; auto — завершить день
-    автоматически (время — auto_finish_time).
+                   hard_stop: Optional[datetime] = None) -> str:
+    """none — рано (или день не идёт); remind — напоминание; auto — автоматическое завершение.
 
-    auto — когда с момента напоминания (due) прошло wait (по умолчанию 30 минут; настройка компании
-    workday.auto_finish_wait, D-49) **и** столько же за компьютером никто не работал (D-49, A-53 п. 1: «исключить
-    тот факт, что человек заработался и не нажал»): last_activity — время последнего нажатия клавиатуры или мыши
-    (None — неизвестно, например программа была закрыта). Работают — напоминание висит, день идёт дальше.
-    hard_stop — сутки от начала дня (MAX_DAY): дальше день не продлевается, даже если за компьютером работают.
-
-    Порядок в программе важен: сначала решается, пора ли завершать, по активности, записанной раньше, и только
-    потом запоминается новая — иначе утреннее нажатие после выключенного на ночь компьютера «продлило» бы вчерашний
-    день до утра."""
+    День завершается после ожидания wait от напоминания (по умолчанию 30 минут; настройка компании
+    workday.auto_finish_wait). Ввод с клавиатуры/мыши не собирается и не влияет на состояние. Сотрудник может
+    подтвердить продолжение работы, тогда новое напоминание и ожидание считаются отложенными до выбранного срока.
+    hard_stop ограничивает длительность дня сутками (MAX_DAY).
+    """
     if due is None or now < due:
         return "none"
     if hard_stop is not None and now >= hard_stop:
         return "auto"
-    quiet_since = max(due, last_activity) if last_activity is not None else due
-    return "auto" if now - quiet_since >= wait else "remind"
+    return "auto" if now - due >= wait else "remind"
 
 
-def auto_finish_time(state: dict, due: datetime, now: datetime, last_activity: Optional[datetime] = None) -> datetime:
-    """Во сколько записать автоматическое «Завершить» (D-47; D-49 — A-53 пп. 1–2).
+def auto_finish_time(state: dict, due: datetime, now: datetime, hard_stop: Optional[datetime] = None) -> datetime:
+    """Время автоматического завершения (D-47, A-51): граница напоминания; на перерыве — момент «Перерыв».
 
-    * на перерыве — момент «Перерыв» (перерыв считается только по кнопке, работы после него не было — A-49 п. 3);
-    * иначе — момент напоминания (конец по графику или конец «Работаю дальше»), а если за компьютером работали и
-      после него — **время последней активности** («по факту работал»);
-    * не позже «сейчас» и суток от начала дня, не раньше последнего нажатия таймера.
+    Активность за компьютером не отслеживается. Время результата ограничено текущим моментом, сутками от начала дня
+    и последним нажатием таймера.
     """
     last_ev = state.get("last_event_at")
     if state.get("status") == "paused" and last_ev is not None:
         return last_ev
-    at = max(due, last_activity) if last_activity is not None else due
-    at = min(at, now)
+    if hard_stop is not None and now >= hard_stop:
+        return max(hard_stop, last_ev) if last_ev is not None else hard_stop
+    at = min(due, now)
+    if hard_stop is not None:
+        at = min(at, hard_stop)
     if state.get("pressed_at") is not None:
         at = min(at, state["pressed_at"] + MAX_DAY)
     return max(at, last_ev) if last_ev is not None else at

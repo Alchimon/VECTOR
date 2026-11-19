@@ -40,14 +40,15 @@ from typing import Any, Optional
 
 import sqlalchemy as sa
 
+from vector.core import org as og
 from vector.core import workday as wd
 from vector.core import worktime as wt
 from vector.core.errors import Conflict, Denied, Rejected
 
-from .authz import project_member
+from .authz import active_delegated, project_member
 from . import db as _db
 from .db import (audit_log, daily_report_auto, daily_report_events, daily_report_line_sources, daily_report_lines,
-                 daily_reports, projects, tasks, wo_operations, wo_timer_events, work_orders)
+                 daily_reports, org_members, org_units, projects, tasks, wo_operations, wo_timer_events, work_orders)
 from .validation import canon, iso, only_keys, req_uuid
 
 # Подписи шагов журнала отчёта (история карточки).
@@ -418,7 +419,50 @@ class WorktimeMixin:
         cache: dict = {}
         return {"daily_reports": [self.v_daily_report(conn, dict(r._mapping), cache) for r in rows],
                 "worktime_projects": mine, "worktime_reviewer": reviewer,
-                "worktime_activity": self._worktime_activity(conn, uid, now)}
+                "worktime_activity": self._worktime_activity(conn, uid, now),
+                "worktime_weekly_metrics": self._weekly_department_metrics(conn, uid, now, by_role)}
+
+    def _weekly_department_metrics(self, conn, uid: str, now, by_role: bool) -> dict:
+        """Прозрачная агрегированная сводка за прошлую полную неделю для руководителя и его цепочки вверх.
+
+        В сводку входят только отправленные сотрудниками отчёты, без идентификаторов сотрудников и их действий.
+        Значения считаются по оргструктуре на момент запроса; это операционная метрика, не табель и не мониторинг.
+        """
+        if not (by_role or self._is_org_head(conn, uid)):
+            return {"week_start": None, "week_end": None, "units": []}
+        monday = now.date() - timedelta(days=now.date().weekday() + 7)
+        sunday = monday + timedelta(days=6)
+        units = {r.id: dict(r._mapping) for r in conn.execute(
+            sa.select(org_units).where(org_units.c.active == sa.true()))}
+        memberships = {r.user_id: r.unit_id for r in conn.execute(sa.select(org_members.c.user_id, org_members.c.unit_id))}
+        visible = self._review_scope(conn, uid, now, by_role)
+        # Build aggregates by unit and every active ancestor: a head sees own department plus rolled-up descendants.
+        totals: dict[str, dict[str, int]] = {}
+        rows = conn.execute(sa.select(daily_reports).where(
+            daily_reports.c.work_date >= monday, daily_reports.c.work_date <= sunday,
+            daily_reports.c.status.in_(("submitted", "accepted", "returned"))))
+        for row in rows:
+            unit_id = memberships.get(row.user_id)
+            if unit_id is None or unit_id not in units or not visible(row.user_id):
+                continue
+            minutes = max(0, (row.shift_end or 0) - (row.shift_start or 0) - (row.break_minutes or 0))
+            for ancestor in og.ancestors(units, unit_id):
+                stat = totals.setdefault(ancestor, {"reports": 0, "minutes": 0, "submitted": 0,
+                                                     "accepted": 0, "returned": 0})
+                stat["reports"] += 1
+                stat["minutes"] += minutes
+                stat[row.status] += 1
+        heads = {uid} | {holder for _, role, _, holder in active_delegated(conn, uid, now) if role == "dept_head"}
+        roots = {unit for unit, value in units.items() if value.get("head_user_id") in heads}
+        # A line manager sees their own unit and its descendants, not sibling units or a partial total for a parent.
+        visible_unit_ids = {unit for unit in totals if roots.intersection(og.ancestors(units, unit))}
+        # A role-based reviewer with no assigned unit may review unplaced staff; in that case allow whole-company
+        # department aggregates, still composed only from reports allowed by _review_scope above.
+        if by_role and not roots:
+            visible_unit_ids = {unit for unit in totals}
+        return {"week_start": monday.isoformat(), "week_end": sunday.isoformat(),
+                "units": [{"unit_id": unit, "name": units[unit]["name"], **totals[unit]}
+                          for unit in sorted(visible_unit_ids, key=lambda x: (units[x]["name"].casefold(), x))]}
 
     def _worktime_activity(self, conn, uid: str, now) -> dict:
         """Свои действия и таймеры за последние дни — из них программа сотрудника собирает дневной отчёт (D-43).

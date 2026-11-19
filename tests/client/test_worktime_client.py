@@ -105,6 +105,17 @@ def test_view_flags_four_eyes_and_reviewer_own_report():
     assert off["review"][0]["may_review"] and not off["review"][0]["can_review"]
 
 
+def test_weekly_metrics_are_formatted_without_employee_rows():
+    """Dashboard metric formats aggregate department totals, without exposing employee-level records."""
+    v = wv.worktime_view([], [], [], {}, {"user_id": "h"}, True, True, "", TODAY,
+                         weekly_metrics={"week_start": "2026-11-09", "week_end": "2026-11-15",
+                                         "units": [{"unit_id": "u", "name": "Проектный отдел", "reports": 4,
+                                                    "minutes": 450, "submitted": 1, "accepted": 2, "returned": 1}]})
+    unit = v["weekly_metrics"]["units"][0]
+    assert unit["hours_label"] == "7 ч 30 мин" and unit["reports"] == 4
+    assert "user_id" not in unit
+
+
 def test_report_form_rules_without_server():
     """Форма: часы «1,5» / «1:30» / «2» → минуты; пустые строки пропускаются; замечания по строкам; итоги."""
     f = wv.report_form({"shift_start": "08:30", "shift_end": "17:30", "break_minutes": "60", "comment": "",

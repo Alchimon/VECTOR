@@ -1,4 +1,4 @@
-"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-23).
+"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-24).
 
 Запускается ПОСЛЕ установки, при запущенном сервере стенда, Python-ом из окружения стенда:
 
@@ -303,6 +303,8 @@ def main(argv: list[str] | None = None) -> int:
     check_calendar(rep, sessions)
     print("\n14. Сверхурочно, работа в выходной и праздник; настройки напоминания (D-49, П-23)")
     check_day_marks(rep, sessions)
+    print("\n15. Недельные агрегаты по подразделениям без персональных действий (D-50, П-24)")
+    check_weekly_metrics(rep, sessions)
     return finish(rep, tmp)
 
 
@@ -446,6 +448,30 @@ def check_calendar(rep: Report, sessions: dict) -> None:
         rep.warn("у «Смены наладчиков» включён производственный календарь — " + FRESH_HINT)
 
 
+def check_weekly_metrics(rep: Report, sessions: dict) -> None:
+    """Раздел 15: руководитель видит только агрегированные итоги отправленных отчётов за прошлую неделю."""
+    head = sessions.get("v.zaitseva")
+    if head is None:
+        rep.warn("нет входа v.zaitseva — недельные итоги проверить нельзя")
+        return
+    metrics = head.get_meta("worktime_weekly_metrics") or {}
+    units = metrics.get("units") or []
+    if not metrics.get("week_start") or not metrics.get("week_end"):
+        rep.fail("нет границ отчётной недели в worktime_weekly_metrics — сервер старой версии? Обновите стенд")
+        return
+    if not units:
+        rep.warn("нет отправленных дневных отчётов за прошлую неделю — агрегаты пусты")
+        return
+    if any(any(k in item for k in ("user_id", "employee", "user_name")) for item in units):
+        rep.fail("в недельную сводку попали персональные строки; ожидались только итоги подразделений")
+        return
+    if all(int(item.get("reports") or 0) > 0 and int(item.get("minutes") or 0) >= 0 for item in units):
+        rep.ok(f"{metrics['week_start']}—{metrics['week_end']}: агрегаты подразделений — {len(units)}, "
+               "без строк сотрудников")
+    else:
+        rep.fail("в недельных агрегатах некорректны количества отчётов или минуты")
+
+
 def check_day_marks(rep: Report, sessions: dict) -> None:
     """Раздел 14 (D-49, ответы владельца на A-53): v.zaitseva видит в отправленных отчётах сотрудников отметки дня
     (сверхурочно, работа в выходной / праздничный день); интервалы напоминания о конце дня — из настроек компании.
@@ -489,7 +515,7 @@ def finish(rep: Report, tmp=None) -> int:
         print(f"ИТОГ: стенд работает; предупреждений {len(rep.warnings)} — часть сценариев на этих данных не проверить "
               "(см. выше).")
     else:
-        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-23; сценарии — test-pc.md § 6).")
+        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-24; сценарии — test-pc.md § 6).")
     return 0
 
 

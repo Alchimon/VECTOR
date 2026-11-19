@@ -35,6 +35,28 @@ def notes(world, uid, kind):
         return [dict(r._mapping) for r in c.execute(sa.select(t).where(t.c.user_id == uid, t.c.kind == kind))]
 
 
+def test_weekly_metrics_are_aggregate_and_manager_scoped(world, proj):  # noqa: F811
+    """D-50: прошлую полную неделю видит руководитель; обычный сотрудник получает пустой агрегат без личных данных."""
+    unit_id = new_id()
+    world.admin.ok("org.unit_create", {"id": unit_id, "kind": "department", "name": "Инженерный отдел",
+                                       "head_user_id": world.users["head1"]})
+    world.admin.ok("org.member_set", {"user_id": world.users["eng1"], "unit_id": unit_id})
+    manager = pull(world.login("head1"))["worktime_weekly_metrics"]
+    assert (manager["week_start"], manager["week_end"]) == ("2026-11-09", "2026-11-15")
+    assert isinstance(manager["units"], list)
+    assert all("user_id" not in unit and "employee" not in unit for unit in manager["units"])
+    employee = pull(proj.eng)["worktime_weekly_metrics"]
+    assert employee == {"week_start": None, "week_end": None, "units": []}
+    rid = new_id()
+    assert create(proj.eng, rid, day="2026-11-12")["status"] == "accepted"
+    proj.eng.ok("report.submit", {"id": rid, "self_check": SC}, expected_version=1)
+    updated = pull(world.login("head1"))["worktime_weekly_metrics"]
+    row = next((unit for unit in updated["units"] if unit["reports"] == 1), None)
+    assert row is not None, updated
+    assert row["minutes"] == 480 and row["submitted"] == 1
+    assert all("user_id" not in unit for unit in updated["units"])
+
+
 def test_full_cycle_submit_return_resubmit_accept(world, proj):  # noqa: F811
     """Черновик → на проверке → возвращён (с причиной) → правка → снова на проверке → принят; журнал и уведомления."""
     eng, head = proj.eng, world.login("head1")

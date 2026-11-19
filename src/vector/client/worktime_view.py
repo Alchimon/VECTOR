@@ -171,7 +171,8 @@ def _ordinal(iso_d: str) -> int:
 
 
 def worktime_view(reports: list[dict], projects: list[dict], tasks: list[dict], people: dict[str, str], me: dict,
-                  reviewer: bool, online: bool, last_pull: str, today: Optional[date] = None) -> dict[str, Any]:
+                  reviewer: bool, online: bool, last_pull: str, today: Optional[date] = None,
+                  weekly_metrics: Optional[dict] = None) -> dict[str, Any]:
     """Раздел «Время»: свои отчёты, отчёты на проверку (руководителю отдела), варианты проектов и задач для строк."""
     today = today or date.today()
     me_id = me.get("user_id") or ""
@@ -205,7 +206,11 @@ def worktime_view(reports: list[dict], projects: list[dict], tasks: list[dict], 
     task_opts = [{"id": t["id"], "project_id": t.get("project_id") or "", "label": t.get("title") or ""}
                  for t in sorted(tasks or [], key=lambda t: t.get("title") or "")
                  if t.get("project_id") in pmap and t.get("status") not in ("cancelled",)]
+    weekly = weekly_metrics or {}
+    weekly_units = [{**u, "hours_label": wt.hours_label(int(u.get("minutes") or 0))}
+                    for u in weekly.get("units", [])]
     return {
+        "weekly_metrics": {**weekly, "units": weekly_units},
         "tabs": tabs if len(tabs) > 1 else [], "default_tab": "review" if reviewer and to_review else "mine",
         "mine": mine, "review": others, "reviewer": reviewer, "online": online, "as_of": as_of_label(last_pull),
         "today": t_iso, "today_label": wt.date_label(t_iso), "today_id": today_row["id"] if today_row else "",
