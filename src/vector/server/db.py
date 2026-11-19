@@ -60,7 +60,8 @@ from vector.core import money
 #         (work_schedule_calendar). Только новые таблицы.
 #   v26 — первый журнал заявок сверхурочной/выходной/праздничной работы и append-only история решений (D-52).
 #         Ставки и суммы отсутствуют; таблицы overtime_requests и overtime_events.
-SCHEMA_VERSION = 26
+#   v27 — выбор компанией календарного периода и неизменяемый снимок периода у каждой заявки.
+SCHEMA_VERSION = 27
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1597,6 +1598,21 @@ overtime_events = sa.Table("overtime_events", metadata,
     sa.Column("details_json", T, nullable=False), sa.Column("actor_id", ID, sa.ForeignKey("users.id"), nullable=False),
     sa.Column("authority", U(120), nullable=False), sa.Column("at", UtcDateTime, nullable=False),
     sa.UniqueConstraint("request_id", "seq", name="uq_overtime_events_seq"))
+# Company period selection is explicit: no request can be filed while configuration is missing.
+overtime_period_config = sa.Table("overtime_period_config", metadata,
+    sa.Column("id", sa.Integer, primary_key=True, autoincrement=False),
+    sa.Column("mode", U(16), nullable=False), sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("updated_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("id = 1", name="singleton"),
+    sa.CheckConstraint("mode IN ('month','quarter','year')", name="mode"))
+# Snapshot mode and calendar boundaries for each application; future configuration changes never rewrite history.
+overtime_request_periods = sa.Table("overtime_request_periods", metadata,
+    sa.Column("request_id", ID, sa.ForeignKey("overtime_requests.id"), primary_key=True),
+    sa.Column("mode", U(16), nullable=False), sa.Column("period_start", sa.Date, nullable=False),
+    sa.Column("period_end", sa.Date, nullable=False), sa.Column("config_version", sa.Integer, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("period_end >= period_start", name="range"))
 
 # ---- производственный календарь (D-48, ответ владельца на A-52 п. 3) ----
 # Загруженный в базу календарь на год (xmlcalendar.ru из интернета или из файла; vector.core.prodcal). Загруженный год
@@ -1733,7 +1749,7 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (work_order_issues, 50026), (instance_compositions, 50027), (instance_events, 50028),
                  (passport_exports, 50029), (effectiveness_checks, 50030), (quality_decisions, 50031),
                  (claim_responses, 50032), (daily_report_events, 50033), (daily_report_auto, 50034),
-                 (org_events, 50035), (workday_events, 50036), (workday_auto_finishes, 50037), (overtime_events, 50040)):
+                 (org_events, 50035), (workday_events, 50036), (workday_auto_finishes, 50037), (overtime_events, 50040), (overtime_request_periods, 50041)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

@@ -94,7 +94,8 @@ OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp")
                 # фактическое начало дня — свои (офлайн через очередь) и, руководителю, сотрудников (решение — онлайн).
                 ("workday", "workdays"), ("workday_start_request", "workday_start_requests"),
                 # D-47: запросы на фактическое окончание дня (день завершён автоматически) — так же, как начало.
-                ("workday_end_request", "workday_end_requests"))
+                ("workday_end_request", "workday_end_requests"),
+                ("overtime_request", "overtime_requests"))
 # Объекты из результата команды → список в meta (ключ результата, ключ meta); заменяются по id.
 # Движения склада, резервы и потребности меняются ТОЛЬКО онлайн-командами (online_required): в кэше это
 # снимок «на момент последнего обновления», офлайн он только читается.
@@ -120,7 +121,7 @@ STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_
               # D-42: проекты, где сотрудник участник (для строк дневного отчёта), и может ли он проверять отчёты.
               "worktime_projects", "worktime_reviewer", "worktime_weekly_metrics",
               # D-43: свои действия и таймеры за последние дни — из них программа собирает дневной отчёт.
-              "worktime_activity",
+              "worktime_activity", "overtime_period_config",
               # D-44: оргструктура — подразделения, сотрудники в них, последние изменения, моё подразделение и кто
               # проверяет мои отчёты (меняется только онлайн-командами администратора).
               "org_units", "org_members", "org_events", "org_me",

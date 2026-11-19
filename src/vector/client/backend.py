@@ -886,7 +886,9 @@ class Backend(QObject):
         return qml_safe(worktime_view.worktime_view(
             reports, st.get("worktime_projects") or [], self._data.get("task", []), self._people, self._me,
             bool(st.get("worktime_reviewer")), self._online and self._session_mode == "online", self._last_pull,
-            weekly_metrics=st.get("worktime_weekly_metrics") or {}))
+            weekly_metrics=st.get("worktime_weekly_metrics") or {},
+            overtime_requests=self._data.get("overtime_request", []),
+            overtime_period_config=st.get("overtime_period_config") or {}))
 
     @Slot("QVariantMap", result="QVariantMap")
     def reportCheck(self, payload) -> dict:
@@ -925,6 +927,35 @@ class Backend(QObject):
             r = self.client.submit_report(report_id, sc)
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, "report.submit", res))
+
+    @Slot(str, "QVariantMap")
+    def overtimeRequest(self, tag: str, payload):
+        """Подать заявку на сверхурочные/выходные часы только с подтверждённой связью с сервером."""
+        data = _plain(payload.toVariant() if hasattr(payload, "toVariant") else payload)
+        data["id"] = data.get("id") or self.newId()
+        def job():
+            r = self.client.execute("overtime.request", data)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "overtime.request", res))
+
+    @Slot(str, str, str, str, int)
+    def overtimeDecision(self, tag: str, request_id: str, decision: str, comment: str, version: int):
+        """Принять/отклонить заявку с ожидаемой версией; решение требует связи."""
+        payload = {"id": request_id, "decision": decision}
+        if comment:
+            payload["comment"] = comment
+        def job():
+            r = self.client.execute("overtime.decide", payload, version)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "overtime.decide", res))
+
+    @Slot(str, str, int)
+    def setOvertimePeriod(self, tag: str, mode: str, version: int):
+        """Изменить настройку учётного периода компании; только при связи, администратор."""
+        def job():
+            r = self.client.execute("overtime.period_set", {"mode": mode}, version if version > 0 else None)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "overtime.period_set", res))
 
     # ------------------------------------------------------------ таймер рабочего дня (D-46, A-49 пп. 2–5)
     _WORKDAY_OK = {"start": "Рабочий день начат — таймер идёт.", "pause": "Перерыв — таймер остановлен.",

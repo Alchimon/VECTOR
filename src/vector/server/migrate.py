@@ -93,6 +93,7 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     24: [db.work_schedules, db.work_schedule_links, db.workday_auto_finishes, db.workday_end_requests],
     25: [db.work_calendar_years, db.work_calendar_days, db.work_calendar_overrides, db.work_schedule_calendar],
     26: [db.overtime_requests, db.overtime_events],
+    27: [db.overtime_period_config, db.overtime_request_periods],
 }
 
 
@@ -272,7 +273,8 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               21: _create_tables(ADDED_IN[22]), 22: _create_tables(ADDED_IN[23]),
                               23: _create_tables(ADDED_IN[24]),
                               24: _create_tables(ADDED_IN[25]),
-                              25: _create_tables(ADDED_IN[26])}
+                              25: _create_tables(ADDED_IN[26]),
+                              26: _create_tables(ADDED_IN[27])}
 
 
 @dataclass

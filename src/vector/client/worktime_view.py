@@ -172,7 +172,8 @@ def _ordinal(iso_d: str) -> int:
 
 def worktime_view(reports: list[dict], projects: list[dict], tasks: list[dict], people: dict[str, str], me: dict,
                   reviewer: bool, online: bool, last_pull: str, today: Optional[date] = None,
-                  weekly_metrics: Optional[dict] = None) -> dict[str, Any]:
+                  weekly_metrics: Optional[dict] = None, overtime_requests: Optional[list[dict]] = None,
+                  overtime_period_config: Optional[dict] = None) -> dict[str, Any]:
     """Раздел «Время»: свои отчёты, отчёты на проверку (руководителю отдела), варианты проектов и задач для строк."""
     today = today or date.today()
     me_id = me.get("user_id") or ""
@@ -207,10 +208,25 @@ def worktime_view(reports: list[dict], projects: list[dict], tasks: list[dict], 
                  for t in sorted(tasks or [], key=lambda t: t.get("title") or "")
                  if t.get("project_id") in pmap and t.get("status") not in ("cancelled",)]
     weekly = weekly_metrics or {}
+    overtime_rows = []
+    for request in overtime_requests or []:
+        row = dict(request)
+        row["is_own"] = row.get("user_id") == me_id
+        row["kind_label"] = {"overtime": "Сверхурочная работа", "weekend": "Работа в выходной день",
+                             "holiday": "Работа в федеральный праздник"}.get(row.get("kind"), "—")
+        row["mode_label"] = {"planned": "Согласовано заранее", "urgent_after": "Срочная работа — после факта"}.get(
+            row.get("mode"), "—")
+        row["status_label"] = {"pending": "Ожидает решения", "approved": "Согласовано", "rejected": "Отклонено"}.get(
+            row.get("status"), "—")
+        overtime_rows.append(row)
     weekly_units = [{**u, "hours_label": wt.hours_label(int(u.get("minutes") or 0))}
                     for u in weekly.get("units", [])]
     return {
         "weekly_metrics": {**weekly, "units": weekly_units},
+        "overtime_requests": overtime_rows,
+        "overtime_period_config": overtime_period_config or {},
+        "overtime_period_label": {"month": "Календарный месяц", "quarter": "Календарный квартал",
+                                  "year": "Календарный год"}.get((overtime_period_config or {}).get("mode"), "Не настроен"),
         "tabs": tabs if len(tabs) > 1 else [], "default_tab": "review" if reviewer and to_review else "mine",
         "mine": mine, "review": others, "reviewer": reviewer, "online": online, "as_of": as_of_label(last_pull),
         "today": t_iso, "today_label": wt.date_label(t_iso), "today_id": today_row["id"] if today_row else "",

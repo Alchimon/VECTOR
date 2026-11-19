@@ -205,6 +205,7 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             # Рабочее время и дневной отчёт (worktime.py, D-42).
             "report.create": self._report_create, "report.save": self._report_save, "report.submit": self._report_submit,
             "report.reopen": self._report_reopen, "report.review": self._report_review,
+            "overtime.period_set": self._overtime_period_set,
             "overtime.request": self._overtime_request_create, "overtime.decide": self._overtime_request_decide,
             # Оргструктура: подразделения и сотрудники в них (org.py, D-44).
             "org.unit_create": self._org_unit_create, "org.unit_update": self._org_unit_update,

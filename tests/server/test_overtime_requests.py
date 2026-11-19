@@ -11,6 +11,7 @@ def test_overtime_request_requires_reason_and_manager_decision_is_audited(world)
     world.admin.ok("org.unit_create", {"id": unit_id, "kind": "department", "name": "Испытания",
                                        "head_user_id": world.users["head1"]})
     world.admin.ok("org.member_set", {"user_id": world.users["eng1"], "unit_id": unit_id})
+    world.admin.ok("overtime.period_set", {"mode": "month"})
     employee = world.login("eng1")
     rid = new_id()
     request = {"id": rid, "work_date": "2026-11-17", "start_at": "2026-11-17T01:00:00+03:00",
@@ -18,6 +19,9 @@ def test_overtime_request_requires_reason_and_manager_decision_is_audited(world)
                "mode": "planned", "reason": "Срочный выпуск чертежей"}
     r = employee.ok("overtime.request", request)["overtime_request"]
     assert (r["status"], r["minutes"], "amount" in r, "rate" in r) == ("pending", 120, False, False)
+    assert r["period"] == {"mode": "month", "start": "2026-11-01", "end": "2026-11-30", "config_version": 1}
+    # Changing the company default must not rewrite this request's period snapshot.
+    world.admin.ok("overtime.period_set", {"mode": "quarter"}, expected_version=1)
     assert employee.cmd("overtime.decide", {"id": rid, "decision": "approve"}, expected_version=1)["status"] == "denied"
     manager = world.login("head1")
     approved = manager.ok("overtime.decide", {"id": rid, "decision": "approve"}, expected_version=1)["overtime_request"]
@@ -36,8 +40,18 @@ def test_overtime_request_requires_reason_and_manager_decision_is_audited(world)
         assert all(e.authority for e in events)
 
 
+def test_company_must_select_accounting_period_before_requests(world):
+    """Missing company configuration fails closed instead of silently assuming a period."""
+    employee = world.login("eng1")
+    payload = {"id": new_id(), "work_date": "2026-11-17", "start_at": "2026-11-17T18:00:00+03:00",
+               "end_at": "2026-11-17T19:00:00+03:00", "minutes": 60, "kind": "overtime",
+               "mode": "planned", "reason": "Подготовка испытаний"}
+    assert employee.cmd("overtime.request", payload)["code"] == "period_not_configured"
+
+
 def test_urgent_overtime_requires_reason_and_must_be_finished(world):
     """A retrospective urgent record cannot be submitted before end time or without an explanation."""
+    world.admin.ok("overtime.period_set", {"mode": "month"})
     employee = world.login("eng1")
     base = {"id": new_id(), "work_date": "2026-11-16", "start_at": "2026-11-16T17:00:00+03:00",
             "end_at": "2026-11-16T19:00:00+03:00", "minutes": 120, "kind": "overtime", "mode": "urgent_after"}

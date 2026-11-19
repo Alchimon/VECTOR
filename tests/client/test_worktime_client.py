@@ -87,6 +87,21 @@ def test_offline_draft_chain_submit_then_online_review(world, proj, mk):  # noqa
     assert [h["label"] for h in row["history"]][-2:] == ["Отправлен на проверку", "Принят"]
 
 
+def test_overtime_rows_are_presented_with_clear_period_and_status_labels():
+    """A-55/A-56: view includes hours, approval state and frozen period boundaries, never a payment amount."""
+    v = wv.worktime_view([], [], [], {}, {"user_id": "e"}, False, True, "", TODAY,
+                         overtime_requests=[{"id": "r", "user_id": "e", "kind": "holiday", "mode": "urgent_after",
+                                             "status": "pending", "minutes": 75,
+                                             "period": {"mode": "quarter", "start": "2026-10-01", "end": "2026-12-31"}}],
+                         overtime_period_config={"mode": "quarter"})
+    row = v["overtime_requests"][0]
+    assert row["is_own"] is True
+    assert row["kind_label"] == "Работа в федеральный праздник"
+    assert row["mode_label"] == "Срочная работа — после факта"
+    assert row["status_label"] == "Ожидает решения"
+    assert v["overtime_period_label"] == "Календарный квартал"
+
+
 def test_view_flags_four_eyes_and_reviewer_own_report():
     """Руководитель видит свой отчёт на проверке, но не может его проверить — и видит почему."""
     me = {"user_id": "h"}
