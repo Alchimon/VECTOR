@@ -90,6 +90,7 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     # Оргструктура: подразделения, сотрудники в них, журнал изменений (R-21, D-44). Порядок — по внешним ключам.
     22: [db.org_units, db.org_members, db.org_events],
     23: [db.workdays, db.workday_events, db.workday_start_requests],
+    24: [db.work_schedules, db.work_schedule_links, db.workday_auto_finishes, db.workday_end_requests],
 }
 
 
@@ -266,7 +267,8 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               14: _create_tables(ADDED_IN[15]), 15: _create_tables(ADDED_IN[16]),
                               16: _create_tables(ADDED_IN[17]), 17: _create_tables(ADDED_IN[18]),
                               18: _v18_to_v19, 19: _create_tables(ADDED_IN[20]), 20: _v20_to_v21,
-                              21: _create_tables(ADDED_IN[22]), 22: _create_tables(ADDED_IN[23])}
+                              21: _create_tables(ADDED_IN[22]), 22: _create_tables(ADDED_IN[23]),
+                              23: _create_tables(ADDED_IN[24])}
 
 
 @dataclass

@@ -224,12 +224,19 @@ class Backend(QObject):
                                        # Рабочее время (D-42): дневные отчёты (свои и — руководителю отдела — отправленные).
                                        "daily_report": [],
                                        # Таймер рабочего дня (D-46): свои дни и запросы на фактическое начало дня.
-                                       "workday": [], "workday_start_request": []}
+                                       "workday": [], "workday_start_request": [],
+                                       # D-47: запросы на фактическое окончание дня (забыли «Завершить»).
+                                       "workday_end_request": []}
         # Показать ли окно «Начните рабочий день» (D-46, A-49 п. 4) — считается в рабочем потоке со снимком. В тестах и
         # на стенде интерфейса (auto_timers=False) окно само не открывается, чтобы не закрывать экраны; включается
         # setWorkdayPromptAuto(True).
         self._workday_prompt = False
         self._workday_prompt_auto = auto_timers
+        # Напоминание о конце рабочего дня (D-47, A-51 п. 5) из последнего снимка и дни, по которым оно уже
+        # показывалось в этом сеансе: если человек не ответил 30 минут — автоматическое «Завершить» с пометкой
+        # no_answer; если программа была закрыта (напоминания не было) — closed.
+        self._workday_reminder: dict = {}
+        self._workday_reminded: set = set()
         # Фильтр вкладки «Заказы поставщикам» (active / approval / draft / placed / closed / all) — состояние экрана.
         self._po_filter = "active"
         # Строка поиска раздела «Оргструктура» (D-44) — состояние экрана; новые данные тоже перестраивают раздел.
@@ -258,6 +265,12 @@ class Backend(QObject):
             self._timer.setInterval(20000)
             self._timer.timeout.connect(self.backgroundSync)
             self._timer.start()
+            # Таймер рабочего дня (D-47): раз в 30 секунд — напоминание о конце дня и завершение забытого дня (и без
+            # связи: нажатие уходит в очередь).
+            self._wd_timer = QTimer(self)
+            self._wd_timer.setInterval(30000)
+            self._wd_timer.timeout.connect(self.workdayCheckReminder)
+            self._wd_timer.start()
 
     # ------------------------------------------------------------ инфраструктура
     def _default_factory(self, server_url: str, ca_file: str) -> SyncClient:
@@ -914,7 +927,9 @@ class Backend(QObject):
         days = [{**o, "_pending": bool(o.get("_pending"))} for o in self._data.get("workday", [])]
         return qml_safe(workday_view.workday_view(
             days, self._data.get("workday_start_request", []), self._me.get("user_id") or "", self._people,
-            self._online and self._session_mode == "online", datetime.now(timezone.utc), self._workday_prompt))
+            self._online and self._session_mode == "online", self._now(), self._workday_prompt,
+            end_requests=self._data.get("workday_end_request", []), schedule=self._stock.get("workday_schedule"),
+            reminder=self._workday_reminder if self._workday_prompt_auto else None))
 
     @Slot(str, str)
     def workdayMark(self, tag: str, event: str):
@@ -926,6 +941,10 @@ class Backend(QObject):
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, "workday.mark", res, self._WORKDAY_OK.get(event, "")))
 
+    def _now(self) -> datetime:
+        """Сейчас для таймера рабочего дня — часы клиента (те же, что у очереди нажатий; в тестах — подставные)."""
+        return self.client.now() if self.client else datetime.now(timezone.utc)
+
     @Slot(bool)
     def setWorkdayPromptAuto(self, on: bool):
         """Разрешить окну «Начните рабочий день» открываться само (в боевом режиме — всегда; тесты и стенд интерфейса
@@ -933,27 +952,101 @@ class Backend(QObject):
         self._workday_prompt_auto = bool(on)
 
     @Slot()
-    def workdayLater(self):
-        """«Позже» в окне «Начните рабочий день»: сегодня окно больше не показывать."""
+    def workdaySnooze(self):
+        """«Работаю дальше» в напоминании о конце дня (D-47): напомнить снова через час."""
+        wid = self._workday_reminder.get("workday_id") or ""
+
         def job():
-            """Запомнить «позже» в рабочем потоке и снять снимок."""
-            self.client.workday_prompt_later()
+            """Запомнить отсрочку в рабочем потоке и снять снимок."""
+            self.client.workday_snooze(wid)
             return self._snapshot(False)
         self._run(job, self._apply_snapshot)
+        self.toast.emit("info", "Хорошо — напомним через час. Закончите — «Завершить день».")
+
+    @Slot()
+    def workdayCheckReminder(self):
+        """Проверить напоминание о конце дня и завершить забытые дни (D-47, A-51 п. 5): раз в 30 секунд (в боевом
+        режиме) и по вызову из тестов. Напоминание показывалось и осталось без ответа 30 минут — no_answer; программа
+        была закрыта — closed. Без связи — нажатие уходит в очередь."""
+        if not self.client or self._screen != "main" or self._busy or not self._workday_prompt_auto:
+            return
+        reminded = set(self._workday_reminded)
+
+        def job():
+            """Автоматическое «Завершить» (если пора) и снимок в рабочем потоке."""
+            rem = self.client.workday_reminder()
+            done = []
+            if rem.get("state") == "auto":
+                why = "no_answer" if rem.get("workday_id") in reminded else "closed"
+                done = [r.__dict__ for r in self.client.workday_auto_finish(why)]
+            snap = self._snapshot(False)
+            snap["auto_finished"] = [d for d in done if d.get("status") in ("accepted", "queued")]
+            return snap
+
+        def apply(snap):
+            """Применить снимок; сообщить об автоматическом завершении."""
+            self._apply_snapshot(snap)
+            if isinstance(snap, dict) and snap.get("auto_finished"):
+                self.toast.emit("warning", "Рабочий день завершён автоматически в конце по графику. Работали дольше — "
+                                           "«Я работал дольше» в разделе «Рабочее время».")
+        self._run(job, apply)
+
+    @Slot(str, result="QVariantMap")
+    def workdayFinishCheck(self, text: str) -> dict:
+        """Поле «Закончил в» напоминания о конце дня: проверка без сервера (правила ядра): {ok, at, message}."""
+        wid = self._workday_reminder.get("workday_id") or self.workdayOverview.get("id")
+        cur = next((d for d in self._data.get("workday", []) if d.get("id") == wid), None) or {}
+        return qml_safe(workday_view.parse_finish_time(text, cur, self._now()))
+
+    @Slot(str, str)
+    def workdayFinishAt(self, tag: str, at_iso: str):
+        """«Завершить день» из напоминания о конце дня: at_iso пусто — сейчас, иначе «закончил раньше — в …» (через
+        очередь, можно без связи)."""
+        wid = self._workday_reminder.get("workday_id") or None
+
+        def job():
+            """Нажатие «Завершить» в рабочем потоке и снимок."""
+            at = datetime.fromisoformat(at_iso) if at_iso else None
+            r = self.client.workday_mark("finish", at=at, workday_id=wid)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "workday.mark", res, self._WORKDAY_OK["finish"]))
+
+    @Slot(str, result="QVariantMap")
+    def workdayEndCheck(self, text: str) -> dict:
+        """Поле «Фактическое окончание» формы «Я работал дольше»: проверка без сервера: {ok, end_at, message}."""
+        wid = self.workdayOverview.get("end_day_id")
+        cur = next((d for d in self._data.get("workday", []) if d.get("id") == wid), None) or {}
+        return qml_safe(workday_view.parse_end_time(text, cur, self._now()))
+
+    @Slot(str, str, str, str)
+    def workdayEndRequest(self, tag: str, workday_id: str, end_at: str, reason: str):
+        """«Я работал дольше» → workday.end_request через очередь (можно без связи); решает руководитель (D-47)."""
+        def job():
+            """Запрос в рабочем потоке и снимок данных."""
+            try:
+                at = datetime.fromisoformat(end_at)
+            except ValueError:
+                return {"result": {"status": "rejected", "message_ru": "Время — ЧЧ:ММ.", "response": None,
+                                   "operation_id": None}, "snap": self._snapshot(False)}
+            r = self.client.workday_end_request(workday_id, at, reason)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "workday.end_request", res,
+                                                        "Запрос отправлен руководителю на согласование."))
 
     @Slot(str, result="QVariantMap")
     def workdayReportDefaults(self, work_date: str) -> dict:
         """Смена нового дневного отчёта за work_date из таймера рабочего дня (D-46): {from_timer, shift_start, shift_end,
         break_minutes, note}; таймера за день нет — from_timer = false."""
         return qml_safe(workday_view.report_defaults(self._data.get("workday", []), self._me.get("user_id") or "",
-                                                     work_date or "", datetime.now(timezone.utc)))
+                                                     work_date or "", self._now()))
 
     @Slot(str, result="QVariantMap")
     def workdayStartCheck(self, text: str) -> dict:
         """Проверка поля «Фактическое начало» формы «Я начал раньше» без сервера (правила ядра): {ok, start_at, message}."""
         days = self._data.get("workday", [])
         cur = next((d for d in days if d.get("id") == self.workdayOverview.get("id")), None) or {}
-        return qml_safe(workday_view.parse_start_time(text, cur, datetime.now(timezone.utc)))
+        return qml_safe(workday_view.parse_start_time(text, cur, self._now(),
+                                                      schedule=self._stock.get("workday_schedule")))
 
     @Slot(str, str, str, str)
     def workdayStartRequest(self, tag: str, workday_id: str, start_at: str, reason: str):
@@ -979,7 +1072,8 @@ class Backend(QObject):
         return qml_safe(org_view.org_view(
             st.get("org_units") or [], st.get("org_members") or [], st.get("org_events") or [],
             st.get("org_me") or {}, self._people, self._online and self._session_mode == "online",
-            datetime.now(timezone.utc), self._org_query))
+            datetime.now(timezone.utc), self._org_query, st.get("work_schedules") or [],
+            st.get("work_schedule_links") or [], bool((st.get("workday_schedule") or {}).get("manage"))))
 
     @Slot(str)
     def setOrgQuery(self, q: str):
@@ -1248,6 +1342,7 @@ class Backend(QObject):
             # Окно «Начните рабочий день» (D-46) — решение для вышедшего пользователя: следующему не показывать
             # по чужому состоянию (для него посчитается со своим снимком).
             self._workday_prompt = False
+            self._workday_reminder, self._workday_reminded = {}, set()
             self.changed.emit()
             self.dataChanged.emit()
         self._run(lambda: self.client.logout() if self.client else None, done)
@@ -1267,7 +1362,7 @@ class Backend(QObject):
                 "stock": {k: c.get_meta(k) for k in STOCK_META}, "me": c.get_meta("me") or c.get_meta("session") or {}, "people": c.get_meta("people") or [], "assignments": c.get_meta("assignments") or [],
                 "pending": c.pending_count(), "problems": c.problem_count(), "last_pull": c.get_meta("last_pull") or "",
                 "online": c.t.online and c.token is not None, "token": c.token is not None, "rep": rep.__dict__ if rep else None,
-                "workday_prompt": c.workday_prompt_needed()}
+                "workday_prompt": c.workday_prompt_needed(), "workday_reminder": c.workday_reminder()}
 
     def _apply_snapshot(self, s):
         """Применить снимок в потоке интерфейса и разослать changed/dataChanged. Если сеанс с сервером пропал — перейти
@@ -1290,6 +1385,9 @@ class Backend(QObject):
         self._assignments = s.get("assignments", [])
         self._pending, self._problems, self._last_pull = s["pending"], s["problems"], s["last_pull"]
         self._workday_prompt = bool(s.get("workday_prompt")) and self._workday_prompt_auto
+        self._workday_reminder = s.get("workday_reminder") or {}
+        if self._workday_prompt_auto and self._workday_reminder.get("state") == "remind":
+            self._workday_reminded.add(self._workday_reminder.get("workday_id"))   # напоминание показано
         self._online = s["online"]
         if not s["token"] and self._session_mode == "online":
             self._session_mode = "offline"
@@ -1358,7 +1456,8 @@ class Backend(QObject):
         """
         ev = expected_version if expected_version > 0 else None
         # "" из пустого поля формы = «не указано» (ключ не передаётся); null = явная очистка значения при изменении.
-        payload = {k: v for k, v in dict(payload).items() if v != ""}
+        # Целые числа из JavaScript приходят как float (60.0) — _plain возвращает им int (перерыв графика, D-47).
+        payload = {k: v for k, v in _plain(dict(payload)).items() if v != ""}
 
         def job():
             """Выполнить команду в рабочем потоке; после складских команд сразу перечитать снимок с сервера."""
@@ -1396,7 +1495,9 @@ class Backend(QObject):
                                  "notification", "wo", "tp", "org",
                                  # D-46: решение по фактическому началу дня меняет рабочий день сотрудника на сервере
                                  # (подтверждённое начало) и рассылает уведомления — сразу перечитываем снимок.
-                                 "workday"})
+                                 "workday",
+                                 # D-47: графики работы и их назначения приходят только снимком (справочник компании).
+                                 "schedule"})
 
     def _finish_command(self, tag: str, command: str, res: dict, ok_text: str = ""):
         """Общий разбор результата команды: снимок данных, уведомление, сигнал commandDone для формы. ok_text — своё

@@ -20,6 +20,10 @@ _seed_worktime).
 
 Таймер рабочего дня (D-46): у d.kuznetsov сегодня день идёт (с перерывом) и запрос «фактическое начало» ждёт
 e.orlova; у m.lebedev вчерашний день завершён (см. _seed_workday).
+
+Графики работы (D-47): «Пятидневка» по умолчанию, «Производство» — производственному участку, «Смена наладчиков»
+(ежедневно) — отделу АСУ ТП; у администратора учёт рабочего времени не ведётся; у i.belova день завершён
+автоматически (забыла «Завершить»), запрос «фактическое окончание» ждёт v.zaitseva (см. _seed_schedules).
 """
 from __future__ import annotations
 
@@ -412,8 +416,9 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     prod.update(_seed_lifecycle(cmd, login, people, svc, prod["tech_processes"][0], items, whs, docs))
     prod.update(_seed_quality(cmd, login, people, svc, prod["product_instances"][0], kits, prod["lifecycle_work_order"]))
     prod.update(_seed_org(cmd, adm, people))
+    prod.update(_seed_schedules(cmd, adm, login, people, svc, prod["org_units"], admin_login))
     prod.update(_seed_worktime(cmd, login, people, svc, pid))
-    prod.update(_seed_workday(cmd, login, svc))
+    prod.update(_seed_workday(cmd, login, svc, prod["asu_schedule_hour"]))
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
             "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
             "suppliers": sups, "contracts": contracts, "delegations": [deleg["id"], pdeleg["id"]],
@@ -600,7 +605,54 @@ def _seed_org(cmd, adm, people) -> dict:
     return {"org_units": [ho, eng_dir, asu, shop, com, astr, service]}
 
 
-def _seed_workday(cmd, login, svc) -> dict:
+def _seed_schedules(cmd, adm, login, people, svc, units, admin_login) -> dict:
+    """Графики работы (D-47, ответ на A-51 п. 1) — администратор заводит и назначает обычными командами:
+
+    * «Пятидневка» 08:00–17:00, пн–пт, перерыв 60 мин — по умолчанию в компании;
+    * «Производство» 07:00–16:00, пн–сб — производственному участку;
+    * «Смена наладчиков», ежедневно, 9 часов — отделу АСУ ТП (наладка на объектах — без выходных). Начало смены
+      подобрано от момента установки стенда (за 5 часов до него, по UTC — часам сервера стенда), чтобы на стенде в
+      любое время суток был виден запрос «фактическое начало» у d.kuznetsov (не раньше начала по графику) и окно
+      «Начните рабочий день» у m.lebedev;
+    * администратор — «учёт рабочего времени не ведётся» (служебная учётная запись: окно не показывается);
+    * i.belova забыла «Завершить»: день начат 11 часов назад, программа завершила его автоматически 2 часа назад
+      (напоминание осталось без ответа); она просит считать окончание на час позже — запрос ждёт v.zaitseva.
+    """
+    from vector.core import schedule as sch
+    now = svc.now()
+    ho, eng_dir, asu, shop, com, astr, service = units
+    std, prod_s, asu_s = (str(uuid.uuid4()) for _ in range(3))
+    cmd(adm, "schedule.save", {"id": std, "name": "Пятидневка", "start_time": "08:00", "end_time": "17:00",
+                               "break_minutes": 60, "weekdays": "1111100", "is_default": True})
+    cmd(adm, "schedule.save", {"id": prod_s, "name": "Производство", "start_time": "07:00", "end_time": "16:00",
+                               "break_minutes": 60, "weekdays": "1111110"})
+    # Начало смены — за 5 ч до установки, но в тот же день (после полуночи — 00:00): d.kuznetsov нажал «Начать» 3 ч
+    # назад, а фактически начал на час раньше — не раньше начала по графику.
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    st = max(now - timedelta(hours=5), day_start).replace(minute=0, second=0, microsecond=0)
+    begin = sch.hhmm(st.hour * 60)
+    cmd(adm, "schedule.save", {"id": asu_s, "name": "Смена наладчиков", "start_time": begin,
+                               "end_time": sch.hhmm(st.hour * 60 + 9 * 60), "break_minutes": 60, "weekdays": "1111111"})
+    cmd(adm, "schedule.assign", {"target_kind": "unit", "target_id": shop, "schedule_id": prod_s})
+    cmd(adm, "schedule.assign", {"target_kind": "unit", "target_id": asu, "schedule_id": asu_s})
+    with svc.engine.connect() as c:
+        admin_id = c.execute(sa.select(users.c.id).where(users.c.login == admin_login)).scalar()
+    cmd(adm, "schedule.assign", {"target_kind": "user", "target_id": admin_id, "exempt": True})
+    # i.belova: забытое «Завершить» → автоматическое завершение → запрос «фактическое окончание».
+    wh = login("i.belova")
+    b0 = now - timedelta(hours=11)
+    wid = str(uuid.uuid4())
+    cmd(wh, "workday.mark", {"id": wid, "work_date": b0.date().isoformat(), "event": "start", "device_time": b0.isoformat()})
+    cmd(wh, "workday.mark", {"id": wid, "event": "finish", "device_time": (now - timedelta(hours=2)).isoformat(),
+                             "auto": "no_answer"})
+    end = cmd(wh, "workday.end_request", {"id": str(uuid.uuid4()), "workday_id": wid,
+                                          "end_at": (now - timedelta(hours=1)).isoformat(),
+                                          "reason": "Принимала поставку, «Завершить» не нажала"})
+    return {"work_schedules": [std, prod_s, asu_s], "asu_schedule_hour": st.hour,
+            "workday_end_requests": [end["workday_end_request"]["id"]], "auto_finished_workday": wid}
+
+
+def _seed_workday(cmd, login, svc, asu_hour=None) -> dict:
     """Таймер рабочего дня (D-46, ответы владельца на A-49) — через обычные команды, как нажатия на компьютере
     сотрудника (время устройства — часы стенда в момент установки):
 
@@ -623,16 +675,23 @@ def _seed_workday(cmd, login, svc) -> dict:
     mark(eng, d1, "start", start, start.date())
     mark(eng, d1, "pause", start + timedelta(hours=1, minutes=30))
     mark(eng, d1, "resume", start + timedelta(hours=2, minutes=10))
-    req = cmd(eng, "workday.start_request", {"id": str(uuid.uuid4()), "workday_id": d1,
-                                             "start_at": (start - timedelta(hours=1)).isoformat(),
-                                             "reason": "С утра был на объекте заказчика, «Начать» нажал по приезде"})
+    # Фактическое начало — на час раньше нажатия, но не раньше начала смены по графику в день нажатия (D-47, A-51
+    # п. 1; asu_hour — час начала «Смены наладчиков» по UTC).
+    actual = start - timedelta(hours=1)
+    if asu_hour is not None:
+        actual = max(actual, start.replace(hour=asu_hour, minute=0, second=0, microsecond=0))
+    reqs = []
+    if actual < start:
+        reqs.append(cmd(eng, "workday.start_request", {
+            "id": str(uuid.uuid4()), "workday_id": d1, "start_at": actual.isoformat(),
+            "reason": "С утра был на объекте заказчика, «Начать» нажал по приезде"})["workday_start_request"]["id"])
     y = (now - timedelta(days=1)).replace(hour=8, minute=2, second=0, microsecond=0)
     d2 = str(uuid.uuid4())
     mark(lead, d2, "start", y, y.date())
     mark(lead, d2, "pause", y + timedelta(hours=4, minutes=8))
     mark(lead, d2, "resume", y + timedelta(hours=4, minutes=53))
     mark(lead, d2, "finish", y + timedelta(hours=9, minutes=3))
-    return {"workdays": [d1, d2], "workday_requests": [req["workday_start_request"]["id"]]}
+    return {"workdays": [d1, d2], "workday_requests": reqs}
 
 
 def _seed_worktime(cmd, login, people, svc, pid) -> dict:

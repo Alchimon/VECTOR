@@ -94,3 +94,89 @@ def test_unit_head_without_role_reviews_own_staff(ui, qml_warnings):  # noqa: F8
     page = _page(ui)
     assert _v(page, "ov")["mine"]["text"].endswith("Дневные отчёты проверяет Зайцева Вера.")
     assert qml_warnings == []
+
+
+def test_admin_schedules_popup_new_schedule_and_assign(ui, qml_warnings):  # noqa: F811
+    """Графики работы (D-47, A-51 п. 1): администратор открывает «Графики работы» — три демо-графика; заводит новый
+    через форму (с проверкой времени на сервере), назначает его «Сервисному отделу» и отмечает сотруднику «учёт не
+    ведётся»; карточки подразделения и сотрудника показывают действующий график."""
+    ui.login("admin")
+    page = _page(ui)
+    ov = _v(page, "ov")
+    assert (ov["schedule_manage"], ov["can_schedule"]) == (True, True)
+    assert [s["name"] for s in ov["schedules"]] == ["Производство", "Пятидневка", "Смена наладчиков"]
+    assert ov["default_schedule"].startswith("Пятидневка: 08:00–17:00, пн–пт")
+    ui.click(ui.find("btnSchedules"))
+    pop = _popup(ui, "schedulesPopup")
+    assert pop.property("visible") is True
+    form = _popup(ui, "scheduleForm")
+    _call(form, "openFor", None)
+    ui.wait_idle()
+    assert form.property("title") == "Новый график работы" and form.property("canConfirm") is False
+    _popup(ui, "sName").setProperty("text", "Сервис 10–19")
+    _popup(ui, "sStart").setProperty("text", "10:00")
+    _popup(ui, "sEnd").setProperty("text", "25:00")                    # неверное время — отказ сервера в форме
+    ui.wait_idle()
+    QMetaObject.invokeMethod(form, "confirmed")
+    ui.wait_idle()
+    assert form.property("visible") is True and form.property("error")
+    _popup(ui, "sEnd").setProperty("text", "19:00")
+    ui.wait_idle()
+    QMetaObject.invokeMethod(form, "confirmed")
+    ui.wait_idle()
+    assert not form.property("visible"), form.property("error")
+    ov = _v(page, "ov")
+    new = next(s for s in ov["schedules"] if s["name"] == "Сервис 10–19")
+    assert new["label"] == "10:00–19:00, пн–пт, перерыв 60 мин" and new["is_default"] is False
+    pop.close()
+    # Назначить подразделению.
+    svc_unit = next(r for r in ov["rows"] if r["name"] == "Сервисный отдел")
+    page.setProperty("selectedId", svc_unit["id"])
+    ui.wait_idle()
+    assert ui.find("btnUnitSchedule").isVisible()
+    af = _popup(ui, "scheduleAssignForm")
+    _call(af, "openFor", "unit", svc_unit["id"], "Сервисный отдел", "")
+    ui.wait_idle()
+    assert af.property("title") == "График подразделения"
+    opts = _v(page, "ov")["schedule_unit_options"]
+    _popup(ui, "saSchedule").setProperty("currentIndex", next(i for i, o in enumerate(opts) if o["id"] == new["id"]))
+    ui.wait_idle()
+    QMetaObject.invokeMethod(af, "confirmed")
+    ui.wait_idle()
+    assert not af.property("visible"), af.property("error")
+    card = _v(page, "ov")["cards"][svc_unit["id"]]
+    assert card["schedule_label"].startswith("Сервис 10–19") and card["schedule_own_id"] == new["id"]
+    assert ui.find("orgUnitSchedule").property("v").startswith("Сервис 10–19")
+    # Сотруднику — «учёт рабочего времени не ведётся».
+    asu = next(r for r in ov["rows"] if r["name"] == "Отдел АСУ ТП")
+    page.setProperty("selectedId", asu["id"])
+    ui.wait_idle()
+    m = next(x for x in _v(page, "sel")["members_list"] if x["name"] == "Лебедев Максим")
+    assert "ежедневно" in m["schedule"]                                # «Смена наладчиков» отдела
+    _call(af, "openFor", "user", m["user_id"], m["name"], m["schedule_own_id"])
+    ui.wait_idle()
+    assert af.property("title") == "График сотрудника"
+    uopts = _v(page, "ov")["schedule_user_options"]
+    _popup(ui, "saSchedule").setProperty("currentIndex", next(i for i, o in enumerate(uopts) if o["id"] == "__exempt__"))
+    ui.wait_idle()
+    QMetaObject.invokeMethod(af, "confirmed")
+    ui.wait_idle()
+    assert not af.property("visible"), af.property("error")
+    m = next(x for x in _v(page, "sel")["members_list"] if x["name"] == "Лебедев Максим")
+    assert m["schedule"] == "учёт рабочего времени не ведётся" and m["schedule_own_id"] == "__exempt__"
+    assert qml_warnings == []
+
+
+def test_engineer_sees_schedules_read_only(ui, qml_warnings):  # noqa: F811
+    """Инженер видит справочник графиков и свой график в карточке, но не может их менять."""
+    ui.login("d.kuznetsov")
+    page = _page(ui)
+    ov = _v(page, "ov")
+    assert ov["schedule_manage"] is False and len(ov["schedules"]) == 3
+    assert ui.find("btnSchedules").isVisible() and not ui.find("btnNewSchedule").property("visible")
+    asu = next(r for r in ov["rows"] if r["name"] == "Отдел АСУ ТП")
+    page.setProperty("selectedId", asu["id"])
+    ui.wait_idle()
+    assert not ui.find("btnUnitSchedule").isVisible()
+    assert ui.find("orgUnitSchedule").property("v").startswith("Смена наладчиков")
+    assert qml_warnings == []

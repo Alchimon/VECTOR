@@ -574,8 +574,7 @@ def main():
         h.backend.setWorkdayPromptAuto(True)                # на стенде интерфейса окно само не открывается
         h.login("m.lebedev")
         h.shot(out / f"{theme}-54-workday-prompt.png")
-        wp = next(o for o in h.win.findChildren(QObject) if o.objectName() == "workdayPrompt")
-        wp.setProperty("visible", False)
+        # Окно «настаивает» (D-47): закрытое открывается снова, поэтому сначала выключаем автопоказ и выходим.
         h.backend.setWorkdayPromptAuto(False)
         h.backend.logout()
         h.wait_idle()
@@ -593,6 +592,54 @@ def main():
             h.shot(out / f"{theme}-55-workday-requests.png")
             rp.setProperty("visible", False)
             h.wait_idle()
+        h.backend.logout()
+        h.wait_idle()
+        # Графики работы и забытое «Завершить» (D-47, A-51): i.belova — день завершён автоматически, запрос «я работал
+        # дольше» на согласовании; d.kuznetsov — напоминание «Рабочий день по графику закончился» (часы клиента
+        # подставлены на конец дня по графику); администратор — справочник графиков и форма графика.
+        h.login("i.belova")
+        h.go("worktime")
+        h.shot(out / f"{theme}-56-workday-auto-finished.png")
+        h.backend.logout()
+        h.wait_idle()
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+        class _Clock:
+            """Подставные часы клиента (SyncClient.clock) для снимка напоминания."""
+            def __init__(self, t):
+                self.t = t
+
+            def now(self):
+                return self.t
+        h.backend.setWorkdayPromptAuto(True)
+        h.login("d.kuznetsov")
+        c = h.backend.client
+        c.clock = _Clock(_dt.now(_tz.utc) + _td(hours=20))
+        due = _dt.fromisoformat(c.workday_reminder()["due"])
+        c.clock = _Clock(due + _td(minutes=3))
+        h.backend.workdayCheckReminder()
+        h.wait_idle()
+        h.shot(out / f"{theme}-57-workday-end-prompt.png")
+        h.backend.setWorkdayPromptAuto(False)
+        c.clock = None
+        h.backend.logout()
+        h.wait_idle()
+        h.login("admin")
+        h.go("org", h.ids["org_units"][2])
+        sp = next(o for o in h.win.findChildren(QObject) if o.objectName() == "schedulesPopup")
+        sp.setProperty("visible", True)
+        h.wait_idle()
+        h.shot(out / f"{theme}-58-work-schedules.png")
+        sp.setProperty("visible", False)
+        h.wait_idle()
+        ov = h.backend.property("orgOverview")
+        ov = ov.toVariant() if hasattr(ov, "toVariant") else ov
+        sf = next(o for o in h.win.findChildren(QObject) if o.objectName() == "scheduleForm")
+        QMetaObject.invokeMethod(sf, "openFor", Q_ARG("QVariant", next(x for x in ov["schedules"] if x["name"] == "Смена наладчиков")))
+        h.wait_idle()
+        h.shot(out / f"{theme}-59-work-schedule-form.png")
+        sf.setProperty("visible", False)
+        h.wait_idle()
         h.backend.logout()
         h.wait_idle()
         h.login("admin")

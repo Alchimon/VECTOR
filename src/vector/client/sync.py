@@ -92,7 +92,9 @@ OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp")
                 ("daily_report", "daily_reports"),
                 # Таймер рабочего дня (D-46): свои рабочие дни (нажатия — офлайн через очередь) и запросы на
                 # фактическое начало дня — свои (офлайн через очередь) и, руководителю, сотрудников (решение — онлайн).
-                ("workday", "workdays"), ("workday_start_request", "workday_start_requests"))
+                ("workday", "workdays"), ("workday_start_request", "workday_start_requests"),
+                # D-47: запросы на фактическое окончание дня (день завершён автоматически) — так же, как начало.
+                ("workday_end_request", "workday_end_requests"))
 # Объекты из результата команды → список в meta (ключ результата, ключ meta); заменяются по id.
 # Движения склада, резервы и потребности меняются ТОЛЬКО онлайн-командами (online_required): в кэше это
 # снимок «на момент последнего обновления», офлайн он только читается.
@@ -121,7 +123,10 @@ STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_
               "worktime_activity",
               # D-44: оргструктура — подразделения, сотрудники в них, последние изменения, моё подразделение и кто
               # проверяет мои отчёты (меняется только онлайн-командами администратора).
-              "org_units", "org_members", "org_events", "org_me")
+              "org_units", "org_members", "org_events", "org_me",
+              # D-47: графики работы (справочник), их назначения и мой действующий график — по нему без связи
+              # считаются окно «Начните рабочий день», напоминание о конце дня и граница фактического начала.
+              "work_schedules", "work_schedule_links", "workday_schedule")
 
 
 # Онлайн-команды, которым не нужно сначала отправить очередь (их результат не зависит от неотправленных правок).
@@ -700,21 +705,27 @@ class SyncClient:
         d = self.workday_of(day) if self.db is not None else None
         if not d:
             return None
-        return wdy.shift_from_day(wdy.day_state(d.get("events") or [], self.now(), d.get("approved_start_at")), day, tz)
+        return wdy.shift_from_day(wdy.day_state(d.get("events") or [], self.now(), d.get("approved_start_at"),
+                                                d.get("approved_end_at")), day, tz)
 
-    def workday_mark(self, event: str, tz=None) -> LocalResult:
+    def workday_mark(self, event: str, tz=None, at: Optional[datetime] = None, auto: Optional[str] = None,
+                     workday_id: Optional[str] = None) -> LocalResult:
         """Кнопка таймера рабочего дня: «Начать рабочий день» (start), «Перерыв» (pause), «Продолжить» (resume),
         «Завершить день» (finish) — офлайн через очередь (D-46).
 
         Время — часы ЭТОГО компьютера в момент нажатия (A-49 п. 5, как у таймера операций наряда): таймер честен и без
         связи. День — дата по часам компьютера (tz — для тестов). Сначала нажатие проверяется по локальной копии теми
-        же правилами ядра, что на сервере: заведомо недопустимое (второй «Перерыв») в очередь не ставится."""
+        же правилами ядра, что на сервере: заведомо недопустимое (второй «Перерыв») в очередь не ставится.
+
+        D-47 (A-51 п. 5): at — прошедшее время «Завершить» («Закончил раньше — в 17:40» в напоминании о конце дня или
+        автоматическое завершение забытого дня в конце по графику); auto — «Завершить» записала программа (no_answer |
+        closed); workday_id — какой день (забытый позавчерашний — не сегодняшний)."""
         from vector.core import workday as wdy
         if self.db is None:
             return LocalResult("unauthenticated", message_ru="Войдите в систему.")
-        now = self.now()
-        today = now.astimezone(tz).date()
-        cur = self.workday_of(today)
+        now = at or self.now()
+        today = self.now().astimezone(tz).date()
+        cur = self.get_local("workday", workday_id) if workday_id else self.workday_of(today)
         if event != "start" and cur is None:
             # После полуночи ночной смены день — вчерашний (если он не завершён).
             prev = self.workday_of(today - timedelta(days=1))
@@ -730,12 +741,16 @@ class SyncClient:
                                    "device_time": now.astimezone(tz).isoformat()}
         if event == "start":
             payload["work_date"] = today.isoformat()
+        if auto:
+            payload["auto"] = auto
+        if event == "finish":
+            self._set_meta("workday_snooze", None)          # «работаю дальше» больше не нужно
         return self.execute("workday.mark", payload)
 
     def workday_start_request(self, workday_id: str, start_at: datetime, reason: str) -> LocalResult:
         """«Я начал раньше» — фактическое начало своего сегодняшнего дня на согласование руководителю (A-49 п. 4),
-        офлайн через очередь. Те же проверки, что на сервере (раньше нажатия «Начать», не раньше чем за 16 часов,
-        причина), — до постановки в очередь."""
+        офлайн через очередь. Те же проверки, что на сервере (раньше нажатия «Начать», не раньше начала по графику
+        работы — D-47, A-51 п. 1; причина), — до постановки в очередь."""
         from vector.core import workday as wdy
         if self.db is None:
             return LocalResult("unauthenticated", message_ru="Войдите в систему.")
@@ -743,9 +758,12 @@ class SyncClient:
         if d is None:
             return LocalResult("rejected", message_ru="Рабочий день не найден на этом компьютере — обновите данные.")
         st = wdy.day_state(d.get("events") or [], self.now())
+        info = self.workday_schedule_info()
+        win = self.workday_window(d.get("work_date"), start_at.tzinfo if isinstance(start_at, datetime) else None)
         try:
             text = wdy.parse_reason(reason)
-            wdy.check_start_request(st["pressed_at"], wdy.parse_dt(start_at, "start_at"), self.now())
+            wdy.check_start_request(st["pressed_at"], wdy.parse_dt(start_at, "start_at"), self.now(),
+                                    win[0] if win else None, bool(info.get("exempt")))
         except wdy.WorkdayError as e:
             return LocalResult("rejected", message_ru=e.message_ru, response={"code": e.code, "details": e.details})
         if any(r.get("workday_id") == workday_id and r.get("status") == "pending" for r in self.list_local("workday_start_request")):
@@ -754,9 +772,52 @@ class SyncClient:
         return self.execute("workday.start_request", {"id": str(uuid.uuid4()), "workday_id": workday_id,
                                                       "start_at": start_at.isoformat(), "reason": text})
 
+    def workday_end_request(self, workday_id: str, end_at: datetime, reason: str) -> LocalResult:
+        """«Я работал дольше» — фактическое окончание дня, завершённого автоматически (забыли «Завершить», D-47 —
+        A-51 п. 5), на согласование руководителю; офлайн через очередь. Те же проверки, что на сервере."""
+        from vector.core import workday as wdy
+        if self.db is None:
+            return LocalResult("unauthenticated", message_ru="Войдите в систему.")
+        d = self.get_local("workday", workday_id)
+        if d is None:
+            return LocalResult("rejected", message_ru="Рабочий день не найден на этом компьютере — обновите данные.")
+        st = wdy.day_state(d.get("events") or [], self.now(), d.get("approved_start_at"))
+        try:
+            text = wdy.parse_reason(reason)
+            wdy.check_end_request(st, wdy.parse_dt(end_at, "end_at"), self.now())
+        except wdy.WorkdayError as e:
+            return LocalResult("rejected", message_ru=e.message_ru, response={"code": e.code, "details": e.details})
+        if any(r.get("workday_id") == workday_id and r.get("status") == "pending" for r in self.list_local("workday_end_request")):
+            return LocalResult("rejected", message_ru="Запрос на фактическое окончание этого дня уже на согласовании.",
+                               response={"code": "already_pending"})
+        return self.execute("workday.end_request", {"id": str(uuid.uuid4()), "workday_id": workday_id,
+                                                    "end_at": end_at.isoformat(), "reason": text})
+
+    def workday_schedule_info(self) -> dict:
+        """Мой действующий график из последнего pull ({schedule, exempt, source_label, label}); до первого pull —
+        встроенный 09:00–18:00 (vector.core.schedule.BUILTIN)."""
+        from vector.core import schedule as sch
+        info = self.get_meta("workday_schedule") if self.db is not None else None
+        if not isinstance(info, dict):
+            b = dict(sch.BUILTIN)
+            return {"schedule": b, "exempt": False, "source": "builtin", "source_label": "встроенный",
+                    "label": sch.full_label(b)}
+        return info
+
+    def workday_window(self, work_date: Any, tz=None):
+        """Окно рабочего дня work_date (ГГГГ-ММ-ДД или date) по моему графику и часам компьютера: (начало, конец) UTC
+        или None (нерабочий по графику день, учёт не ведётся)."""
+        from vector.core import schedule as sch
+        try:
+            day = work_date if isinstance(work_date, date) else date.fromisoformat(str(work_date or ""))
+        except ValueError:
+            return None
+        return sch.window(self.workday_schedule_info().get("schedule"), day, tz)
+
     def workday_prompt_needed(self, tz=None) -> bool:
-        """Показать ли окно «Начните рабочий день» (A-49 п. 4): сегодня таймер не запускали и окно сегодня не
-        отложено кнопкой «Позже»."""
+        """Показать ли окно «Начните рабочий день» (A-49 п. 4; D-47 — A-51 пп. 3–4: обязательно, без «Позже»):
+        сегодня рабочий день по графику, таймер не запускали, учёт рабочего времени ведётся. Идёт ночная смена со
+        вчерашнего дня — нет. В выходной по графику окно не навязывается (начать день можно кнопкой)."""
         from vector.core import workday as wdy
         if self.db is None or not self.user_id:
             return False
@@ -765,13 +826,65 @@ class SyncClient:
         prev = self.workday_of(today - timedelta(days=1))
         if prev and prev.get("status") != "finished":
             return False                                  # идёт ночная смена со вчерашнего дня
-        return wdy.need_start_prompt((cur or {}).get("events") or [],
-                                     self.get_meta("workday_prompt_later") == today.isoformat())
+        info = self.workday_schedule_info()
+        if info.get("exempt") or self.workday_window(today, tz) is None:
+            return False
+        return wdy.need_start_prompt((cur or {}).get("events") or [])
 
-    def workday_prompt_later(self, tz=None) -> None:
-        """«Позже» в окне «Начните рабочий день»: сегодня окно больше не показывать (только на этом компьютере)."""
+    def workday_open_days(self) -> list[dict]:
+        """Свои незавершённые рабочие дни из кэша (обычно один — сегодняшний; забытые — тоже), старые — первыми."""
+        return sorted((d for d in self.list_local("workday") if d.get("user_id") in (None, self.user_id)
+                       and d.get("status") in ("working", "paused")), key=lambda d: d.get("work_date") or "")
+
+    def workday_reminder(self, tz=None) -> dict:
+        """Напоминание о конце рабочего дня (D-47, A-51 п. 5) для самого старого незавершённого дня: {state (none |
+        remind | auto), workday_id, due (ISO), due_label («18:00»), auto_at (ISO — время автоматического завершения:
+        на перерыве — момент «Перерыв», иначе due)}. Учёт не ведётся — none."""
+        from vector.core import schedule as sch
+        from vector.core import workday as wdy
+        none = {"state": "none", "workday_id": "", "due": "", "due_label": "", "auto_at": ""}
+        if self.db is None or not self.user_id:
+            return none
+        info = self.workday_schedule_info()
+        s = info.get("schedule")
+        if info.get("exempt") or not s:
+            return none
+        snooze = self.get_meta("workday_snooze") or {}
+        now = self.now()
+        for d in self.workday_open_days():
+            st = wdy.day_state(d.get("events") or [], now, d.get("approved_start_at"))
+            win = self.workday_window(d.get("work_date"), tz)
+            until = wdy._opt_dt(snooze.get("until")) if snooze.get("workday_id") == d.get("id") else None
+            due = wdy.due_at(st, win[1] if win else None, sch.length_minutes(s), until)
+            state = wdy.reminder_state(due, now)
+            if state == "none":
+                continue
+            auto_at = st["last_event_at"] if st["status"] == "paused" and st["last_event_at"] else due
+            return {"state": state, "workday_id": d.get("id") or "", "due": due.isoformat(),
+                    "due_label": f"{due.astimezone(tz):%H:%M}", "auto_at": max(auto_at, st["last_event_at"] or auto_at).isoformat()}
+        return none
+
+    def workday_snooze(self, workday_id: str, tz=None) -> None:
+        """«Работаю дальше» в напоминании о конце дня: напомнить снова через час (vector.core.workday.SNOOZE)."""
+        from vector.core import workday as wdy
         if self.db is not None:
-            self._set_meta("workday_prompt_later", self.now().astimezone(tz).date().isoformat())
+            self._set_meta("workday_snooze", {"workday_id": workday_id, "until": (self.now() + wdy.SNOOZE).isoformat()})
+
+    def workday_auto_finish(self, reason: str = "closed", tz=None) -> list[LocalResult]:
+        """Завершить забытые дни (D-47, A-51 п. 5): напоминание без ответа 30 минут (no_answer) или программа была
+        закрыта (closed) — «Завершить» с временем конца по графику (на перерыве — с моментом «Перерыв»), пометка auto.
+        Если сотрудник работал дольше — «Я работал дольше» (фактическое окончание через руководителя)."""
+        from vector.core import workday as wdy
+        out = []
+        for _ in range(10):                               # по одному дню за проход; дней немного
+            r = self.workday_reminder(tz)
+            if r["state"] != "auto":
+                break
+            res = self.workday_mark("finish", tz, at=wdy.parse_dt(r["auto_at"]), auto=reason, workday_id=r["workday_id"])
+            out.append(res)
+            if res.status not in ("accepted", "queued"):
+                break
+        return out
 
     def op_event(self, op_id: str, kind: str, qty_done: Optional[int] = None, note: Optional[str] = None) -> LocalResult:
         """Событие исполнителя по операции наряда (старт / пауза / продолжить / завершить / проблема) — офлайн (D-36).
@@ -1235,8 +1348,9 @@ class SyncClient:
                 self.db.execute("UPDATE cache SET data_enc=?, pending=1 WHERE object_type=? AND id=?", (enc, otype, oid))
             else:
                 self.db.execute("INSERT INTO cache VALUES (?,?,?,NULL,NULL,1)", (otype, oid, enc))
-        elif otype in ("workday", "workday_start_request"):
-            # Таймер рабочего дня (D-46): нажатие добавляется в журнал дня, запрос — «На согласовании».
+        elif otype in ("workday", "workday_start_request", "workday_end_request"):
+            # Таймер рабочего дня (D-46): нажатие добавляется в журнал дня, запрос (начало / окончание, D-47) —
+            # «На согласовании».
             old = json.loads(self._open("cache", f"{otype}/{oid}/d", row[0])) if row else None
             data = (_workday_overlay(old, payload, self.user_id) if otype == "workday"
                     else _start_request_overlay(old, payload, self.user_id, self.get_local("workday", payload.get("workday_id") or "")))
@@ -1306,7 +1420,7 @@ def _workday_overlay(old: Optional[dict], payload: dict, user_id: Optional[str])
                         "started_at": payload.get("device_time")})
     events = list(data.get("events") or [])
     events.append({"seq": len(events) + 1, "event": payload.get("event"), "device_time": payload.get("device_time"),
-                   "local": True})
+                   "local": True, **({"auto": payload["auto"]} if payload.get("auto") else {})})
     data["events"] = events
     data["status"] = wdy.status_of(events)
     data["finished_at"] = payload.get("device_time") if payload.get("event") == "finish" else None
@@ -1314,11 +1428,14 @@ def _workday_overlay(old: Optional[dict], payload: dict, user_id: Optional[str])
 
 
 def _start_request_overlay(old: Optional[dict], payload: dict, user_id: Optional[str], day: Optional[dict]) -> dict:
-    """Локальная копия запроса «фактическое начало дня» (офлайн, D-46): «На согласовании» до ответа сервера."""
+    """Локальная копия запроса «фактическое начало дня» (офлайн, D-46) или «фактическое окончание дня» (D-47, есть
+    end_at): «На согласовании» до ответа сервера."""
     data = dict(old or {"status": "pending", "user_id": user_id, "decided_by": None, "decided_at": None,
                         "decision_comment": None, "authority": None, "version": None})
-    data.update(id=payload.get("id"), workday_id=payload.get("workday_id"), requested_start_at=payload.get("start_at"),
+    kind = "end" if "end_at" in payload else "start"
+    data.update(id=payload.get("id"), workday_id=payload.get("workday_id"), kind=kind,
                 reason=payload.get("reason"), work_date=(day or {}).get("work_date"))
+    data[f"requested_{kind}_at"] = payload.get(f"{kind}_at")
     return data
 
 

@@ -2,10 +2,11 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 
-// Таймер рабочего дня (D-46 — ответы владельца на A-49 пп. 2–5).
+// Таймер рабочего дня (D-46 — ответы владельца на A-49 пп. 2–5; D-47 — на A-51: график работы, забытое «Завершить»,
+// фактическое окончание дня).
 //  * compact: true — в боковой панели: состояние, «сколько натикало» (ЧЧ:ММ:СС) и одна-две кнопки;
-//  * compact: false — полоса в разделе «Рабочее время»: ещё начало, перерывы, нажатия, «Я начал раньше» и, руководителю,
-//    «Запросы на начало дня».
+//  * compact: false — полоса в разделе «Рабочее время»: ещё график работы, начало, перерывы, нажатия, «Я начал
+//    раньше», «Я работал дольше» (день завершён автоматически) и, руководителю, «Запросы по рабочему дню».
 // Время — по часам компьютера, без округления; перерыв — только по кнопке «Перерыв». Нажатия работают без связи
 // (очередь). Живой таймер: к worked_seconds из снимка прибавляются секунды, прошедшие по часам QML, пока день идёт.
 VCard {
@@ -48,7 +49,7 @@ VCard {
         // высота зависит от ширины, а внутри ColumnLayout это зацикливает раскладку (окно «зависает»). В боковой
         // панели — столбец кнопок во всю ширину, на странице — строка.
         GridLayout {
-            Layout.fillWidth: true; columns: wc.compact ? 1 : 6; columnSpacing: 6; rowSpacing: 6
+            Layout.fillWidth: true; columns: wc.compact ? 1 : 7; columnSpacing: 6; rowSpacing: 6
             VButton { objectName: wc.compact ? "btnWorkdayStartMini" : "btnWorkdayStart"; visible: wc.w.can_start === true; text: "Начать рабочий день"; kind: "primary"; iconName: "play"; compact: wc.compact; Layout.fillWidth: wc.compact; onClicked: wc.mark("start") }
             VButton { objectName: wc.compact ? "btnWorkdayPauseMini" : "btnWorkdayPause"; visible: wc.w.can_pause === true; text: "Перерыв"; iconName: "coffee"; compact: wc.compact; Layout.fillWidth: wc.compact; onClicked: wc.mark("pause") }
             VButton { objectName: wc.compact ? "btnWorkdayResumeMini" : "btnWorkdayResume"; visible: wc.w.can_resume === true; text: "Продолжить"; kind: wc.w.status === "paused" ? "primary" : "secondary"; iconName: "play"; compact: wc.compact; Layout.fillWidth: wc.compact; onClicked: wc.mark("resume")
@@ -56,11 +57,20 @@ VCard {
             VButton { objectName: wc.compact ? "btnWorkdayFinishMini" : "btnWorkdayFinish"; visible: wc.w.can_finish === true; text: "Завершить день"; iconName: "square"; compact: wc.compact; Layout.fillWidth: wc.compact; onClicked: finishConfirm.open() }
             VButton { objectName: wc.compact ? "btnWorkdayEarlierMini" : "btnWorkdayEarlier"; visible: !wc.compact && wc.w.has_day === true; enabled: wc.w.can_request === true; text: "Я начал раньше"; iconName: "sunrise"
                       tip: wc.w.can_request === true ? backend.tip(text) : wc.w.request_block; onClicked: earlierForm.openFor() }
-            VButton { objectName: wc.compact ? "btnWorkdayRequestsMini" : "btnWorkdayRequests"; visible: !wc.compact && (wc.w.review || []).length > 0; text: "Запросы на начало дня (" + (wc.w.to_decide || 0) + ")"
+            VButton { objectName: wc.compact ? "btnWorkdayEndLaterMini" : "btnWorkdayEndLater"; visible: !wc.compact && wc.w.auto_finished === true; enabled: wc.w.can_request_end === true; text: "Я работал дольше"; iconName: "sunset"
+                      tip: wc.w.can_request_end === true ? "День завершён автоматически (забыли «Завершить»). Укажите, во сколько закончили на самом деле, — руководитель согласует, и таймер посчитает день до этого времени." : wc.w.end_block
+                      onClicked: endForm.openFor() }
+            VButton { objectName: wc.compact ? "btnWorkdayRequestsMini" : "btnWorkdayRequests"; visible: !wc.compact && (wc.w.review || []).length > 0; text: "Запросы по рабочему дню (" + (wc.w.to_decide || 0) + ")"
                       kind: (wc.w.to_decide || 0) > 0 ? "soft" : "ghost"; iconName: "user-check"; onClicked: requestsPopup.open()
-                      tip: "Сотрудники пропустили «Начать рабочий день» и просят считать день с более раннего времени — согласуйте или отклоните (при связи)." }
+                      tip: "Сотрудники просят считать день с более раннего начала (пропустили «Начать») или до более позднего окончания (день завершён автоматически) — согласуйте или отклоните (при связи)." }
         }
         Text { visible: !wc.compact; text: wc.w.next || ""; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+        // График работы (D-47): от него — фактическое начало и напоминание о конце дня.
+        Text { visible: !wc.compact; objectName: "workdaySchedule"
+               text: "График: " + (wc.w.schedule_label || "") + (wc.w.schedule_source ? " (" + wc.w.schedule_source + ")" : "")
+                     + (wc.w.has_day === true && wc.w.schedule_day !== true && wc.w.exempt !== true ? " · сегодня по графику выходной" : "")
+               color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true
+               VTipArea { text: "График назначает администратор (раздел «Оргструктура» → «Графики работы»). Фактическое начало дня — не раньше начала по графику; в конце дня по графику программа напомнит завершить день." } }
         // Подробности дня: начало, перерывы, завершение — строкой; нажатия — отдельной строкой с переносом.
         RowLayout {
             visible: !wc.compact && wc.w.has_day === true
@@ -78,6 +88,9 @@ VCard {
         Banner { visible: !wc.compact && (wc.w.approved_label || "") !== ""; objectName: wc.compact ? "workdayApprovedMini" : "workdayApproved"; tone: "success"; text: wc.w.approved_label || "" }
         Banner { visible: !wc.compact && (wc.w.pending_request || {}).id !== undefined; objectName: wc.compact ? "workdayPendingRequestMini" : "workdayPendingRequest"; tone: "warning"
                  text: (wc.w.pending_request || {}).id ? "На согласовании у руководителя: начало дня с " + wc.w.pending_request.start_label + " — «" + wc.w.pending_request.reason + "»." : "" }
+        Banner { visible: !wc.compact && wc.w.auto_finished === true; objectName: wc.compact ? "workdayAutoFinishedMini" : "workdayAutoFinished"; tone: "warning"; text: wc.w.end_label || "" }
+        Banner { visible: !wc.compact && (wc.w.pending_end_request || {}).id !== undefined; objectName: wc.compact ? "workdayPendingEndMini" : "workdayPendingEnd"; tone: "warning"
+                 text: (wc.w.pending_end_request || {}).id ? "На согласовании у руководителя: окончание дня в " + wc.w.pending_end_request.time_label + " — «" + wc.w.pending_end_request.reason + "»." : "" }
         Banner { visible: !wc.compact && wc.w.unsent === true; tone: "info"; text: "Есть нажатия, которые ещё не подтвердил сервер (очередь синхронизации) — таймер уже их учитывает." }
     }
 
@@ -105,7 +118,7 @@ VCard {
         function openFor() { startField.text = wc.w.request_default || ""; reasonField.text = ""; open() }
         onConfirmed: { working = true; backend.workdayStartRequest("workday-request", wc.w.id, check.start_at, reasonField.text) }
         VField { id: startField; objectName: wc.compact ? "workdayEarlierTimeMini" : "workdayEarlierTime"; label: "Фактическое начало"; placeholder: "08:00"; required: true
-                 hint: "ЧЧ:ММ по часам компьютера: раньше нажатия «Начать», не раньше чем за 16 часов."
+                 hint: "ЧЧ:ММ по часам компьютера: раньше нажатия «Начать», но не раньше начала рабочего дня по графику" + (wc.w.schedule_start_label ? " (" + wc.w.schedule_start_label + ")." : ".")
                  error: earlierForm.check.ok === false ? earlierForm.check.message : "" }
         VField { id: reasonField; objectName: wc.compact ? "workdayEarlierReasonMini" : "workdayEarlierReason"; label: "Причина"; required: true; placeholder: "Был на объекте, забыл нажать «Начать»" }
         Connections { target: backend
@@ -113,7 +126,29 @@ VCard {
                 if (r.status === "accepted" || r.status === "queued") earlierForm.close(); else earlierForm.error = r.message_ru || "Запрос не отправлен." } }
     }
 
-    // ---------- руководителю: запросы на фактическое начало дня
+    // ---------- «Я работал дольше» (D-47, A-51 п. 5): день завершён автоматически, фактическое окончание — руководителю
+    FormDialog {
+        id: endForm
+        objectName: wc.compact ? "workdayEndFormMini" : "workdayEndForm"
+        title: "Фактическое окончание рабочего дня"
+        subtitle: wc.w.end_label || ""
+        confirmText: "Отправить на согласование"
+        confirmTip: "Запрос уйдёт тому же руководителю, что решает о фактическом начале дня. Можно без связи — отправится при подключении."
+        readonly property var check: endField.text.trim() === "" ? ({ ok: false, message: "" }) : backend.workdayEndCheck(endField.text)
+        canConfirm: check.ok === true && endReason.text.trim() !== ""
+        note: check.ok === true ? check.message : ""
+        function openFor() { endField.text = wc.w.end_default || ""; endReason.text = ""; open() }
+        onConfirmed: { working = true; backend.workdayEndRequest("workday-end-request", wc.w.end_day_id, check.end_at, endReason.text) }
+        VField { id: endField; objectName: wc.compact ? "workdayEndTimeMini" : "workdayEndTime"; label: "Фактическое окончание"; placeholder: "19:30"; required: true
+                 hint: "ЧЧ:ММ по часам компьютера: позже автоматического завершения и не позже, чем сейчас."
+                 error: endForm.check.ok === false ? endForm.check.message : "" }
+        VField { id: endReason; objectName: wc.compact ? "workdayEndReasonMini" : "workdayEndReason"; label: "Причина"; required: true; placeholder: "Задержался на объекте, забыл нажать «Завершить»" }
+        Connections { target: backend
+            function onCommandDone(t, r) { if (t !== "workday-end-request") return; endForm.working = false
+                if (r.status === "accepted" || r.status === "queued") endForm.close(); else endForm.error = r.message_ru || "Запрос не отправлен." } }
+    }
+
+    // ---------- руководителю: запросы на фактическое начало и окончание дня
     Popup {
         id: requestsPopup
         objectName: wc.compact ? "workdayRequestsPopupMini" : "workdayRequestsPopup"
@@ -130,9 +165,9 @@ VCard {
         contentItem: ColumnLayout {
             spacing: 10
             RowLayout { id: reqHead; Layout.fillWidth: true; Layout.margins: Theme.padL; Layout.bottomMargin: 0
-                Text { text: "Запросы на начало дня"; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsL; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                Text { text: "Запросы по рабочему дню"; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsL; font.weight: Font.DemiBold; Layout.fillWidth: true }
                 VButton { kind: "ghost"; iconName: "x"; compact: true; onClicked: requestsPopup.close(); Accessible.name: "Закрыть" } }
-            Text { id: reqHint; text: "Сотрудник пропустил «Начать рабочий день» и просит считать день с более раннего времени. Согласовать или отклонить (с причиной) — при связи с сервером."
+            Text { id: reqHint; text: "Начало дня — сотрудник пропустил «Начать рабочий день» и просит считать день с более раннего времени (не раньше начала по графику). Окончание дня — день завершён автоматически, а сотрудник работал дольше. Согласовать или отклонить (с причиной) — при связи с сервером."
                    color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.leftMargin: Theme.padL; Layout.rightMargin: Theme.padL }
             ListView {
                 id: reqList
@@ -145,6 +180,7 @@ VCard {
                     ColumnLayout { id: rqc; anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; anchors.margins: 10; spacing: 4
                         RowLayout { Layout.fillWidth: true
                             Text { text: rq.modelData.title; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                            VChip { text: rq.modelData.kind_label; tone: "neutral" }
                             VChip { text: rq.modelData.status_label; tone: rq.modelData.status_tone } }
                         Text { text: "Причина: " + rq.modelData.reason + (rq.modelData.comment ? "  ·  решение: " + rq.modelData.comment : "")
                                color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
@@ -164,15 +200,16 @@ VCard {
         objectName: wc.compact ? "workdayDecideFormMini" : "workdayDecideForm"
         property var req: ({})
         property string decision: "approve"
-        title: decision === "approve" ? "Согласовать фактическое начало дня" : "Отклонить фактическое начало дня"
+        readonly property string what: req.kind === "end" ? "окончание" : "начало"
+        title: (decision === "approve" ? "Согласовать фактическое " : "Отклонить фактическое ") + what + " дня"
         subtitle: req.title || ""
         confirmText: decision === "approve" ? "Согласовать" : "Отклонить"
         confirmKind: decision === "approve" ? "primary" : "danger"
-        confirmTip: decision === "approve" ? "Таймер сотрудника посчитает день с указанного времени; сотрудник получит уведомление." : "Запрос будет отклонён с вашей причиной; сотрудник получит уведомление."
+        confirmTip: decision === "approve" ? (req.kind === "end" ? "Таймер сотрудника посчитает день до указанного времени; сотрудник получит уведомление." : "Таймер сотрудника посчитает день с указанного времени; сотрудник получит уведомление.") : "Запрос будет отклонён с вашей причиной; сотрудник получит уведомление."
         canConfirm: decision === "approve" || decideComment.text.trim() !== ""
         note: "Причина сотрудника: " + (req.reason || "")
         function openFor(r, d) { req = r; decision = d; decideComment.text = ""; open() }
-        onConfirmed: decideCmd.run("workday.start_decide", { id: req.id, decision: decision, comment: decideComment.text }, req.version)
+        onConfirmed: decideCmd.run(req.command || "workday.start_decide", { id: req.id, decision: decision, comment: decideComment.text }, req.version)
         VField { id: decideComment; objectName: wc.compact ? "workdayDecideCommentMini" : "workdayDecideComment"; label: decideForm.decision === "approve" ? "Комментарий" : "Причина отказа"
                  required: decideForm.decision === "reject"; placeholder: decideForm.decision === "approve" ? "Необязательно" : "В это время вас не было на объекте" }
     }

@@ -199,22 +199,66 @@ Item {
     Component { id: worktimeC; WorktimePage { shell: shellRoot } }
     Component { id: orgC; OrgPage { shell: shellRoot } }
 
-    // Окно «Начните рабочий день» (D-46, A-49 п. 4): сегодня таймер не запускали. «Позже» — до завтра не показывать;
-    // если начали работу раньше, после «Начать» можно указать фактическое начало («Я начал раньше» в «Рабочем времени»).
+    // Окно «Начните рабочий день» (D-46, A-49 п. 4; D-47 — A-51 пп. 3–4: «рабочий день надо обязательно начинать»,
+    // окно «настаивает»): сегодня рабочий день по графику, а таймер не запускали. Кнопки «Позже» нет, крестик и Esc не
+    // закрывают; можно начать день или выйти из учётной записи (чужой компьютер). Если окно всё же закрылось, а день
+    // не начат, — оно открывается снова. Начали раньше — после «Начать» «Я начал раньше» в «Рабочем времени».
     FormDialog {
         id: workdayPrompt
         objectName: "workdayPrompt"
+        insist: true
         title: "Начните рабочий день"
-        subtitle: "Таймер рабочего дня сегодня не запущен. Нажмите «Начать рабочий день», чтобы время считалось по часам этого компьютера."
-        note: "Начали работу раньше? После «Начать» укажите фактическое начало — «Я начал раньше» в разделе «Рабочее время»: руководитель согласует, и таймер посчитает день с него."
+        subtitle: "Таймер рабочего дня сегодня не запущен. Рабочий день обязательно начинать — нажмите «Начать рабочий день», и время будет считаться по часам этого компьютера."
+                  + (backend.workdayOverview.schedule_start_label ? " Начало по графику — " + backend.workdayOverview.schedule_start_label + "." : "")
+        note: "Начали работу раньше? После «Начать» укажите фактическое начало — «Я начал раньше» в разделе «Рабочее время» (не раньше начала по графику): руководитель согласует, и таймер посчитает день с него."
         confirmText: "Начать рабочий день"
-        cancelText: "Позже"
-        onConfirmed: { close(); backend.workdayMark("workday-mark", "start") }
-        onDismissed: backend.workdayLater()
+        cancelText: "Выйти из учётной записи"
+        onConfirmed: { working = true; backend.workdayMark("workday-prompt", "start") }
+        onDismissed: { shellRoot.loggingOut = true; backend.logout() }
+        onClosed: if (shellRoot.wantsWorkdayPrompt && !shellRoot.loggingOut) Qt.callLater(function() { if (shellRoot.wantsWorkdayPrompt && !workdayPrompt.visible) workdayPrompt.open() })
+        Connections { target: backend
+            function onCommandDone(t, r) { if (t !== "workday-prompt") return; workdayPrompt.working = false
+                if (r.status !== "accepted" && r.status !== "queued") workdayPrompt.error = r.message_ru || "День не начат." } }
     }
-    // Показать окно один раз, когда снимок говорит «пора» (и пользователь вошёл, пароль сменён).
+    property bool loggingOut: false
+    // Окно открывается, когда снимок говорит «пора», и закрывается, когда день начат.
     readonly property bool wantsWorkdayPrompt: backend.workdayOverview.prompt === true
-    onWantsWorkdayPromptChanged: if (wantsWorkdayPrompt && !workdayPrompt.visible) workdayPrompt.open()
+    onWantsWorkdayPromptChanged: {
+        if (wantsWorkdayPrompt && !workdayPrompt.visible) workdayPrompt.open()
+        else if (!wantsWorkdayPrompt && workdayPrompt.visible) workdayPrompt.close()
+    }
+
+    // Напоминание о конце рабочего дня (D-47, A-51 п. 5: «если человек забыл завершить день, а время всё так же
+    // идёт»): по графику день закончился, таймер идёт. «Завершить день» (поле «Закончил в» — если закончили раньше),
+    // «Работаю дальше» — напомнить через час. Без ответа 30 минут программа завершит день сама — в конце по графику;
+    // работали дольше — «Я работал дольше» (согласует руководитель).
+    FormDialog {
+        id: workdayEndPrompt
+        objectName: "workdayEndPrompt"
+        insist: true
+        title: "Рабочий день по графику закончился"
+        subtitle: backend.workdayOverview.reminder_text || ""
+        readonly property var check: wdFinishAt.text.trim() === "" ? ({ ok: true, at: "", message: "" }) : backend.workdayFinishCheck(wdFinishAt.text)
+        note: check.ok === true && check.message ? check.message : ""
+        canConfirm: check.ok === true
+        confirmText: "Завершить день"
+        confirmTip: "Завершить рабочий день сейчас (или во время из поля «Закончил в»). Можно без связи — уйдёт при подключении."
+        cancelText: "Работаю дальше"
+        onOpened: wdFinishAt.text = ""
+        onConfirmed: { working = true; backend.workdayFinishAt("workday-end-prompt", check.at || "") }
+        onDismissed: backend.workdaySnooze()
+        VField { id: wdFinishAt; objectName: "wdFinishAt"; label: "Закончил в (если раньше, чем сейчас)"; placeholder: "17:40"
+                 hint: "Необязательно. ЧЧ:ММ по часам компьютера — не раньше последнего нажатия таймера."
+                 error: workdayEndPrompt.check.ok === false ? workdayEndPrompt.check.message : "" }
+        Connections { target: backend
+            function onCommandDone(t, r) { if (t !== "workday-end-prompt") return; workdayEndPrompt.working = false
+                if (r.status === "accepted" || r.status === "queued") workdayEndPrompt.close(); else workdayEndPrompt.error = r.message_ru || "День не завершён." } }
+    }
+    readonly property bool wantsWorkdayEnd: backend.workdayOverview.reminder === true
+    onWantsWorkdayEndChanged: {
+        if (wantsWorkdayEnd && !workdayEndPrompt.visible) workdayEndPrompt.open()
+        else if (!wantsWorkdayEnd && workdayEndPrompt.visible) workdayEndPrompt.close()
+    }
 
     FormDialog {
         id: reconnect

@@ -11,8 +11,18 @@
 * п. 5 — день по часам компьютера сотрудника (как есть): время события — время устройства (как у таймера операций
   наряда, A-44), сервер отклоняет только время из будущего.
 
+Ответы владельца на A-51 (D-47):
+
+* п. 1 — фактическое начало — это когда не отметили начало рабочего дня **согласно графику работы**: просить можно
+  не раньше начала по графику (vector.core.schedule), а не «за 16 часов»;
+* пп. 3–4 — рабочий день **обязательно** начинать: окно «Начните рабочий день» настаивает (кнопки «Позже» нет);
+* п. 5 — после «Завершить» можно «Продолжить», отсчёт идёт дальше; **забыли завершить** — в конце дня по графику
+  напоминание («Завершить» / «Работаю дальше» — напомнить через час / «Закончил раньше»); без ответа 30 минут (или
+  программа была закрыта) день завершается автоматически — в конце по графику (или когда истекло «работаю дальше»);
+  работал дольше — «фактическое окончание» через согласование руководителя, как фактическое начало.
+
 Чистые функции без БД и Qt — общие для сервера (проверка событий при синхронизации) и клиента (живой таймер,
-окно «Начните рабочий день», заполнение смены отчёта).
+окно «Начните рабочий день», напоминание о конце дня, заполнение смены отчёта).
 
 События дня (неизменяемый журнал): start — начал рабочий день; pause — перерыв; resume — продолжил (после перерыва
 или после «Завершить» — если вернулся к работе); finish — завершил рабочий день. Рабочее время — сумма отрезков
@@ -37,8 +47,9 @@ TRANSITIONS = {"not_started": ("start",), "working": ("pause", "finish"), "pause
                "finished": ("resume",)}
 
 MAX_DAY = timedelta(hours=24)        # рабочий день — не длиннее суток от начала (ночная смена укладывается)
-MAX_EARLIER = timedelta(hours=16)    # фактическое начало — не раньше, чем за 16 часов до нажатия «Начать»
-REQUEST_WINDOW = timedelta(hours=24)  # согласовать фактическое начало — пока не прошли сутки от начала дня
+REQUEST_WINDOW = timedelta(hours=24)  # согласовать фактическое начало / окончание — в течение суток (A-51 п. 2: «да»)
+SNOOZE = timedelta(hours=1)          # «Работаю дальше» — напомнить снова через час (A-51 п. 5)
+AUTO_FINISH_AFTER = timedelta(minutes=30)   # напоминание без ответа 30 минут — день завершается автоматически
 MAX_REASON = 500
 
 REQUEST_STATUSES = ("pending", "approved", "rejected")
@@ -112,14 +123,18 @@ def check_event(events: Iterable[dict], event: str, at: datetime) -> None:
                                                "день» завтрашним числом).", {"field": "device_time"})
 
 
-def day_state(events: Iterable[dict], now: datetime, approved_start: Any = None) -> dict:
+def day_state(events: Iterable[dict], now: datetime, approved_start: Any = None, approved_end: Any = None) -> dict:
     """Состояние рабочего дня на момент now (для живого таймера и для отчёта).
 
     approved_start — согласованное руководителем фактическое начало (A-49 п. 4): если оно раньше первого «Начать»,
-    первый рабочий отрезок начинается с него — таймер сразу показывает и эти часы.
+    первый рабочий отрезок начинается с него — таймер сразу показывает и эти часы. approved_end — согласованное
+    фактическое окончание (D-47, A-51 п. 5): день завершён автоматически, а сотрудник работал дольше — последний
+    отрезок продлевается до него.
 
     Возвращает {status, started_at, pressed_at, finished_at, intervals [(начало, конец|None)], worked_seconds,
-    break_seconds, breaks (число нажатий «Перерыв»), extra_seconds (добавлено согласованным началом)}; времена — UTC.
+    break_seconds, breaks (число нажатий «Перерыв»), extra_seconds (добавлено согласованным началом),
+    extra_end_seconds (добавлено согласованным окончанием), auto_finished (последнее «Завершить» — автоматическое),
+    last_event_at}; времена — UTC.
     """
     evs = _sorted(events)
     intervals: list[list] = []
@@ -142,6 +157,15 @@ def day_state(events: Iterable[dict], now: datetime, approved_start: Any = None)
             else:
                 finished_at = at
     pressed = intervals[0][0] if intervals else None
+    last = evs[-1] if evs else {}
+    auto_finished = last.get("event") == "finish" and bool(last.get("auto"))
+    last_event_at = _opt_dt(last.get("device_time")) if last else None
+    extra_end = 0.0
+    appr_end = _opt_dt(approved_end)
+    if finished_at is not None and appr_end is not None and appr_end > finished_at and intervals:
+        extra_end = (appr_end - finished_at).total_seconds()
+        intervals[-1][1] = appr_end
+        finished_at = appr_end
     extra = 0.0
     appr = _opt_dt(approved_start)
     if intervals and appr is not None and appr < intervals[0][0]:
@@ -155,7 +179,8 @@ def day_state(events: Iterable[dict], now: datetime, approved_start: Any = None)
     return {"status": status_of(evs), "started_at": intervals[0][0] if intervals else None, "pressed_at": pressed,
             "finished_at": finished_at, "intervals": [(a, b) for a, b in intervals],
             "worked_seconds": max(0, int(worked)), "break_seconds": max(0, int(span - worked)), "breaks": breaks,
-            "extra_seconds": int(extra)}
+            "extra_seconds": int(extra), "extra_end_seconds": int(extra_end), "auto_finished": auto_finished,
+            "last_event_at": last_event_at}
 
 
 def duration_label(seconds: Optional[int]) -> str:
@@ -191,21 +216,97 @@ def shift_from_day(state: dict, day: date, tz=None) -> Optional[dict]:
     return {"shift_start": start, "shift_end": end, "break_minutes": int(brk)}
 
 
-def check_start_request(pressed_at: Optional[datetime], requested: datetime, now: datetime) -> None:
-    """Фактическое начало дня (A-49 п. 4): только раньше нажатия «Начать», не раньше чем за MAX_EARLIER до него и не в
-    будущем; просить можно, пока не прошли сутки от начала дня («сегодняшний день»)."""
+def check_start_request(pressed_at: Optional[datetime], requested: datetime, now: datetime,
+                        schedule_start: Optional[datetime], exempt: bool = False) -> None:
+    """Фактическое начало дня (A-49 п. 4; D-47 — ответ на A-51 п. 1: «фактическое начало — это когда не отметили
+    начало рабочего дня согласно графика работы»): раньше нажатия «Начать», но **не раньше начала по графику**
+    (schedule_start — начало рабочего дня по графику сотрудника, vector.core.schedule.window); просить можно, пока не
+    прошли сутки от нажатия. По графику день нерабочий (schedule_start = None) или учёт не ведётся — фактическое
+    начало не указывается: таймер считает с нажатия."""
     if pressed_at is None:
         raise WorkdayError("not_started", "Сначала начните рабочий день, затем укажите, во сколько он начался на "
                                           "самом деле.", {"field": "start_at"})
+    if exempt:
+        raise WorkdayError("no_schedule", "Учёт рабочего времени для вас не ведётся — фактическое начало не "
+                                          "указывается.", {"field": "start_at"})
+    if schedule_start is None:
+        raise WorkdayError("not_schedule_day", "По графику работы этот день нерабочий — фактическое начало не "
+                                               "указывается: таймер считает с нажатия «Начать».", {"field": "start_at"})
+    if pressed_at <= schedule_start:
+        raise WorkdayError("not_late", "Вы начали день не позже начала по графику — указывать фактическое начало не "
+                                       "нужно.", {"field": "start_at"})
     if requested >= pressed_at:
         raise WorkdayError("not_earlier", "Фактическое начало должно быть раньше нажатия «Начать рабочий день».",
                            {"field": "start_at"})
-    if pressed_at - requested > MAX_EARLIER:
-        raise WorkdayError("too_early", "Фактическое начало — не раньше чем за 16 часов до нажатия «Начать».",
+    if requested < schedule_start:
+        raise WorkdayError("before_schedule", "Фактическое начало — не раньше начала рабочего дня по графику.",
                            {"field": "start_at"})
     if now - pressed_at > REQUEST_WINDOW:
         raise WorkdayError("too_late", "Согласовать фактическое начало можно только для сегодняшнего рабочего дня.",
                            {"field": "start_at"})
+
+
+def check_end_request(state: dict, requested: datetime, now: datetime) -> None:
+    """Фактическое окончание дня (D-47, A-51 п. 5): день завершён **автоматически** (напоминание осталось без
+    ответа или программа была закрыта), а сотрудник работал дольше — просит считать конец дня позже. Только позже
+    автоматического «Завершить», не в будущем, не дальше суток от начала дня; просить можно в течение суток после
+    автоматического завершения. После «Продолжить» запрос не нужен — день снова идёт."""
+    fin = state.get("finished_at")
+    if state.get("status") != "finished" or fin is None:
+        raise WorkdayError("not_finished", "Рабочий день не завершён — фактическое окончание не нужно.",
+                           {"field": "end_at"})
+    if not state.get("auto_finished"):
+        raise WorkdayError("not_auto", "День завершён вами — если работали дальше, нажмите «Продолжить».",
+                           {"field": "end_at"})
+    if requested <= fin:
+        raise WorkdayError("not_later", "Фактическое окончание должно быть позже автоматического завершения.",
+                           {"field": "end_at"})
+    if requested > now:
+        raise WorkdayError("in_future", "Фактическое окончание не может быть в будущем.", {"field": "end_at"})
+    started = state.get("started_at")
+    if started is not None and requested - started > MAX_DAY:
+        raise WorkdayError("day_too_long", "Рабочий день не длиннее суток от начала.", {"field": "end_at"})
+    if now - fin > REQUEST_WINDOW:
+        raise WorkdayError("too_late", "Фактическое окончание можно указать в течение суток после завершения.",
+                           {"field": "end_at"})
+
+
+def due_at(state: dict, schedule_end: Optional[datetime], schedule_minutes: int,
+           snooze_until: Optional[datetime] = None) -> Optional[datetime]:
+    """Когда напомнить «рабочий день по графику закончился» (D-47, A-51 п. 5) для идущего или прерванного дня.
+
+    Конец по графику (schedule_end; день нерабочий по графику — начало + длительность дня по графику). Нажал кнопку
+    таймера после конца по графику («Продолжить» в 19:00 — значит, на месте) — напомнить через час после нажатия
+    (SNOOZE); «Работаю дальше» — в конце отсрочки (snooze_until). Не дальше суток от начала. Завершённый или не
+    начатый день — None."""
+    if state.get("status") not in ("working", "paused") or not state.get("pressed_at"):
+        return None
+    start = state["pressed_at"]
+    due = schedule_end or (start + timedelta(minutes=schedule_minutes))
+    last = state.get("last_event_at")
+    if last is not None and last >= due:
+        due = last + SNOOZE
+    if snooze_until is not None and snooze_until > due:
+        due = snooze_until
+    return min(due, start + MAX_DAY)
+
+
+def reminder_state(due: Optional[datetime], now: datetime) -> str:
+    """none — рано (или день не идёт); remind — показать напоминание о конце дня; auto — напоминание осталось без
+    ответа AUTO_FINISH_AFTER (или программа была закрыта): завершить день автоматически в момент due."""
+    if due is None or now < due:
+        return "none"
+    return "auto" if now - due >= AUTO_FINISH_AFTER else "remind"
+
+
+def check_early_finish(state: dict, at: datetime, now: datetime) -> None:
+    """«Закончил раньше — в …» в напоминании о конце дня: завершить день прошедшим временем — не раньше последнего
+    нажатия и не в будущем (меньше времени себе — согласование не нужно)."""
+    last = state.get("last_event_at")
+    if last is not None and at < last:
+        raise WorkdayError("time_order", "Время окончания раньше последнего нажатия таймера.", {"field": "end_at"})
+    if at > now:
+        raise WorkdayError("in_future", "Время окончания не может быть в будущем.", {"field": "end_at"})
 
 
 def parse_reason(v: Any, required: bool = True, field: str = "reason", what: str = "причину") -> Optional[str]:
@@ -222,7 +323,8 @@ def parse_reason(v: Any, required: bool = True, field: str = "reason", what: str
     return s
 
 
-def need_start_prompt(today_events: Iterable[dict], dismissed: bool) -> bool:
-    """Показать ли окно «Начните рабочий день» (A-49 п. 4): сегодня таймер не запускали и окно сегодня ещё не
-    закрывали кнопкой «Позже»."""
-    return status_of(today_events) == "not_started" and not dismissed
+def need_start_prompt(today_events: Iterable[dict], exempt: bool = False) -> bool:
+    """Показать ли окно «Начните рабочий день» (A-49 п. 4; D-47 — A-51 пп. 3–4: «рабочий день надо обязательно
+    начинать», окно «настаивает»): сегодня таймер не запускали — окно показывается, пока день не начат (кнопки
+    «Позже» нет; можно только начать день или выйти из программы). Учёт рабочего времени не ведётся — не показывать."""
+    return not exempt and status_of(today_events) == "not_started"

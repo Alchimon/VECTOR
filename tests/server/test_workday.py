@@ -85,9 +85,11 @@ def test_late_start_request_approved_by_unit_head_moves_start(world):
     start(eng, world, wid)
     rid = new_id()
     p = {"id": rid, "workday_id": wid, "start_at": at(world, hours=-2), "reason": "Был на объекте, забыл нажать"}
-    # Проверки времени: не раньше нажатия, не раньше чем за 16 часов, причина обязательна.
+    # Проверки времени: раньше нажатия, но не раньше начала по графику (D-47, A-51 п. 1: встроенный график 09:00 по
+    # часам компьютера, +03:00 = 06:00 UTC), причина обязательна.
     assert eng.cmd("workday.start_request", {**p, "start_at": at(world, minutes=5)})["code"] == "not_earlier"
-    assert eng.cmd("workday.start_request", {**p, "start_at": at(world, hours=-17)})["code"] == "too_early"
+    assert eng.cmd("workday.start_request", {**p, "start_at": at(world, hours=-4, minutes=-1)})["code"] == "before_schedule"
+    assert eng.cmd("workday.start_request", {**p, "start_at": at(world, hours=-17)})["code"] == "before_schedule"
     assert eng.cmd("workday.start_request", {**p, "reason": " "})["code"] == "field_required"
     r = eng.ok("workday.start_request", p)["workday_start_request"]
     assert (r["status"], r["work_date"]) == ("pending", "2026-11-16")

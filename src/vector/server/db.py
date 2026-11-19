@@ -52,7 +52,10 @@ from vector.core import money
 #   v23 — таймер рабочего дня (D-46 — ответы на A-49 пп. 2–4): рабочий день сотрудника за дату (workdays),
 #         неизменяемый журнал нажатий «Начать / Перерыв / Продолжить / Завершить» со временем устройства
 #         (workday_events), запросы «фактическое начало дня» с решением руководителя (workday_start_requests).
-SCHEMA_VERSION = 23
+#   v24 — графики работы и забытое «Завершить» (D-47 — ответы на A-51): графики (work_schedules), кому какой
+#         назначен — подразделению или сотруднику (work_schedule_links), автоматические завершения дня
+#         (workday_auto_finishes) и запросы «фактическое окончание дня» (workday_end_requests). Только новые таблицы.
+SCHEMA_VERSION = 24
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1499,6 +1502,66 @@ workday_start_requests = sa.Table("workday_start_requests", metadata,
     sa.Column("version", sa.Integer, nullable=False),
     sa.CheckConstraint(WORKDAY_REQUEST_STATUS_CHECK, name="status"))
 
+# ---- графики работы и забытое «Завершить» (D-47, ответы владельца на A-51) ----
+# График работы: начало и конец рабочего дня (ЧЧ:ММ по часам компьютера сотрудника; конец раньше начала — ночной),
+# перерыв по графику и рабочие дни недели (7 знаков «1/0», пн…вс). Один график может быть «по умолчанию» в компании.
+# Ведут администраторы (org.manage); в архиве — не назначается (назначения на него пропускаются).
+work_schedules = sa.Table("work_schedules", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("name", U(120), nullable=False),
+    sa.Column("start_time", U(5), nullable=False),
+    sa.Column("end_time", U(5), nullable=False),
+    sa.Column("break_minutes", sa.Integer, nullable=False),
+    sa.Column("weekdays", U(7), nullable=False),
+    sa.Column("is_default", sa.Boolean, nullable=False),
+    sa.Column("active", sa.Boolean, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
+
+# Кому какой график: подразделению (действует на сотрудников подразделения и вложенных, если у тех нет своего) или
+# сотруднику лично; у сотрудника можно отметить «учёт рабочего времени не ведётся» (exempt — служебные учётные
+# записи: им не показывается окно «Начните рабочий день»). Одна строка на получателя; снятие — удаление строки.
+work_schedule_links = sa.Table("work_schedule_links", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("target_kind", U(8), nullable=False),
+    sa.Column("target_id", ID, nullable=False),
+    sa.Column("schedule_id", ID, sa.ForeignKey("work_schedules.id")),
+    sa.Column("exempt", sa.Boolean, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("target_kind", "target_id", name="uq_work_schedule_links_target"),
+    sa.CheckConstraint("target_kind IN ('user','unit')", name="target_kind"))
+
+# Автоматическое «Завершить» (A-51 п. 5): какое нажатие журнала дня записала программа, а не человек (напоминание о
+# конце дня осталось без ответа или программа была закрыта), и по какому моменту (конец по графику / «работаю
+# дальше»). Неизменяемо; журнал workday_events не меняется — пометка лежит рядом.
+workday_auto_finishes = sa.Table("workday_auto_finishes", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("workday_id", ID, sa.ForeignKey("workdays.id"), nullable=False, index=True),
+    sa.Column("seq", sa.Integer, nullable=False),
+    sa.Column("reason", U(16), nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("workday_id", "seq", name="uq_workday_auto_finishes_seq"),
+    sa.CheckConstraint("reason IN ('no_answer','closed')", name="reason"))
+
+# Запрос «фактическое окончание дня» (A-51 п. 5): день завершён автоматически, а сотрудник работал дольше — просит
+# считать конец позже; решает тот же руководитель, что и фактическое начало (A-51 п. 6). Согласованное окончание
+# дня — последнее согласованное в этой таблице (в workdays новых полей нет: схема только дополняется таблицами).
+workday_end_requests = sa.Table("workday_end_requests", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("workday_id", ID, sa.ForeignKey("workdays.id"), nullable=False, index=True),
+    sa.Column("user_id", ID, sa.ForeignKey("users.id"), nullable=False, index=True),
+    sa.Column("requested_end_at", UtcDateTime, nullable=False),
+    sa.Column("reason", U(500), nullable=False),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("decided_by", ID, sa.ForeignKey("users.id")),
+    sa.Column("decided_at", UtcDateTime),
+    sa.Column("decision_comment", U(500)),
+    sa.Column("authority", U(120)),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.CheckConstraint(WORKDAY_REQUEST_STATUS_CHECK, name="status"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -1594,7 +1657,7 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (work_order_issues, 50026), (instance_compositions, 50027), (instance_events, 50028),
                  (passport_exports, 50029), (effectiveness_checks, 50030), (quality_decisions, 50031),
                  (claim_responses, 50032), (daily_report_events, 50033), (daily_report_auto, 50034),
-                 (org_events, 50035), (workday_events, 50036)):
+                 (org_events, 50035), (workday_events, 50036), (workday_auto_finishes, 50037)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

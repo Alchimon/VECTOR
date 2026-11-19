@@ -1,5 +1,5 @@
 {
-  "contract": "permissions-slice1-v23",
+  "contract": "permissions-slice1-v24",
   "notes": [
     "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
     "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -1365,6 +1365,12 @@
     "workday.start_decide": {
       "same_as": "report.review"
     },
+    "workday.end_request": {
+      "same_as": "worktime.own"
+    },
+    "workday.end_decide": {
+      "same_as": "report.review"
+    },
     "org.manage": {
       "any_of": [
         {
@@ -1390,6 +1396,17 @@
     },
     "org.member_set": {
       "same_as": "org.manage"
+    },
+    "schedule.manage": {
+      "same_as": "org.manage",
+      "assumption": "D-47",
+      "note": "Графики работы — создать, изменить, отправить в архив, назначить подразделению или сотруднику, отметить «учёт рабочего времени не ведётся»: те же, кто ведёт оргструктуру — все с ролью «Администратор» (A-50 п. 1). Видят графики все вошедшие."
+    },
+    "schedule.save": {
+      "same_as": "schedule.manage"
+    },
+    "schedule.assign": {
+      "same_as": "schedule.manage"
     }
   }
 }

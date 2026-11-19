@@ -3,13 +3,15 @@
 Данные приходят снимком pull (org_units, org_members, org_events, org_me, people) и офлайн только читаются: править
 структуру можно лишь при связи (команды org.* — online_required, право org.manage — администратор). Здесь — дерево в
 виде списка с отступами, карточка подразделения (путь, руководитель, сотрудники, подчинённые), варианты для форм и
-строка «кто проверяет мои отчёты».
+строка «кто проверяет мои отчёты». D-47 (ответ на A-51 п. 1): графики работы — справочник, какой график действует для
+подразделения и каждого сотрудника (свой → подразделения по цепочке вверх → «по умолчанию»), варианты для форм.
 """
 from __future__ import annotations
 
 from typing import Any, Optional
 
 from vector.core import org as og
+from vector.core import schedule as sch
 from vector.client.notification_view import when_label
 
 
@@ -18,8 +20,54 @@ def _name(people: dict[str, str], uid: Optional[str]) -> str:
     return people.get(uid, "—") if uid else "—"
 
 
+def _schedules_part(units: list[dict], members: list[dict], schedules: list[dict], links: list[dict],
+                    people: dict[str, str]) -> dict[str, Any]:
+    """Графики работы для раздела: список (подпись правила, «по умолчанию», в архиве), действующий график каждого
+    подразделения и сотрудника (vector.core.schedule.resolve), варианты для форм назначения."""
+    parent = {u["id"]: u.get("parent_id") for u in units}
+    names = {u["id"]: u["name"] for u in units}
+    unit_of = {m["user_id"]: m["unit_id"] for m in members}
+    lk = {(x["target_kind"], x["target_id"]): x for x in links}
+    by_id = {x["id"]: x for x in schedules}
+    rows = [{**x, "label": sch.label(x), "full_label": sch.full_label(x),
+             "assigned": sum(1 for v in links if v.get("schedule_id") == x["id"])}
+            for x in sorted(schedules, key=lambda x: (not x.get("active", True), x["name"].lower()))]
+
+    def own_label(kind: str, tid: str) -> str:
+        """Что назначено именно этому подразделению / сотруднику («» — ничего, действует график выше)."""
+        x = lk.get((kind, tid))
+        if not x:
+            return ""
+        if x.get("exempt"):
+            return "учёт рабочего времени не ведётся"
+        return by_id.get(x.get("schedule_id"), {}).get("name", "")
+
+    unit_sched = {}
+    for u in units:
+        r = sch.resolve("", u["id"], parent, links, schedules, names)
+        unit_sched[u["id"]] = {"label": sch.full_label(r["schedule"]), "source": r["source_label"],
+                               "own": own_label("unit", u["id"]),
+                               "own_id": (lk.get(("unit", u["id"])) or {}).get("schedule_id") or ""}
+    user_sched = {}
+    for uid in people:
+        r = sch.resolve(uid, unit_of.get(uid), parent, links, schedules, names)
+        x = lk.get(("user", uid)) or {}
+        user_sched[uid] = {"label": sch.full_label(r["schedule"]), "short": sch.label(r["schedule"]),
+                           "source": r["source_label"], "exempt": r["exempt"],
+                           "own_id": "__exempt__" if x.get("exempt") else (x.get("schedule_id") or "")}
+    active = [x for x in rows if x.get("active", True)]
+    opts = [{"id": x["id"], "label": x["full_label"]} for x in active]
+    return {"schedules": rows, "unit_schedules": unit_sched, "user_schedules": user_sched,
+            "schedule_unit_options": [{"id": "", "label": "— как у вышестоящего подразделения / по умолчанию —"}] + opts,
+            "schedule_user_options": [{"id": "", "label": "— как у подразделения / по умолчанию —"}] + opts
+                                     + [{"id": "__exempt__", "label": "— учёт рабочего времени не ведётся —"}],
+            "default_schedule": next((x["full_label"] for x in active if x.get("is_default")),
+                                     sch.full_label(dict(sch.BUILTIN)) + " (встроенный)")}
+
+
 def org_view(units: list[dict], members: list[dict], events: list[dict], me: dict, people: dict[str, str],
-             online: bool, now=None, query: str = "") -> dict[str, Any]:
+             online: bool, now=None, query: str = "", schedules: Optional[list] = None,
+             links: Optional[list] = None, schedule_manage: bool = False) -> dict[str, Any]:
     """Всё для экрана «Оргструктура».
 
     * rows — дерево по порядку обхода: id, глубина, вид (подпись и значок), название, код, руководитель, сколько
@@ -30,8 +78,10 @@ def org_view(units: list[dict], members: list[dict], events: list[dict], me: dic
     * unit_options / parent_options / people_options — варианты для форм;
     * mine — моё подразделение и кто проверяет мои отчёты; counts — сколько подразделений каждого вида;
     * unplaced — сотрудники вне оргструктуры (администратору: кого ещё включить);
-    * events — последние изменения (подпись, кто, когда, что).
+    * events — последние изменения (подпись, кто, когда, что);
+    * schedules / unit_schedules / user_schedules / schedule_*_options — графики работы (D-47).
     """
+    sp = _schedules_part(units, members, schedules or [], links or [], people)
     byid = {u["id"]: u for u in units}
     by_unit: dict[str, list[dict]] = {}
     for m in members:
@@ -67,8 +117,13 @@ def org_view(units: list[dict], members: list[dict], events: list[dict], me: dic
             "path": og.path_label(byid, u["id"]), "parent_name": byid[u["parent_id"]]["name"] if u.get("parent_id") in byid else "—",
             "head_name": _name(people, u.get("head_user_id")), "code": u.get("code") or "",
             "members_list": [{"user_id": m["user_id"], "name": _name(people, m["user_id"]),
-                              "position": m.get("position") or "", "is_head": m["user_id"] == u.get("head_user_id")}
+                              "position": m.get("position") or "", "is_head": m["user_id"] == u.get("head_user_id"),
+                              "schedule": sp["user_schedules"].get(m["user_id"], {}).get("short", ""),
+                              "schedule_own_id": sp["user_schedules"].get(m["user_id"], {}).get("own_id", "")}
                              for m in ms],
+            "schedule_label": sp["unit_schedules"][u["id"]]["label"],
+            "schedule_source": sp["unit_schedules"][u["id"]]["source"],
+            "schedule_own_id": sp["unit_schedules"][u["id"]]["own_id"],
             "children": [{"id": k, "name": byid[k]["name"], "kind_label": og.KIND_LABELS_RU[byid[k]["kind"]],
                           "active": bool(byid[k].get("active", True))} for k in kids.get(u["id"], [])],
             "can_archive": bool(u.get("active", True)) and not ms
@@ -105,4 +160,5 @@ def org_view(units: list[dict], members: list[dict], events: list[dict], me: dic
             "counts_label": ", ".join(f"{og.KIND_PLURAL_RU[k]}: {n}"
                                       for k, n in og.kind_of(byid, [u["id"] for u in units if u.get("active", True)]).items()),
             "mine": mine, "events": ev, "manage": bool(me.get("manage")), "online": online,
-            "can_manage": bool(me.get("manage")) and online, "empty": not units}
+            "can_manage": bool(me.get("manage")) and online, "empty": not units,
+            **sp, "schedule_manage": bool(schedule_manage), "can_schedule": bool(schedule_manage) and online}

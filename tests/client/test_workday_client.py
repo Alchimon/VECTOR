@@ -1,7 +1,12 @@
 """Таймер рабочего дня на клиенте (Class A, SQLite; D-46 — ответы владельца на A-49 пп. 2–5): нажатия без связи
-(очередь, время — часы компьютера), проверка перехода до очереди, окно «Начните рабочий день» и «Позже», «Я начал
+(очередь, время — часы компьютера), проверка перехода до очереди, окно «Начните рабочий день», «Я начал
 раньше» с согласованием руководителя (решение — только при связи), представление workday_view и смена нового
 отчёта из таймера.
+
+D-47 (ответы владельца на A-51): окно «Начните рабочий день» обязательно (без «Позже»), не показывается в выходной по
+графику и тем, у кого учёт не ведётся; фактическое начало — не раньше начала по графику (встроенный 09:00–18:00, пока
+своих графиков нет); напоминание о конце дня → «Работаю дальше» (через час) → без ответа 30 минут день завершается
+автоматически → «Я работал дольше» (фактическое окончание через руководителя, запрос без связи — в очередь).
 """
 import sys
 from datetime import datetime, timedelta, timezone
@@ -19,10 +24,11 @@ UTC = timezone.utc
 
 
 def view(c, prompt=False):
-    """Модель таймера из кэша клиента c (часы — FakeClock стенда, пояс — UTC)."""
+    """Модель таймера из кэша клиента c (часы — FakeClock стенда, пояс — UTC) — как Backend.workdayOverview."""
     return wv.workday_view(c.list_local("workday"), c.list_local("workday_start_request"), c.user_id,
                            {p["id"]: p["display_name"] for p in c.get_meta("people") or []}, c.t.online,
-                           c.now(), prompt, UTC)
+                           c.now(), prompt, UTC, c.list_local("workday_end_request"), c.workday_schedule_info(),
+                           c.workday_reminder(UTC))
 
 
 def test_offline_marks_queue_live_timer_and_prompt(world, mk):
@@ -34,8 +40,9 @@ def test_offline_marks_queue_live_timer_and_prompt(world, mk):
     assert eng.workday_prompt_needed(UTC) is True
     v = view(eng, True)
     assert (v["status"], v["prompt"], v["can_start"], v["clock"]) == ("not_started", True, True, "00:00:00")
-    eng.workday_prompt_later(UTC)
-    assert eng.workday_prompt_needed(UTC) is False                      # «Позже» — сегодня окно не показывать
+    # «Позже» нет (A-51 п. 3): окно нужно, пока день не начат, — и после нового pull тоже.
+    eng.pull()
+    assert eng.workday_prompt_needed(UTC) is True
     eng.t.online = False
     assert eng.workday_mark("pause", UTC).response["code"] == "not_started"
     assert eng.workday_mark("start", UTC).status == "queued"
@@ -73,16 +80,23 @@ def test_earlier_start_request_offline_and_online_decision(world, mk):
     v = view(eng)
     day = eng.list_local("workday")[0]
     assert v["can_request"] and v["request_default"] == "09:00"
-    assert wv.parse_start_time("10:30", day, eng.now(), UTC)["message"].startswith("Фактическое начало должно быть раньше")
-    assert wv.parse_start_time("8", day, eng.now(), UTC)["ok"] is False
-    chk = wv.parse_start_time("08:00", day, eng.now(), UTC)
-    assert chk["ok"] and chk["message"].startswith("К таймеру добавится 2 ч 00 мин")
+    assert v["schedule_start_label"] == "09:00"                          # встроенный график 09:00–18:00
+    sch = eng.workday_schedule_info()
+    assert wv.parse_start_time("10:30", day, eng.now(), UTC, sch)["message"].startswith("Фактическое начало должно быть раньше")
+    assert wv.parse_start_time("8", day, eng.now(), UTC, sch)["ok"] is False
+    # Раньше начала по графику — нельзя (A-51 п. 1: фактическое начало — от графика, правило «16 часов» снято).
+    early = wv.parse_start_time("08:00", day, eng.now(), UTC, sch)
+    assert early["ok"] is False and "Начало по графику — 09:00" in early["message"]
+    assert eng.workday_start_request(day["id"], datetime(2026, 11, 16, 8, 0, tzinfo=UTC), "Был на объекте") \
+        .response["code"] == "before_schedule"
+    chk = wv.parse_start_time("09:00", day, eng.now(), UTC, sch)
+    assert chk["ok"] and chk["message"].startswith("К таймеру добавится 1 ч 00 мин")
     eng.t.online = False
     at = datetime.fromisoformat(chk["start_at"])
     assert eng.workday_start_request(day["id"], at, " ").response["code"] == "field_required"
     assert eng.workday_start_request(day["id"], at, "Был на объекте").status == "queued"
     v = view(eng)
-    assert v["pending_request"]["start_label"] == "08:00" and not v["can_request"]
+    assert v["pending_request"]["start_label"] == "09:00" and not v["can_request"]
     assert eng.workday_start_request(day["id"], at, "Ещё раз").response["code"] == "already_pending"
     eng.t.online = True
     assert eng.sync().sent == 1
@@ -100,8 +114,8 @@ def test_earlier_start_request_offline_and_online_decision(world, mk):
     assert head.execute("workday.start_decide", {"id": r["id"], "decision": "approve"}, r["version"]).status == "accepted"
     eng.pull()
     v = view(eng)
-    assert v["approved"] and v["started_label"] == "08:00" and v["pressed_label"] == "10:00"
-    assert v["worked_seconds"] >= 2 * 3600 and "+2 ч 00 мин" in v["approved_label"]
+    assert v["approved"] and v["started_label"] == "09:00" and v["pressed_label"] == "10:00"
+    assert v["worked_seconds"] >= 3600 and "+1 ч 00 мин" in v["approved_label"]
     assert v["my_requests"][0]["status_label"] == "Согласовано"
 
 
@@ -130,3 +144,92 @@ def test_assembled_label_mentions_workday_timer():
         "по 14 действиям в программе; по таймерам операций 1 ч 30 мин"
     label = _assembled_label({"actions": 1, "measured_minutes": 0, "lines": 1, "workday_minutes": 487})
     assert label == "по 1 действию в программе; смена — по таймеру рабочего дня, 8 ч 7 мин"
+
+
+def test_no_prompt_on_weekend_or_when_exempt(world, mk):
+    """Окно «Начните рабочий день» — только в рабочий день по графику и только тем, у кого учёт ведётся (D-47)."""
+    world.clock.advance(days=5, seconds=61)                              # суббота: по встроенному графику выходной
+    eng = mk("eng1")
+    eng.pull()
+    assert eng.workday_prompt_needed(UTC) is False
+    assert eng.workday_mark("start", UTC).status == "accepted"           # но начать день кнопкой можно
+    world.clock.advance(days=2)                                          # понедельник
+    a = world.login("admin")
+    a.ok("schedule.assign", {"target_kind": "user", "target_id": eng.user_id, "exempt": True})
+    assert eng.login("eng1", PWD).status == "accepted"
+    eng.pull()
+    info = eng.workday_schedule_info()
+    assert info["exempt"] is True and eng.workday_prompt_needed(UTC) is False
+    assert eng.workday_reminder(UTC)["state"] == "none"
+    assert view(eng)["exempt"] is True
+
+
+def test_end_reminder_snooze_auto_finish_and_longer_request(world, mk):
+    """Забытое «Завершить» (A-51 п. 5): после конца по графику (18:00) — напоминание; «Работаю дальше» — снова через
+    час; без ответа 30 минут программа завершает день сама (временем напоминания, пометка auto); «Я работал дольше» —
+    запрос без связи в очередь, руководитель согласует при связи, и таймер считает день до фактического окончания."""
+    world.clock.advance(seconds=61)                                      # 09:01 UTC, понедельник
+    eng = mk("eng1")
+    eng.pull()
+    assert eng.workday_mark("start", UTC).status == "accepted"
+    world.clock.advance(hours=8, minutes=58)                             # 17:59 — ещё рано
+    assert eng.workday_reminder(UTC)["state"] == "none"
+    world.clock.advance(minutes=2)                                       # 18:01
+    r = eng.workday_reminder(UTC)
+    assert (r["state"], r["due_label"]) == ("remind", "18:00")
+    v = view(eng)
+    assert v["reminder"] is True and "18:00" in v["reminder_text"]
+    eng.workday_snooze(r["workday_id"], UTC)                             # «Работаю дальше»
+    assert eng.workday_reminder(UTC)["state"] == "none"
+    assert eng.workday_auto_finish("no_answer", UTC) == []               # нечего завершать
+    world.clock.advance(hours=1)                                         # 19:01 — напоминание снова
+    r = eng.workday_reminder(UTC)
+    assert (r["state"], r["due_label"]) == ("remind", "19:01")
+    world.clock.advance(minutes=31)                                      # без ответа 30 минут
+    assert eng.workday_reminder(UTC)["state"] == "auto"
+    eng.t.online = False
+    res = eng.workday_auto_finish("no_answer", UTC)
+    assert [x.status for x in res] == ["queued"]
+    v = view(eng)
+    assert v["status"] == "finished" and v["auto_finished"] is True and v["can_request_end"] is True
+    assert "завершён автоматически в 19:01" in v["end_label"]
+    day = eng.list_local("workday")[0]
+    assert wv.parse_end_time("18:30", day, eng.now(), UTC)["ok"] is False   # раньше автоматического завершения
+    assert wv.parse_end_time("23:00", day, eng.now(), UTC)["ok"] is False   # в будущем
+    chk = wv.parse_end_time("19:30", day, eng.now(), UTC)
+    assert chk["ok"] and chk["message"].startswith("К таймеру добавится 28 мин")  # 19:01:01 → 19:30
+    end_at = datetime.fromisoformat(chk["end_at"])
+    assert eng.workday_end_request(day["id"], end_at, "").response["code"] == "field_required"
+    assert eng.workday_end_request(day["id"], end_at, "Доделывал схему").status == "queued"
+    v = view(eng)
+    assert v["can_request_end"] is False and v["pending_end_request"]["kind"] == "end"
+    assert eng.workday_end_request(day["id"], end_at, "Ещё раз").response["code"] == "already_pending"
+    eng.t.online = True
+    assert eng.login("eng1", PWD).status == "accepted"                  # сеанс истёк за вечер — войти тем же профилем
+    assert eng.sync().sent == 2 and eng.problem_count() == 0             # «Завершить» (auto) и запрос
+
+    world.clock.advance(seconds=61)
+    head = mk("head1")
+    head.pull()
+    rv = [x for x in view(head)["review"] if x["kind"] == "end"][0]
+    assert (rv["command"], rv["may_decide"], rv["kind_label"]) == ("workday.end_decide", True, "Окончание дня")
+    assert head.execute(rv["command"], {"id": rv["id"], "decision": "approve"}, rv["version"]).status == "accepted"
+    eng.pull()
+    v = view(eng)
+    day = eng.list_local("workday")[0]
+    assert day["approved_end_at"] and v["pending_end_request"] == {}
+    assert v["worked_seconds"] == int((end_at - datetime(2026, 11, 16, 9, 1, 1, tzinfo=UTC)).total_seconds())
+
+
+def test_finish_at_past_time_and_closed_app():
+    """«Закончил в 17:40» в напоминании — прошедшее время, не раньше последнего нажатия и не в будущем;
+    программу закрыли с идущим днём — при следующем запуске день завершится концом по графику (reminder auto)."""
+    t0 = datetime(2026, 11, 16, 9, 0, tzinfo=UTC)
+    day = {"id": "d1", "user_id": "u1", "work_date": "2026-11-16",
+           "events": [{"seq": 1, "event": "start", "device_time": t0.isoformat()}]}
+    now = datetime(2026, 11, 16, 18, 10, tzinfo=UTC)
+    ok = wv.parse_finish_time("17:40", day, now, UTC)
+    assert ok["ok"] and ok["at"].startswith("2026-11-16T17:40") and ok["message"] == "День будет завершён в 17:40."
+    assert wv.parse_finish_time("08:00", day, now, UTC)["ok"] is False   # раньше «Начать»
+    assert wv.parse_finish_time("18:30", day, now, UTC)["ok"] is False   # «18:30» сейчас = вчера → раньше «Начать»
+    assert wv.parse_finish_time("1740", day, now, UTC)["ok"] is False

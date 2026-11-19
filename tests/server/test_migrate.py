@@ -798,3 +798,47 @@ def test_v22_to_v23_adds_workday_timer(backend, tmp_path, clock, keys):
                                           operation_id=new_id()))
     assert db.check_schema(eng) == db.SCHEMA_VERSION
     assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
+
+
+def test_v23_to_v24_adds_schedules_and_forgotten_finish(backend, tmp_path, clock, keys):
+    """v23 → v24 (D-47, ответы на A-51): графики работы и их назначения, пометка автоматического «Завершить»
+    (неизменяема, код 50037) и запросы «фактическое окончание дня»; данные v23 не меняются; назначение — одно на
+    получателя, вид получателя и причина автоматического завершения — из списка."""
+    eng = make_v3(backend, tmp_path, clock, version=23)
+    now, uid = clock.now(), new_id()
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x", must_change_password=False,
+                                           password_changed_at=now, failed_attempts=0, active=True, created_at=now))
+    before = counts(eng, mg.tables_of_version(23))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (23, db.SCHEMA_VERSION)
+    assert rep.created_tables[:4] == ["work_schedules", "work_schedule_links", "workday_auto_finishes",
+                                      "workday_end_requests"]
+    after = counts(eng, mg.tables_of_version(23))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    sid, wid = new_id(), new_id()
+    with eng.begin() as c:
+        c.execute(db.work_schedules.insert().values(id=sid, name="Пятидневка", start_time="08:00", end_time="17:00",
+                                                    break_minutes=60, weekdays="1111100", is_default=True, active=True,
+                                                    version=1, created_at=now, updated_at=now))
+        c.execute(db.work_schedule_links.insert().values(id=new_id(), target_kind="user", target_id=uid, schedule_id=sid,
+                                                         exempt=False, version=1, created_at=now, updated_at=now))
+        c.execute(db.workdays.insert().values(id=wid, user_id=uid, work_date=now.date(), status="finished",
+                                              started_at=now, version=1, created_at=now, updated_at=now))
+        c.execute(db.workday_auto_finishes.insert().values(workday_id=wid, seq=2, reason="no_answer", created_at=now))
+        c.execute(db.workday_end_requests.insert().values(id=new_id(), workday_id=wid, user_id=uid,
+                                                          requested_end_at=now, reason="Работал дольше",
+                                                          status="pending", created_at=now, version=1))
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    link = dict(schedule_id=sid, exempt=False, version=1, created_at=now, updated_at=now)
+    bad(db.work_schedule_links.insert().values(id=new_id(), target_kind="user", target_id=uid, **link))   # одно назначение
+    bad(db.work_schedule_links.insert().values(id=new_id(), target_kind="team", target_id=new_id(), **link))
+    bad(db.workday_auto_finishes.insert().values(workday_id=wid, seq=3, reason="guess", created_at=now))
+    bad(db.workday_auto_finishes.update().values(reason="closed"))                         # пометка неизменяема
+    bad(db.workday_end_requests.update().values(status="x"))
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []

@@ -297,6 +297,8 @@ def main(argv: list[str] | None = None) -> int:
     check_org(rep, sessions)
     print("\n11. Таймер рабочего дня и фактическое начало дня (D-46, П-20)")
     check_workday(rep, sessions)
+    print("\n12. Графики работы и забытое «Завершить» (D-47, П-21)")
+    check_schedule(rep, sessions)
     return finish(rep, tmp)
 
 
@@ -385,6 +387,32 @@ def check_workday(rep: Report, sessions: dict) -> None:
         rep.warn("e.orlova не видит запросов на фактическое начало дня — " + FRESH_HINT)
 
 
+def check_schedule(rep: Report, sessions: dict) -> None:
+    """Раздел 12 (D-47): графики работы заведены; у d.kuznetsov действует график своего отдела; запрос «фактическое
+    окончание дня» i.belova (день завершён автоматически) видит v.zaitseva. Только чтение (pull)."""
+    eng, boss = sessions.get("d.kuznetsov"), sessions.get("v.zaitseva")
+    if eng is None or boss is None:
+        rep.warn("нет входа d.kuznetsov или v.zaitseva — графики работы не проверить")
+        return
+    sch = eng.get_meta("workday_schedule")
+    if not isinstance(sch, dict):
+        rep.warn("сервер не прислал график работы — обновите стенд (update.cmd): графики появились в D-47")
+        return
+    names = [x.get("name") for x in eng.get_meta("work_schedules") or []]
+    if names:
+        rep.ok(f"графиков работы в компании: {len(names)} ({', '.join(names)})")
+    else:
+        rep.warn("графиков работы нет — действует встроенный 09:00–18:00; " + FRESH_HINT)
+    rep.ok(f"d.kuznetsov: {sch.get('label')} — {sch.get('source_label')}")
+    reqs = [r for r in boss.list_local("workday_end_request") if r.get("user_id") != boss.user_id]
+    if reqs:
+        pending = sum(1 for r in reqs if r.get("status") == "pending")
+        rep.ok(f"v.zaitseva видит запросы на фактическое окончание дня: {len(reqs)} (на согласовании — {pending})")
+    else:
+        rep.warn("v.zaitseva не видит запросов на фактическое окончание дня (демо-запрос i.belova виден сутки после "
+                 "установки) — " + FRESH_HINT)
+
+
 def finish(rep: Report, tmp=None) -> int:
     """Удалить временный кэш и напечатать итог; код выхода — 1 при ошибках."""
     if tmp is not None:
@@ -397,7 +425,7 @@ def finish(rep: Report, tmp=None) -> int:
         print(f"ИТОГ: стенд работает; предупреждений {len(rep.warnings)} — часть сценариев на этих данных не проверить "
               "(см. выше).")
     else:
-        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-20; сценарии — test-pc.md § 6).")
+        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-21; сценарии — test-pc.md § 6).")
     return 0
 
 
