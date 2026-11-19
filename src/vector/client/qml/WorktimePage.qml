@@ -25,6 +25,7 @@ MasterDetail {
     objectName: "worktimePage"
     property var shell
     property string selectedId: ""
+    property string overtimePeriodMessage: ""
     readonly property var wv: backend.worktimeOverview
     readonly property var all: tab === "review" ? (wv.review || []) : (wv.mine || [])
     readonly property var items: all.filter(r => search === "" || (r.date_label + " " + r.user_name + " " + r.status_label).toLowerCase().indexOf(search.toLowerCase()) >= 0)
@@ -43,6 +44,81 @@ MasterDetail {
     // Таймер рабочего дня (D-46): подробности дня, «Я начал раньше», руководителю — запросы на начало дня.
     topContent: [
         WorkdayCard { Layout.fillWidth: true },
+        Rectangle {
+            objectName: "overtimePanel"
+            Layout.fillWidth: true
+            implicitHeight: overtimeColumn.implicitHeight + 24
+            radius: 12; color: Theme.surface; border.color: Theme.border
+            ColumnLayout {
+                id: overtimeColumn
+                anchors.fill: parent; anchors.margins: 12; spacing: 8
+                RowLayout {
+                    Layout.fillWidth: true
+                    Text { text: "Сверхурочные, выходные и праздники"; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold; Layout.fillWidth: true
+                        ToolTip.visible: overtimeTitleHover.hovered; ToolTip.text: "ВЕКТОР фиксирует согласованные часы и причины; денежный расчёт выполняется в 1С."
+                        HoverHandler { id: overtimeTitleHover } }
+                    Text { text: "Учётный период: " + (page.wv.overtime_period_label || "Не настроен"); color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS }
+                    VButton { objectName: "overtimeNew"; text: "Заявка"; iconName: "plus"; kind: "primary"; compact: true
+                        tip: "Создать предварительную заявку или срочно зафиксировать завершённую работу с причиной. Требуется связь."
+                        onClicked: overtimeForm.openFor() }
+                }
+                RowLayout {
+                    visible: page.wv.period_manage === true
+                    Layout.fillWidth: true; spacing: 8
+                    Text { text: "Настройка компании"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS }
+                    VSegmented { id: overtimePeriodMode; objectName: "overtimePeriodMode"
+                        current: (page.wv.overtime_period_config || {}).mode || "month"
+                        model: [{ id: "month", label: "Месяц", icon: "calendar", tip: "Календарный месяц — самый короткий учётный период." },
+                                { id: "quarter", label: "Квартал", icon: "calendar-days", tip: "Календарный квартал; границы каждой заявки сохраняются." },
+                                { id: "year", label: "Год", icon: "calendar-range", tip: "Календарный год; период не длиннее одного года." }]
+                        onPicked: id => current = id }
+                    VButton { objectName: "overtimePeriodSave"; text: "Сохранить период"; iconName: "check"; kind: "soft"
+                        tip: "Сохранить настройку для новых заявок. Уже созданные заявки не изменятся."
+                        onClicked: backend.setOvertimePeriod("overtime-period-set", overtimePeriodMode.current,
+                                                            (page.wv.overtime_period_config || {}).version || 0) }
+                }
+                Text { visible: page.overtimePeriodMessage !== ""; text: page.overtimePeriodMessage
+                    color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                Connections { target: backend
+                    function onCommandDone(tag, result) {
+                        if (tag === "overtime-period-set") page.overtimePeriodMessage = result.message_ru || "Настройка периода сохранена."
+                    }
+                }
+                Text { visible: page.wv.period_manage !== true && page.wv.overtime_period_label === "Не настроен"
+                    text: "Период ещё не настроен. Попросите администратора выбрать месяц, квартал или год."
+                    color: Theme.warning; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                Repeater {
+                    model: page.wv.overtime_requests || []
+                    delegate: Rectangle {
+                        required property var modelData
+                        objectName: "overtimeRequestRow_" + modelData.id
+                        Layout.fillWidth: true; implicitHeight: overtimeRow.implicitHeight + 12
+                        radius: Theme.radiusS; color: Theme.surfaceAlt
+                        RowLayout {
+                            id: overtimeRow
+                            anchors.fill: parent; anchors.margins: 8; spacing: 10
+                            ColumnLayout { Layout.fillWidth: true; spacing: 2
+                                Text { text: modelData.kind_label + " · " + modelData.work_date; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold }
+                                Text { text: modelData.minutes + " мин · " + modelData.mode_label + " · " + modelData.status_label
+                                        + (modelData.period ? " · период " + modelData.period.start + " — " + modelData.period.end : "")
+                                        + (modelData.reason ? " · " + modelData.reason : "")
+                                    color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                            }
+                            VButton { objectName: "overtimeApprove_" + modelData.id; visible: page.wv.reviewer && !modelData.is_own && modelData.status === "pending"
+                                text: "Согласовать"; iconName: "circle-check"; kind: "primary"; compact: true
+                                tip: "Принять часы по заявке; решение попадёт в историю и автор получит уведомление."
+                                onClicked: backend.overtimeDecision(backend.newId(), modelData.id, "approve", "", modelData.version) }
+                            VButton { visible: page.wv.reviewer && !modelData.is_own && modelData.status === "pending"
+                                text: "Отклонить"; iconName: "x"; kind: "danger"; compact: true
+                                tip: "Отклонить с обязательной причиной."
+                                onClicked: overtimeRejectForm.openFor(modelData) }
+                        }
+                    }
+                }
+                Text { visible: (page.wv.overtime_requests || []).length === 0; text: "Заявок на часы вне графика пока нет."
+                    color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS }
+            }
+        },
         Rectangle {
             Layout.fillWidth: true
             visible: page.tab === "review" && (page.wv.weekly_metrics.units || []).length > 0
@@ -188,6 +264,86 @@ MasterDetail {
             Text { text: hrow.modelData.when; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsXs; Layout.alignment: Qt.AlignTop } }
     }
     Item { implicitHeight: 8 }
+
+    // ==================================================== заявки на часы вне графика (A-55/A-56)
+    FormDialog {
+        id: overtimeForm
+        objectName: "overtimeRequestForm"
+        title: "Заявка на часы вне графика"
+        subtitle: "Период: " + (page.wv.overtime_period_label || "не настроен") + ". Оплата рассчитывается в 1С."
+        confirmText: "Отправить руководителю"
+        confirmTip: "Предварительная заявка должна быть отправлена до начала работы; срочную работу можно внести после окончания."
+        canConfirm: (page.wv.overtime_period_config || {}).mode !== undefined
+                     && /^\d{4}-\d{2}-\d{2}$/.test(overtimeDate.text.trim())
+                     && overtimeStart.text.trim() !== "" && overtimeEnd.text.trim() !== ""
+                     && /^\d+$/.test(overtimeMinutes.text.trim()) && Number(overtimeMinutes.text) > 0
+                     && overtimeReason.text.trim() !== ""
+        function openFor() {
+            error = ""; working = false
+            overtimeDate.text = page.wv.today || ""
+            overtimeStart.text = ""; overtimeEnd.text = ""; overtimeMinutes.text = ""
+            overtimeReason.text = ""; overtimeMode.current = "planned"; overtimeKind.current = "overtime"
+            open()
+        }
+        onConfirmed: {
+            working = true
+            backend.overtimeRequest("overtime-request-create", {
+                work_date: overtimeDate.text.trim(), start_at: overtimeStart.text.trim(), end_at: overtimeEnd.text.trim(),
+                minutes: Number(overtimeMinutes.text), kind: overtimeKind.current, mode: overtimeMode.current,
+                reason: overtimeReason.text.trim()
+            })
+        }
+        VField { id: overtimeDate; objectName: "overtimeWorkDate"; label: "Местная дата начала"; placeholder: "ГГГГ-ММ-ДД"; required: true
+            hint: "Дата сотрудника, например 2026-11-17." }
+        VField { id: overtimeStart; objectName: "overtimeStartAt"; label: "Начало интервала"; placeholder: "2026-11-17T18:00:00+03:00"; required: true
+            hint: "Дата и время ISO-8601 с часовым поясом, например +03:00." }
+        VField { id: overtimeEnd; objectName: "overtimeEndAt"; label: "Окончание интервала"; placeholder: "2026-11-17T20:00:00+03:00"; required: true
+            hint: "Дата и время ISO-8601 с часовым поясом; срочную запись подают после окончания." }
+        VField { id: overtimeMinutes; objectName: "overtimeMinutes"; label: "Фактические минуты"; placeholder: "120"; required: true
+            hint: "Целые минуты без округления, не длиннее указанного интервала." }
+        VSegmented { id: overtimeKind; objectName: "overtimeKind"; current: "overtime"; onPicked: id => current = id
+            model: [{ id: "overtime", label: "Сверхурочно", icon: "clock-3", tip: "Работа сверх нормы в рабочий день." },
+                    { id: "weekend", label: "Выходной", icon: "calendar-off", tip: "Работа в выходной по графику." },
+                    { id: "holiday", label: "Федеральный праздник", icon: "calendar-star", tip: "Работа в федеральный нерабочий праздничный день." }] }
+        VSegmented { id: overtimeMode; objectName: "overtimeMode"; current: "planned"; onPicked: id => current = id
+            model: [{ id: "planned", label: "Заранее", icon: "calendar-check", tip: "Получить решение руководителя до начала интервала." },
+                    { id: "urgent_after", label: "Срочно — после факта", icon: "alarm-clock", tip: "Только после окончания; причина обязательна, затем нужно решение руководителя." }] }
+        VField { id: overtimeReason; objectName: "overtimeReason"; label: "Основание и причина"; required: true
+            placeholder: "Неотложный выпуск комплекта документации"; hint: "Причина сохраняется в истории решения." }
+        Connections { target: backend
+            function onCommandDone(tag, result) {
+                if (tag !== "overtime-request-create") return
+                overtimeForm.working = false
+                if (result.status === "accepted") overtimeForm.close()
+                else overtimeForm.error = result.message_ru || "Заявка не отправлена."
+            }
+        }
+    }
+    FormDialog {
+        id: overtimeRejectForm
+        objectName: "overtimeRejectForm"
+        property var request: null
+        title: "Отклонить заявку на часы"
+        subtitle: request ? request.work_date + " · " + request.minutes + " мин · " + request.kind_label : ""
+        confirmText: "Отклонить с причиной"
+        confirmKind: "danger"
+        canConfirm: request !== null && overtimeRejectReason.text.trim() !== ""
+        function openFor(row) { request = row; overtimeRejectReason.text = ""; error = ""; working = false; open() }
+        onConfirmed: {
+            working = true
+            backend.overtimeDecision("overtime-request-reject", request.id, "reject", overtimeRejectReason.text.trim(), request.version)
+        }
+        VField { id: overtimeRejectReason; objectName: "overtimeRejectReason"; label: "Причина отказа"; required: true
+            placeholder: "Нужно перенести работы на плановую смену" }
+        Connections { target: backend
+            function onCommandDone(tag, result) {
+                if (tag !== "overtime-request-reject") return
+                overtimeRejectForm.working = false
+                if (result.status === "accepted") overtimeRejectForm.close()
+                else overtimeRejectForm.error = result.message_ru || "Решение не сохранено."
+            }
+        }
+    }
 
     // ==================================================== формы
     // Отчёт за другой день (не в будущем и не старше 31 дня): если отчёт за этот день уже есть — открыть его.

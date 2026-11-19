@@ -159,6 +159,50 @@ def test_assembled_report_self_check_keeps_sources_and_submits(ui, qml_warnings)
     assert qml_warnings == []
 
 
+def test_overtime_period_and_request_form_submit_through_ui(ui, qml_warnings):  # noqa: F811
+    """A-55/A-56: administrator configures an accounting period, employee submits an explicit request, UI shows the frozen period."""
+    ui.login("admin")
+    ui.go("worktime")
+    panel = ui.find("overtimePanel")
+    assert panel.isVisible()
+    assert _wv(ui)["overtime_period_label"] == "Не настроен"
+    ui.backend.setOvertimePeriod("overtime-period-set", "month", 0)
+    ui.wait_idle()
+    assert _wv(ui)["overtime_period_label"] == "Календарный месяц"
+    ui.backend.logout(); ui.wait_idle()
+    ui.login("d.kuznetsov")
+    ui.go("worktime")
+    form = _popup(ui, "overtimeRequestForm")
+    _call(form, "openFor")
+    ui.wait_idle()
+    ui.find("overtimeWorkDate").setProperty("text", "2026-12-01")
+    ui.find("overtimeStartAt").setProperty("text", "2026-12-01T18:00:00+03:00")
+    ui.find("overtimeEndAt").setProperty("text", "2026-12-01T20:00:00+03:00")
+    ui.find("overtimeMinutes").setProperty("text", "120")
+    ui.find("overtimeReason").setProperty("text", "Неотложная подготовка испытаний")
+    ui.wait_idle()
+    assert form.property("canConfirm") is True
+    _confirm(ui, form)
+    assert form.property("visible") is False, form.property("error")
+    rows = _wv(ui)["overtime_requests"]
+    assert len(rows) == 1 and rows[0]["period"]["start"] == "2026-12-01"
+    assert rows[0]["status_label"] == "Ожидает решения" and "amount" not in rows[0]
+    request_id = rows[0]["id"]
+    ui.backend.logout(); ui.wait_idle()
+    ui.login("e.orlova")
+    ui.go("worktime")
+    manager_rows = _wv(ui)["overtime_requests"]
+    manager_request = next(x for x in manager_rows if x["id"] == request_id)
+    assert manager_request["is_own"] is False and manager_request["status"] == "pending"
+    approve = next((item for item in ui.items("objectName")
+                    if item.objectName() == "overtimeApprove_" + request_id), None)
+    assert approve is not None and approve.isVisible()
+    ui.click(approve)
+    manager_request = next(x for x in _wv(ui)["overtime_requests"] if x["id"] == request_id)
+    assert manager_request["status"] == "approved"
+    assert qml_warnings == []
+
+
 def test_head_sees_overtime_and_holiday_marks(ui, qml_warnings):  # noqa: F811
     """D-49 (A-53 п. 3): v.zaitseva (руководитель коммерческой службы) видит в отправленных отчётах отметки дня —
     «Сверхурочно» у s.morozov и «Работа в выходной (праздничный) день» у o.nikitina: в списке и баннером в отчёте."""

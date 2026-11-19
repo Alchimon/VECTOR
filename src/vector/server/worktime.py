@@ -589,7 +589,8 @@ class WorktimeMixin:
                 "worktime_projects": mine, "worktime_reviewer": reviewer,
                 "worktime_activity": self._worktime_activity(conn, uid, now),
                 "overtime_requests": self._pull_overtime(conn, uid, now),
-                "overtime_period_config": dict(period_cfg) if period_cfg else None,
+                "overtime_period_config": ({"mode": period_cfg["mode"], "version": period_cfg["version"],
+                                            "updated_at": iso(period_cfg["updated_at"])} if period_cfg else None),
                 "worktime_weekly_metrics": self._weekly_department_metrics(conn, uid, now, by_role)}
 
     def _weekly_department_metrics(self, conn, uid: str, now, by_role: bool) -> dict:

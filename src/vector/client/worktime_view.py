@@ -173,7 +173,7 @@ def _ordinal(iso_d: str) -> int:
 def worktime_view(reports: list[dict], projects: list[dict], tasks: list[dict], people: dict[str, str], me: dict,
                   reviewer: bool, online: bool, last_pull: str, today: Optional[date] = None,
                   weekly_metrics: Optional[dict] = None, overtime_requests: Optional[list[dict]] = None,
-                  overtime_period_config: Optional[dict] = None) -> dict[str, Any]:
+                  overtime_period_config: Optional[dict] = None, period_manage: bool = False) -> dict[str, Any]:
     """Раздел «Время»: свои отчёты, отчёты на проверку (руководителю отдела), варианты проектов и задач для строк."""
     today = today or date.today()
     me_id = me.get("user_id") or ""
@@ -225,6 +225,7 @@ def worktime_view(reports: list[dict], projects: list[dict], tasks: list[dict], 
         "weekly_metrics": {**weekly, "units": weekly_units},
         "overtime_requests": overtime_rows,
         "overtime_period_config": overtime_period_config or {},
+        "period_manage": bool(period_manage),
         "overtime_period_label": {"month": "Календарный месяц", "quarter": "Календарный квартал",
                                   "year": "Календарный год"}.get((overtime_period_config or {}).get("mode"), "Не настроен"),
         "tabs": tabs if len(tabs) > 1 else [], "default_tab": "review" if reviewer and to_review else "mine",

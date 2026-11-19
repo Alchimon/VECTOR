@@ -887,8 +887,9 @@ class Backend(QObject):
             reports, st.get("worktime_projects") or [], self._data.get("task", []), self._people, self._me,
             bool(st.get("worktime_reviewer")), self._online and self._session_mode == "online", self._last_pull,
             weekly_metrics=st.get("worktime_weekly_metrics") or {},
-            overtime_requests=self._data.get("overtime_request", []),
-            overtime_period_config=st.get("overtime_period_config") or {}))
+            overtime_requests=st.get("overtime_requests") or self._data.get("overtime_request", []),
+            overtime_period_config=st.get("overtime_period_config") or {},
+            period_manage=bool((st.get("workday_schedule") or {}).get("manage"))))
 
     @Slot("QVariantMap", result="QVariantMap")
     def reportCheck(self, payload) -> dict:
@@ -935,6 +936,8 @@ class Backend(QObject):
         data["id"] = data.get("id") or self.newId()
         def job():
             r = self.client.execute("overtime.request", data)
+            if r.status == "accepted":
+                self.client.pull()
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, "overtime.request", res))
 
@@ -946,6 +949,8 @@ class Backend(QObject):
             payload["comment"] = comment
         def job():
             r = self.client.execute("overtime.decide", payload, version)
+            if r.status == "accepted":
+                self.client.pull()
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, "overtime.decide", res))
 
@@ -954,6 +959,8 @@ class Backend(QObject):
         """Изменить настройку учётного периода компании; только при связи, администратор."""
         def job():
             r = self.client.execute("overtime.period_set", {"mode": mode}, version if version > 0 else None)
+            if r.status == "accepted":
+                self.client.pull()  # config lives in server pull, not in the entity cache
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, "overtime.period_set", res))
 
