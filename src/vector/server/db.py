@@ -61,7 +61,8 @@ from vector.core import money
 #   v26 — первый журнал заявок сверхурочной/выходной/праздничной работы и append-only история решений (D-52).
 #         Ставки и суммы отсутствуют; таблицы overtime_requests и overtime_events.
 #   v27 — выбор компанией календарного периода и неизменяемый снимок периода у каждой заявки.
-SCHEMA_VERSION = 27
+#   v28 — неизменяемые закрытия агрегата утверждённых заявок, каждая коррекция — новая связанная ревизия.
+SCHEMA_VERSION = 28
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1613,6 +1614,20 @@ overtime_request_periods = sa.Table("overtime_request_periods", metadata,
     sa.Column("period_end", sa.Date, nullable=False), sa.Column("config_version", sa.Integer, nullable=False),
     sa.Column("created_at", UtcDateTime, nullable=False),
     sa.CheckConstraint("period_end >= period_start", name="range"))
+# Closed ledger snapshots are immutable; each correction points to the exact preceding version and reason.
+overtime_period_closures = sa.Table("overtime_period_closures", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("user_id", ID, sa.ForeignKey("users.id"), nullable=False, index=True),
+    sa.Column("mode", U(16), nullable=False), sa.Column("period_start", sa.Date, nullable=False),
+    sa.Column("period_end", sa.Date, nullable=False), sa.Column("revision", sa.Integer, nullable=False),
+    sa.Column("supersedes_id", ID, sa.ForeignKey("overtime_period_closures.id")),
+    sa.Column("reason", U(500), nullable=False), sa.Column("snapshot_json", T, nullable=False),
+    sa.Column("content_sha256", U(64), nullable=False),
+    sa.Column("created_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("user_id", "period_start", "period_end", "revision", name="uq_overtime_closure_revision"),
+    sa.CheckConstraint("period_end >= period_start", name="range"),
+    sa.CheckConstraint("revision > 0", name="revision"))
 
 # ---- производственный календарь (D-48, ответ владельца на A-52 п. 3) ----
 # Загруженный в базу календарь на год (xmlcalendar.ru из интернета или из файла; vector.core.prodcal). Загруженный год
@@ -1749,7 +1764,7 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (work_order_issues, 50026), (instance_compositions, 50027), (instance_events, 50028),
                  (passport_exports, 50029), (effectiveness_checks, 50030), (quality_decisions, 50031),
                  (claim_responses, 50032), (daily_report_events, 50033), (daily_report_auto, 50034),
-                 (org_events, 50035), (workday_events, 50036), (workday_auto_finishes, 50037), (overtime_events, 50040), (overtime_request_periods, 50041)):
+                 (org_events, 50035), (workday_events, 50036), (workday_auto_finishes, 50037), (overtime_events, 50040), (overtime_request_periods, 50041), (overtime_period_closures, 50042)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

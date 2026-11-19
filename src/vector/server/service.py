@@ -10,10 +10,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import re
 import time
 import uuid
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Callable, Optional
 
@@ -62,7 +61,7 @@ class SystemClock:
 
 # Валидаторы и сериализация вынесены в validation.py (используются и модулем задач/документов);
 # импортируются сюда под прежними именами, чтобы не менять существующий код и тесты.
-from .validation import (_CUR_RE, _INN_RE, _LOGIN_RE, _UUID_RE, _json_default, canon, iso, only_keys,  # noqa: E402,F401
+from .validation import (_CUR_RE, _INN_RE, _LOGIN_RE, _UUID_RE, canon, iso, only_keys,  # noqa: E402,F401
                          opt_date, opt_int, opt_str, parse_iso_utc, req_str, req_uuid)
 
 
@@ -205,7 +204,7 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             # Рабочее время и дневной отчёт (worktime.py, D-42).
             "report.create": self._report_create, "report.save": self._report_save, "report.submit": self._report_submit,
             "report.reopen": self._report_reopen, "report.review": self._report_review,
-            "overtime.period_set": self._overtime_period_set,
+            "overtime.period_set": self._overtime_period_set, "overtime.period_close": self._overtime_period_close,
             "overtime.request": self._overtime_request_create, "overtime.decide": self._overtime_request_decide,
             # Оргструктура: подразделения и сотрудники в них (org.py, D-44).
             "org.unit_create": self._org_unit_create, "org.unit_update": self._org_unit_update,

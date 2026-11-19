@@ -889,7 +889,8 @@ class Backend(QObject):
             weekly_metrics=st.get("worktime_weekly_metrics") or {},
             overtime_requests=st.get("overtime_requests") or self._data.get("overtime_request", []),
             overtime_period_config=st.get("overtime_period_config") or {},
-            period_manage=bool((st.get("workday_schedule") or {}).get("manage"))))
+            period_manage=bool((st.get("workday_schedule") or {}).get("manage")),
+            overtime_closures=st.get("overtime_closures") or []))
 
     @Slot("QVariantMap", result="QVariantMap")
     def reportCheck(self, payload) -> dict:
@@ -953,6 +954,18 @@ class Backend(QObject):
                 self.client.pull()
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, "overtime.decide", res))
+
+    @Slot(str, "QVariantMap")
+    def overtimeClose(self, tag: str, payload):
+        """Закрыть или исправить ведомость подтверждённых заявок; создание новой версии только при связи с сервером."""
+        data = _plain(payload.toVariant() if hasattr(payload, "toVariant") else payload)
+        data["id"] = data.get("id") or self.newId()
+        def job():
+            r = self.client.execute("overtime.period_close", data)
+            if r.status == "accepted":
+                self.client.pull()
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "overtime.period_close", res))
 
     @Slot(str, str, int)
     def setOvertimePeriod(self, tag: str, mode: str, version: int):

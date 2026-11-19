@@ -173,7 +173,8 @@ def _ordinal(iso_d: str) -> int:
 def worktime_view(reports: list[dict], projects: list[dict], tasks: list[dict], people: dict[str, str], me: dict,
                   reviewer: bool, online: bool, last_pull: str, today: Optional[date] = None,
                   weekly_metrics: Optional[dict] = None, overtime_requests: Optional[list[dict]] = None,
-                  overtime_period_config: Optional[dict] = None, period_manage: bool = False) -> dict[str, Any]:
+                  overtime_period_config: Optional[dict] = None, period_manage: bool = False,
+                  overtime_closures: Optional[list[dict]] = None) -> dict[str, Any]:
     """Раздел «Время»: свои отчёты, отчёты на проверку (руководителю отдела), варианты проектов и задач для строк."""
     today = today or date.today()
     me_id = me.get("user_id") or ""
@@ -219,11 +220,19 @@ def worktime_view(reports: list[dict], projects: list[dict], tasks: list[dict], 
         row["status_label"] = {"pending": "Ожидает решения", "approved": "Согласовано", "rejected": "Отклонено"}.get(
             row.get("status"), "—")
         overtime_rows.append(row)
+    closure_rows = []
+    for closure in overtime_closures or []:
+        row = dict(closure)
+        row["user_name"] = people.get(row.get("user_id"), "Сотрудник")
+        row["total_label"] = wt.hours_label(int((row.get("snapshot") or {}).get("total_minutes") or 0))
+        row["hash_short"] = (row.get("content_sha256") or "")[:12]
+        closure_rows.append(row)
     weekly_units = [{**u, "hours_label": wt.hours_label(int(u.get("minutes") or 0))}
                     for u in weekly.get("units", [])]
     return {
         "weekly_metrics": {**weekly, "units": weekly_units},
         "overtime_requests": overtime_rows,
+        "overtime_closures": closure_rows,
         "overtime_period_config": overtime_period_config or {},
         "period_manage": bool(period_manage),
         "overtime_period_label": {"month": "Календарный месяц", "quarter": "Календарный квартал",

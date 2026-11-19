@@ -1,5 +1,5 @@
 {
-  "contract": "permissions-slice1-v27",
+  "contract": "permissions-slice1-v28",
   "notes": [
     "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
     "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -1423,6 +1423,9 @@
       "same_as": "report.review"
     },
     "overtime.period_set": {
+      "same_as": "schedule.manage"
+    },
+    "overtime.period_close": {
       "same_as": "schedule.manage"
     }
   }

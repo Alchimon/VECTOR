@@ -112,7 +112,23 @@ MasterDetail {
                                 text: "Отклонить"; iconName: "x"; kind: "danger"; compact: true
                                 tip: "Отклонить с обязательной причиной."
                                 onClicked: overtimeRejectForm.openFor(modelData) }
+                            VButton { objectName: "overtimeClose_" + modelData.id; visible: page.wv.period_manage && !modelData.is_own
+                                text: "Закрыть ведомость"; iconName: "lock"; kind: "soft"; compact: true
+                                tip: "Закрыть период для сотрудника: снимок только подтверждённых заявок, без ставки и суммы оплаты."
+                                onClicked: overtimeCloseForm.openFor(modelData) }
                         }
+                    }
+                }
+                Repeater {
+                    model: page.wv.overtime_closures || []
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Text { Layout.fillWidth: true; text: "Закрытая ведомость · " + modelData.user_name + " · "
+                                + modelData.period_start + " — " + modelData.period_end + " · версия " + modelData.revision
+                            color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap }
+                        Text { text: modelData.total_label + " · SHA-256 " + modelData.hash_short
+                            color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsXs }
                     }
                 }
                 Text { visible: (page.wv.overtime_requests || []).length === 0; text: "Заявок на часы вне графика пока нет."
@@ -341,6 +357,45 @@ MasterDetail {
                 overtimeRejectForm.working = false
                 if (result.status === "accepted") overtimeRejectForm.close()
                 else overtimeRejectForm.error = result.message_ru || "Решение не сохранено."
+            }
+        }
+    }
+
+    FormDialog {
+        id: overtimeCloseForm
+        objectName: "overtimeCloseForm"
+        property var request: null
+        property string supersedesId: ""
+        title: supersedesId ? "Исправить закрытую ведомость" : "Закрыть ведомость часов"
+        subtitle: request ? request.user_id + " · период по настройке компании, дата " + request.work_date : ""
+        confirmText: supersedesId ? "Создать корректирующую версию" : "Закрыть период"
+        confirmTip: "Создать неизменяемый снимок согласованных заявок. Исправление будет новой версией с причиной."
+        canConfirm: request !== null && closeReason.text.trim() !== ""
+        note: supersedesId ? "Будет создана новая версия, предыдущая останется в аудите. Здесь учитываются только одобренные заявки вне графика; это не полный табель." :
+                            "Ожидающие решения заявки блокируют закрытие. Снимок содержит только одобренные заявки вне графика, без суммы оплаты."
+        function openFor(row) {
+            request = row; supersedesId = ""; error = ""; working = false; closeReason.text = ""
+            var candidates = (page.wv.overtime_closures || []).filter(c => c.user_id === row.user_id
+                && row.work_date >= c.period_start && row.work_date <= c.period_end)
+            candidates.sort((a, b) => b.revision - a.revision)
+            if (candidates.length) supersedesId = candidates[0].id
+            open()
+        }
+        onConfirmed: {
+            working = true
+            var payload = { id: backend.newId(), user_id: request.user_id, anchor_date: request.work_date,
+                            reason: closeReason.text.trim() }
+            if (supersedesId) payload.supersedes_id = supersedesId
+            backend.overtimeClose("overtime-close", payload)
+        }
+        VField { id: closeReason; objectName: "overtimeCloseReason"; label: "Основание закрытия / корректировки"; required: true
+            placeholder: "Сверено с подписанным первичным документом" }
+        Connections { target: backend
+            function onCommandDone(tag, result) {
+                if (tag !== "overtime-close") return
+                overtimeCloseForm.working = false
+                if (result.status === "accepted") overtimeCloseForm.close()
+                else overtimeCloseForm.error = result.message_ru || "Ведомость не закрыта."
             }
         }
     }

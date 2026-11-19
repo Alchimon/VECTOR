@@ -200,6 +200,29 @@ def test_overtime_period_and_request_form_submit_through_ui(ui, qml_warnings):  
     ui.click(approve)
     manager_request = next(x for x in _wv(ui)["overtime_requests"] if x["id"] == request_id)
     assert manager_request["status"] == "approved"
+    ui.backend.logout(); ui.wait_idle()
+    ui.login("admin")
+    ui.go("worktime")
+    close_button = next((item for item in ui.items("objectName")
+                         if item.objectName() == "overtimeClose_" + request_id), None)
+    assert close_button is not None and close_button.isVisible()
+    ui.click(close_button)
+    close_form = _popup(ui, "overtimeCloseForm")
+    ui.find("overtimeCloseReason").setProperty("text", "Проверено руководителем по документам")
+    ui.wait_idle()
+    assert close_form.property("canConfirm") is True
+    _confirm(ui, close_form)
+    closed = _wv(ui)["overtime_closures"]
+    assert len(closed) == 1 and closed[0]["revision"] == 1
+    assert closed[0]["snapshot"]["total_minutes"] == 120 and len(closed[0]["content_sha256"]) == 64
+    ui.click(close_button)
+    ui.find("overtimeCloseReason").setProperty("text", "Исправление после повторной сверки")
+    ui.wait_idle()
+    assert close_form.property("title") == "Исправить закрытую ведомость"
+    _confirm(ui, close_form)
+    closed = _wv(ui)["overtime_closures"]
+    assert len(closed) == 2 and closed[0]["revision"] == 2
+    assert closed[0]["supersedes_id"] == closed[1]["id"]
     assert qml_warnings == []
 
 

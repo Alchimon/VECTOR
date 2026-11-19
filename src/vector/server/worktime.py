@@ -34,6 +34,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from calendar import monthrange
 from datetime import date, datetime, timedelta
@@ -49,8 +50,8 @@ from vector.core.errors import Conflict, Denied, Rejected
 from .authz import active_delegated, project_member
 from . import db as _db
 from .db import (audit_log, daily_report_auto, daily_report_events, daily_report_line_sources, daily_report_lines,
-                 daily_reports, org_members, org_units, overtime_events, overtime_period_config, overtime_request_periods,
-                 overtime_requests, projects, tasks,
+                 daily_reports, org_members, org_units, overtime_events, overtime_period_closures, overtime_period_config,
+                 overtime_request_periods, overtime_requests, projects, tasks,
                  wo_operations, wo_timer_events, work_orders)
 from .validation import canon, iso, only_keys, req_uuid
 
@@ -554,10 +555,113 @@ class WorktimeMixin:
                      body=comment or "", object_type="overtime_request", object_id=o["id"])
         return {"overtime_request": self._vovertime(n, self._overtime_period_snapshot(ctx.conn, o["id"]))}
 
+    def _overtime_period_close(self, ctx, p, ev):
+        """Close one employee's approved-extra-hours ledger; correction always creates a new immutable revision."""
+        only_keys(p, {"id", "user_id", "anchor_date", "reason", "supersedes_id"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "schedule.manage", ctx.now)
+        rid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, overtime_period_closures, rid)
+        user_id = req_uuid(p, "user_id")
+        try:
+            anchor = date.fromisoformat(p.get("anchor_date", ""))
+        except (TypeError, ValueError):
+            raise Rejected("invalid_date", "Укажите дату периода в формате ГГГГ-ММ-ДД.", {"field": "anchor_date"})
+        config = self._get(ctx.conn, overtime_period_config, 1)
+        if config is None:
+            raise Rejected("period_not_configured", "Сначала настройте учётный период компании.")
+        previous_id = p.get("supersedes_id")
+        table = overtime_period_closures
+        if previous_id:
+            previous = self._require(ctx.conn, table, req_uuid(p, "supersedes_id"), "Закрытие периода")
+            if previous["user_id"] != user_id:
+                raise Rejected("wrong_employee", "Исправление должно относиться к тому же сотруднику.", {"field": "supersedes_id"})
+            # Correction retains the old calendar boundaries/mode even if the company's current setting has changed.
+            start, end, mode = previous["period_start"], previous["period_end"], previous["mode"]
+            prev_snapshot = json.loads(previous["snapshot_json"])
+            config_version = prev_snapshot["period"]["config_version"]
+        else:
+            start, end = self._overtime_period_bounds(anchor, config["mode"])
+            mode, config_version = config["mode"], config["version"]
+            overlap = ctx.conn.execute(sa.select(table).where(table.c.user_id == user_id,
+                table.c.period_start <= end, table.c.period_end >= start)).first()
+            if overlap:
+                raise Conflict("period_overlap", "С этими датами уже есть закрытый период. Для исправления выберите его последнюю версию.",
+                               {"current_id": overlap.id, "period_start": overlap.period_start.isoformat(),
+                                "period_end": overlap.period_end.isoformat()})
+        reason = _w(wd.parse_reason, p.get("reason"))
+        history = ctx.conn.execute(sa.select(table).where(table.c.user_id == user_id,
+            table.c.period_start == start, table.c.period_end == end).order_by(table.c.revision.desc())).all()
+        latest = history[0] if history else None
+        if previous_id and (latest is None or previous_id != latest.id):
+            raise Conflict("period_not_latest", "Исправлять можно только последнюю версию закрытия.",
+                           {"current_id": latest.id if latest else None})
+        rq = overtime_requests
+        base = sa.and_(rq.c.user_id == user_id, rq.c.work_date >= start, rq.c.work_date <= end)
+        pending = ctx.conn.execute(sa.select(sa.func.count()).select_from(rq).where(base, rq.c.status == "pending")).scalar_one()
+        if pending:
+            raise Rejected("pending_requests", "Закрыть период нельзя, пока есть ожидающие решения заявки.",
+                           {"pending": pending})
+        rows = ctx.conn.execute(sa.select(rq, overtime_request_periods.c.mode.label("request_period_mode"),
+            overtime_request_periods.c.period_start.label("request_period_start"),
+            overtime_request_periods.c.period_end.label("request_period_end")).join(overtime_request_periods,
+            overtime_request_periods.c.request_id == rq.c.id).where(base, rq.c.status == "approved")
+            .order_by(rq.c.work_date, rq.c.start_at, rq.c.id)).all()
+        entries, totals = [], {"overtime": 0, "weekend": 0, "holiday": 0}
+        for row in rows:
+            minutes = int(row.minutes)
+            totals[row.kind] += minutes
+            entries.append({"request_id": row.id, "work_date": row.work_date.isoformat(), "start_at": iso(row.start_at),
+                            "end_at": iso(row.end_at), "minutes": minutes, "kind": row.kind, "mode": row.mode,
+                            "reason": row.reason, "request_period": {"mode": row.request_period_mode,
+                                                                         "start": row.request_period_start.isoformat(),
+                                                                         "end": row.request_period_end.isoformat()},
+                            "approved_by": row.decided_by, "approved_at": iso(row.decided_at),
+                            "approval_authority": row.authority})
+        snapshot = {"scope": "approved_extra_hours_only", "user_id": user_id,
+                    "period": {"mode": mode, "start": start.isoformat(), "end": end.isoformat(),
+                               "config_version": config_version},
+                    "total_minutes": sum(totals.values()), "minutes_by_kind": totals, "entries": entries,
+                    "supersedes_id": previous_id}
+        body = canon(snapshot)
+        digest = hashlib.sha256(body.encode("utf-8")).hexdigest()
+        revision = (latest.revision + 1) if latest is not None else 1
+        ctx.conn.execute(table.insert().values(id=rid, user_id=user_id, mode=mode, period_start=start,
+            period_end=end, revision=revision, supersedes_id=previous_id, reason=reason, snapshot_json=body,
+            content_sha256=digest, created_by=ctx.user_id, created_at=ctx.now))
+        ctx.log("overtime_period_closure", rid, auth, None, revision,
+                {"user_id": user_id, "period_start": start.isoformat(), "period_end": end.isoformat(),
+                 "revision": revision, "sha256": digest, "supersedes_id": previous_id})
+        return {"overtime_period_closure": {"id": rid, "user_id": user_id, "mode": mode,
+                "period_start": start.isoformat(), "period_end": end.isoformat(), "revision": revision,
+                "supersedes_id": previous_id, "reason": reason, "total_minutes": sum(totals.values()),
+                "minutes_by_kind": totals, "content_sha256": digest, "snapshot": json.loads(body),
+                "created_at": iso(ctx.now)}}
+
+    def _pull_overtime_closures(self, conn, uid: str, now) -> list[dict]:
+        """Closed snapshots only for the employee or their authorized report reviewers."""
+        by_role = self.policy.can(conn, uid, "report.review", now)
+        can_manage = self.policy.can(conn, uid, "schedule.manage", now)
+        visible = (lambda _author: True) if can_manage else (
+            self._review_scope(conn, uid, now, by_role) if by_role or self._is_org_head(conn, uid) else None)
+        rows = conn.execute(sa.select(overtime_period_closures).order_by(overtime_period_closures.c.created_at.desc(),
+                                                                       overtime_period_closures.c.revision.desc())).all()
+        out = []
+        for r in rows:
+            if r.user_id != uid and not (visible is not None and visible(r.user_id)):
+                continue
+            snap = json.loads(r.snapshot_json)
+            out.append({"id": r.id, "user_id": r.user_id, "mode": r.mode, "period_start": r.period_start.isoformat(),
+                        "period_end": r.period_end.isoformat(), "revision": r.revision, "supersedes_id": r.supersedes_id,
+                        "reason": r.reason, "content_sha256": r.content_sha256, "created_by": r.created_by,
+                        "created_at": iso(r.created_at), "snapshot": snap})
+        return out
+
     def _pull_overtime(self, conn, uid: str, now) -> list[dict]:
         """Свои заявки и заявки, видимые проверяющим отчёты сотрудника; скрытые сведения об активности не выдаются."""
         by_role = self.policy.can(conn, uid, "report.review", now)
-        visible = self._review_scope(conn, uid, now, by_role) if by_role or self._is_org_head(conn, uid) else None
+        can_manage = self.policy.can(conn, uid, "schedule.manage", now)
+        visible = (lambda _author: True) if can_manage else (
+            self._review_scope(conn, uid, now, by_role) if by_role or self._is_org_head(conn, uid) else None)
         rows = conn.execute(sa.select(overtime_requests).order_by(overtime_requests.c.created_at.desc())).all()
         return [self._vovertime(dict(r._mapping), self._overtime_period_snapshot(conn, r.id)) for r in rows
                 if r.user_id == uid or (visible is not None and visible(r.user_id))]
@@ -589,6 +693,7 @@ class WorktimeMixin:
                 "worktime_projects": mine, "worktime_reviewer": reviewer,
                 "worktime_activity": self._worktime_activity(conn, uid, now),
                 "overtime_requests": self._pull_overtime(conn, uid, now),
+                "overtime_closures": self._pull_overtime_closures(conn, uid, now),
                 "overtime_period_config": ({"mode": period_cfg["mode"], "version": period_cfg["version"],
                                             "updated_at": iso(period_cfg["updated_at"])} if period_cfg else None),
                 "worktime_weekly_metrics": self._weekly_department_metrics(conn, uid, now, by_role)}
