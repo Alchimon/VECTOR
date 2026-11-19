@@ -36,12 +36,30 @@ def test_day_marks_overtime_weekend_holiday_short_and_exempt():
     assert hol["short_label"] == "работа в праздник"
     sat = wd.day_marks(S, date(2026, 11, 21), 190, CAL)
     assert (sat["day_type"], sat["mark"], sat["label"]) == ("weekend", "weekend", "Работа в выходной день — 3 ч 10 мин")
-    # График без производственного календаря (круглосуточная смена): 4 ноября — обычная среда.
-    assert wd.day_marks({**S, "use_calendar": False}, date(2026, 11, 4), 480, CAL)["mark"] == ""
+    # Федеральный праздник отмечается и без календаря графика, но само окно/расписание смены не сдвигается.
+    no_calendar = {**S, "use_calendar": False}
+    holiday_without_schedule_shift = wd.day_marks(no_calendar, date(2026, 11, 4), 480, CAL)
+    assert (holiday_without_schedule_shift["day_type"], holiday_without_schedule_shift["mark"],
+            holiday_without_schedule_shift["offday_minutes"]) == ("holiday", "holiday", 480)
+    assert sch.window(no_calendar, date(2026, 11, 4), cal=CAL) == sch.window(no_calendar, date(2026, 11, 4))
     # Ежедневный график: суббота — рабочий день.
     assert wd.day_marks({**S, "weekdays": "1111111"}, date(2026, 11, 21), 480, CAL)["mark"] == ""
     assert wd.day_marks(S, date(2026, 11, 21), 190, CAL, exempt=True)["mark"] == ""
     assert wd.day_marks(S, mon, None, CAL)["mark"] == "" and wd.day_marks(None, mon, 600)["overtime_minutes"] == 120
+
+
+def test_accounting_period_norm_uses_production_calendar_not_personal_shift():
+    """Норма рассчитывается по рабочей неделе и производственному календарю; индивидуальный график не подменяет её."""
+    start, end = date(2026, 11, 2), date(2026, 11, 6)  # 4 рабочих дня, 3 ноября сокращён, 4 ноября праздник
+    assert wd.period_norm_minutes(start, end, CAL) == 1860
+    assert wd.period_norm_minutes(start, end, CAL, weekly_minutes=2160) == 1668
+    assert wd.period_norm_minutes(date(2026, 11, 16), date(2026, 11, 22), {}) == 2400
+    try:
+        wd.period_norm_minutes(start, start + timedelta(days=366), CAL)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("period longer than a year must be rejected")
 
 
 def test_auto_finish_uses_reminder_boundary_without_input_monitoring():

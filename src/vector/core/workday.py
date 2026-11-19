@@ -42,7 +42,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
-from . import schedule as sch
+from . import prodcal, schedule as sch
 from .lifecycle import LifecycleError
 
 EVENTS = ("start", "pause", "resume", "finish")
@@ -371,12 +371,43 @@ def day_type(s: Optional[dict], day: date, cal: Optional[dict] = None) -> str:
     """Тип дня day для отметок (D-49, A-53 п. 3): holiday — праздник по производственному календарю (график его
     учитывает); weekend — выходной по графику; short — сокращённый предпраздничный; workday — рабочий."""
     s = s or sch.BUILTIN
+    # Федеральный праздник отмечается даже на графике, который не использует производственный календарь.
+    # Расписание смен при этом остаётся независимым: schedule.window() продолжает учитывать use_calendar.
+    federal = prodcal.federal_holiday(day)
+    if federal:
+        return "holiday"
     kind = sch.day_kind(s, day, cal)
     if kind == "holiday":
         return "holiday"
     if not sch.is_workday(s, day, cal):
         return "weekend"
     return "short" if kind == "short" else "workday"
+
+
+def period_norm_minutes(start: date, end: date, cal: Optional[dict] = None, weekly_minutes: int = 2400) -> int:
+    """Норма периода по российскому производственному календарю, без привязки к индивидуальной смене.
+
+    Период включительный и не длиннее 366 дней. weekly_minutes — подтверждённая кадровая недельная норма в минутах
+    (по умолчанию 40 часов); индивидуальная неполная неделя передаётся явно. Рабочий перенос считается рабочим,
+    федеральный/календарный праздник — нерабочим, предпраздничный день короче на час. Отпуска, больничные,
+    приём/увольнение и иные индивидуальные исключения требуют кадровых данных и здесь не угадываются.
+    """
+    if end < start or (end - start).days >= 366:
+        raise ValueError("Учётный период должен быть включительным и не длиннее года.")
+    if weekly_minutes <= 0 or weekly_minutes % 5:
+        raise ValueError("Недельная норма должна быть положительными минутами, кратными пяти.")
+    daily = weekly_minutes // 5
+    total = 0
+    day = start
+    while day <= end:
+        info = (cal or {}).get(day.isoformat())
+        kind = info.get("kind") if info else None
+        if kind == "holiday":
+            pass
+        elif kind in ("workday", "short") or (kind is None and day.weekday() < 5):
+            total += max(0, daily - (60 if kind == "short" else 0))
+        day += timedelta(days=1)
+    return total
 
 
 def norm_minutes(s: Optional[dict], day: date, cal: Optional[dict] = None) -> int:
@@ -408,7 +439,8 @@ def day_marks(s: Optional[dict], day: date, worked_minutes: Optional[int], cal: 
     списка), tone}.
     """
     t = day_type(s, day, cal)
-    title = ((cal or {}).get(day.isoformat()) or {}).get("title") or "" if t == "holiday" else ""
+    title = (((cal or {}).get(day.isoformat()) or {}).get("title") or
+             (prodcal.federal_holiday(day) or {}).get("title") or "") if t == "holiday" else ""
     norm = norm_minutes(s, day, cal)
     worked = max(0, int(worked_minutes or 0))
     out = {"day_type": t, "day_type_label": DAY_TYPE_LABELS_RU[t], "title": title, "norm_minutes": norm,

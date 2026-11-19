@@ -214,6 +214,19 @@ def builtin(year: int) -> Optional[dict]:
     return _BUILTIN_CACHE[year]
 
 
+def federal_holiday(day: date) -> Optional[dict]:
+    """Федеральный нерабочий праздничный день из встроенной редакции российского календаря.
+
+    Это самостоятельная классификация для отметки фактически отработанного праздника: она намеренно не использует
+    настройки графика и никогда не участвует в расчёте окна смены. Не считаем региональные ручные дни федеральными.
+    """
+    data = builtin(day.year)
+    if not data:
+        return None
+    return next((item for item in data["days"]
+                 if item["date"] == day.isoformat() and item["kind"] == "holiday"), None)
+
+
 def builtin_years() -> list[int]:
     """Годы, встроенные в эту версию программы."""
     out = []
