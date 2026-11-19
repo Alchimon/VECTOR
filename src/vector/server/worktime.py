@@ -35,7 +35,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 import sqlalchemy as sa
@@ -48,7 +48,8 @@ from vector.core.errors import Conflict, Denied, Rejected
 from .authz import active_delegated, project_member
 from . import db as _db
 from .db import (audit_log, daily_report_auto, daily_report_events, daily_report_line_sources, daily_report_lines,
-                 daily_reports, org_members, org_units, projects, tasks, wo_operations, wo_timer_events, work_orders)
+                 daily_reports, org_members, org_units, overtime_events, overtime_requests, projects, tasks,
+                 wo_operations, wo_timer_events, work_orders)
 from .validation import canon, iso, only_keys, req_uuid
 
 # Подписи шагов журнала отчёта (история карточки).
@@ -97,7 +98,7 @@ def _w(fn, *a, **kw):
     """Вызвать правило vector.core.worktime; WorktimeError → Rejected (ошибка ввода, с полем и замечаниями)."""
     try:
         return fn(*a, **kw)
-    except wt.WorktimeError as e:
+    except (wt.WorktimeError, wd.WorkdayError) as e:
         raise Rejected(e.code, e.message_ru, e.details)
 
 
@@ -395,6 +396,115 @@ class WorktimeMixin:
         return {"daily_report": self.v_daily_report(ctx.conn, n)}
 
     # ------------------------------------------------------------ pull
+    # ------------------------------------------------------------ заявки на часы вне обычного графика (A-55/A-56)
+    def _vovertime(self, o: dict) -> dict:
+        """Стабильное представление заявки; денежные ставки/суммы намеренно отсутствуют (их считает 1С)."""
+        return {k: (iso(o[k]) if k in ("start_at", "end_at", "created_at", "decided_at") and o.get(k) else
+                    o[k].isoformat() if k == "work_date" and o.get(k) else o.get(k))
+                for k in ("id", "user_id", "work_date", "start_at", "end_at", "minutes", "kind", "mode", "reason",
+                          "status", "created_at", "decided_by", "decided_at", "decision_comment", "authority", "version")}
+
+    def _overtime_event(self, ctx, rid: str, action: str, details: dict, authority) -> None:
+        """Неизменяемая история создания и решения; записывает исполнителя и основание его полномочий."""
+        ev = overtime_events
+        seq = (ctx.conn.execute(sa.select(sa.func.max(ev.c.seq)).where(ev.c.request_id == rid)).scalar() or 0) + 1
+        ctx.conn.execute(ev.insert().values(request_id=rid, seq=seq, event=action, details_json=canon(details),
+                                            actor_id=ctx.user_id, authority=authority.describe(), at=ctx.now))
+        self._record_basis(ctx, "overtime_event", f"{rid}#{seq}", 1, authority)
+
+    def _overtime_request_create(self, ctx, p, ev):
+        """Создать предварительную заявку или срочную запись после факта: минуты и причину вводит сам сотрудник, никакие действия программы не выводятся автоматически."""
+        only_keys(p, {"id", "work_date", "start_at", "end_at", "minutes", "kind", "mode", "reason"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "worktime.own", ctx.now)
+        rid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, overtime_requests, rid)
+        try:
+            work_date = date.fromisoformat(p.get("work_date", ""))
+        except (TypeError, ValueError):
+            raise Rejected("invalid_date", "Дата работы должна быть в формате ГГГГ-ММ-ДД.", {"field": "work_date"})
+        start = _w(wd.parse_dt, p.get("start_at"), "start_at")
+        end = _w(wd.parse_dt, p.get("end_at"), "end_at")
+        minutes = p.get("minutes")
+        if not isinstance(minutes, int) or isinstance(minutes, bool) or minutes <= 0 or minutes > 1440 or end <= start or minutes > int((end-start).total_seconds() // 60):
+            raise Rejected("invalid_duration", "Укажите положительные минуты, не превышающие длительность интервала.", {"field": "minutes"})
+        kind, mode = p.get("kind"), p.get("mode")
+        if kind not in ("overtime", "weekend", "holiday") or mode not in ("planned", "urgent_after"):
+            raise Rejected("invalid_kind", "Вид: сверхурочно / выходной / праздник; режим: заранее / срочно после факта.")
+        reason = _w(wd.parse_reason, p.get("reason"))
+        # Проверяем категорию по графику и календарю этой даты: клиент не может назвать федеральный праздник обычной
+        # сверхурочной работой или объявить запланированный рабочий день выходным.
+        eff = self._schedule_for(ctx.conn, ctx.user_id)
+        calendar = self._calendar_around(ctx.conn, work_date)
+        day_type = wd.day_type(eff["schedule"], work_date, calendar)
+        expected = {"holiday": "holiday", "weekend": "weekend"}.get(kind)
+        if expected and day_type != expected:
+            raise Rejected("day_kind_mismatch", "Вид заявки не совпадает с графиком и календарём этого дня.",
+                           {"field": "kind", "day_type": day_type})
+        if kind == "overtime" and day_type in ("holiday", "weekend"):
+            raise Rejected("day_kind_mismatch", "Для работы в нерабочий день выберите «выходной» или «праздник».",
+                           {"field": "kind", "day_type": day_type})
+        raw_start = p.get("start_at")
+        try:
+            local_start = raw_start if isinstance(raw_start, datetime) else datetime.fromisoformat(str(raw_start).replace("Z", "+00:00"))
+        except ValueError:
+            local_start = start  # parse_dt already returned the canonical invalid-time error above.
+        if local_start.date() != work_date:
+            raise Rejected("date_mismatch", "Дата учётной записи должна совпадать с местной датой начала интервала.",
+                           {"field": "work_date"})
+        if mode == "planned" and start <= ctx.now:
+            raise Rejected("not_future", "Предварительное согласование нужно запросить до начала работы.", {"field": "start_at"})
+        if mode == "urgent_after" and end > ctx.now:
+            raise Rejected("not_finished", "Срочную работу после факта фиксируют после окончания интервала.", {"field": "end_at"})
+        values = dict(id=rid, user_id=ctx.user_id, work_date=work_date, start_at=start, end_at=end, minutes=minutes,
+                      kind=kind, mode=mode, reason=reason, status="pending", created_at=ctx.now, version=1)
+        ctx.conn.execute(overtime_requests.insert().values(**values))
+        self._overtime_event(ctx, rid, "created", {"mode": mode, "kind": kind, "minutes": minutes, "reason": reason}, auth)
+        ctx.log("overtime_request", rid, auth, None, 1, {"mode": mode, "kind": kind, "minutes": minutes})
+        reviewers = self._report_reviewers(ctx.conn, ctx.user_id, ctx.now)
+        if reviewers is None:
+            reviewers = [u for u in self._users_with_role(ctx.conn, "dept_head", ctx.now) if u != ctx.user_id]
+        self._notify(ctx, reviewers, "overtime_request", "Запрос на работу вне графика требует решения руководителя",
+                     body=f"{work_date:%d.%m.%Y}: {minutes} мин.; причина: {reason}",
+                     object_type="overtime_request", object_id=rid)
+        return {"overtime_request": self._vovertime(values)}
+
+    def _overtime_request_decide(self, ctx, p, ev):
+        """Решение руководителя — отдельное действие с проверкой версии; ожидающую заявку нельзя незаметно изменить."""
+        only_keys(p, {"id", "decision", "comment"})
+        by_role = self.policy.can(ctx.conn, ctx.user_id, "report.review", ctx.now)
+        if not by_role and not self._is_org_head(ctx.conn, ctx.user_id):
+            self.policy.check(ctx.conn, ctx.user_id, "report.review", ctx.now)
+        auth = self.policy.check(ctx.conn, ctx.user_id, "report.review", ctx.now) if by_role else None
+        o = self._require(ctx.conn, overtime_requests, req_uuid(p, "id"), "Заявка на работу вне графика")
+        self._check_version(o, ev, lambda x: self._vovertime(x))
+        if o["user_id"] == ctx.user_id:
+            raise Denied("four_eyes", "Свою заявку согласует руководитель («четыре глаза»).")
+        if o["status"] != "pending":
+            raise Conflict("already_decided", "По заявке уже принято решение.", {"current": self._vovertime(o)})
+        auth = self._review_authority(ctx.conn, ctx.user_id, o["user_id"], ctx.now) or auth
+        if auth is None:
+            raise Denied("not_your_unit", "Эту заявку решает руководитель подразделения сотрудника.")
+        decision = p.get("decision")
+        if decision not in ("approve", "reject"):
+            raise Rejected("invalid_decision", "Выберите «согласовать» или «отклонить».", {"field": "decision"})
+        comment = _w(wd.parse_reason, p.get("comment"), decision == "reject", "comment", "причину отказа")
+        status = "approved" if decision == "approve" else "rejected"
+        n = self._update_versioned(ctx, overtime_requests, o, {"status": status, "decided_by": ctx.user_id,
+            "decided_at": ctx.now, "decision_comment": comment, "authority": auth.describe()})
+        self._overtime_event(ctx, o["id"], status, {"comment": comment}, auth)
+        ctx.log("overtime_request", o["id"], auth, o["version"], n["version"], {"decision": status})
+        self._notify(ctx, [o["user_id"]], "overtime_decided", f"Заявка на работу вне графика: {status}",
+                     body=comment or "", object_type="overtime_request", object_id=o["id"])
+        return {"overtime_request": self._vovertime(n)}
+
+    def _pull_overtime(self, conn, uid: str, now) -> list[dict]:
+        """Свои заявки и заявки, видимые проверяющим отчёты сотрудника; скрытые сведения об активности не выдаются."""
+        by_role = self.policy.can(conn, uid, "report.review", now)
+        visible = self._review_scope(conn, uid, now, by_role) if by_role or self._is_org_head(conn, uid) else None
+        rows = conn.execute(sa.select(overtime_requests).order_by(overtime_requests.c.created_at.desc())).all()
+        return [self._vovertime(dict(r._mapping)) for r in rows
+                if r.user_id == uid or (visible is not None and visible(r.user_id))]
+
     def _pull_worktime(self, conn, uid: str, now) -> dict:
         """Свои отчёты за PULL_DAYS дней; проверяющему — ещё и отправленные (не черновики и не на самопроверке) чужие:
         руководителю подразделения — сотрудников по цепочке вниз (D-44, D-45: роль не нужна), руководителю отдела по
@@ -420,6 +530,7 @@ class WorktimeMixin:
         return {"daily_reports": [self.v_daily_report(conn, dict(r._mapping), cache) for r in rows],
                 "worktime_projects": mine, "worktime_reviewer": reviewer,
                 "worktime_activity": self._worktime_activity(conn, uid, now),
+                "overtime_requests": self._pull_overtime(conn, uid, now),
                 "worktime_weekly_metrics": self._weekly_department_metrics(conn, uid, now, by_role)}
 
     def _weekly_department_metrics(self, conn, uid: str, now, by_role: bool) -> dict:

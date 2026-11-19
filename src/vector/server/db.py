@@ -58,7 +58,9 @@ from vector.core import money
 #   v25 — производственный календарь (D-48 — ответ на A-52 п. 3): загруженные годы (work_calendar_years) и их дни
 #         (work_calendar_days), ручные правки дней (work_calendar_overrides), учитывает ли график календарь
 #         (work_schedule_calendar). Только новые таблицы.
-SCHEMA_VERSION = 25
+#   v26 — первый журнал заявок сверхурочной/выходной/праздничной работы и append-only история решений (D-52).
+#         Ставки и суммы отсутствуют; таблицы overtime_requests и overtime_events.
+SCHEMA_VERSION = 26
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1565,6 +1567,37 @@ workday_end_requests = sa.Table("workday_end_requests", metadata,
     sa.Column("version", sa.Integer, nullable=False),
     sa.CheckConstraint(WORKDAY_REQUEST_STATUS_CHECK, name="status"))
 
+# ---- отдельный журнал привлечения к сверхурочной/выходной/праздничной работе (A-55/A-56) ----
+# Запрос не заменяет дневной отчёт и не содержит ставки/денег. Снимок временного интервала и причина остаются
+# неизменяемыми; решение руководителя меняет только состояние и сопровождается отдельным append-only событием.
+OVERTIME_STATUS_CHECK = "status IN ('pending','approved','rejected')"
+OVERTIME_KIND_CHECK = "kind IN ('overtime','weekend','holiday')"
+OVERTIME_MODE_CHECK = "mode IN ('planned','urgent_after')"
+overtime_requests = sa.Table("overtime_requests", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("user_id", ID, sa.ForeignKey("users.id"), nullable=False, index=True),
+    sa.Column("work_date", sa.Date, nullable=False, index=True),
+    sa.Column("start_at", UtcDateTime, nullable=False), sa.Column("end_at", UtcDateTime, nullable=False),
+    sa.Column("minutes", sa.Integer, nullable=False),
+    sa.Column("kind", U(16), nullable=False), sa.Column("mode", U(16), nullable=False),
+    sa.Column("reason", U(500), nullable=False),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("decided_by", ID, sa.ForeignKey("users.id")), sa.Column("decided_at", UtcDateTime),
+    sa.Column("decision_comment", U(500)), sa.Column("authority", U(120)),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.CheckConstraint(OVERTIME_STATUS_CHECK, name="status"),
+    sa.CheckConstraint(OVERTIME_KIND_CHECK, name="kind"),
+    sa.CheckConstraint(OVERTIME_MODE_CHECK, name="mode"),
+    sa.CheckConstraint("minutes > 0 AND end_at > start_at", name="duration"))
+overtime_events = sa.Table("overtime_events", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("request_id", ID, sa.ForeignKey("overtime_requests.id"), nullable=False, index=True),
+    sa.Column("seq", sa.Integer, nullable=False), sa.Column("event", U(24), nullable=False),
+    sa.Column("details_json", T, nullable=False), sa.Column("actor_id", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("authority", U(120), nullable=False), sa.Column("at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("request_id", "seq", name="uq_overtime_events_seq"))
+
 # ---- производственный календарь (D-48, ответ владельца на A-52 п. 3) ----
 # Загруженный в базу календарь на год (xmlcalendar.ru из интернета или из файла; vector.core.prodcal). Загруженный год
 # важнее встроенного в программу. Повторная загрузка года заменяет его дни (версия растёт).
@@ -1700,7 +1733,7 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (work_order_issues, 50026), (instance_compositions, 50027), (instance_events, 50028),
                  (passport_exports, 50029), (effectiveness_checks, 50030), (quality_decisions, 50031),
                  (claim_responses, 50032), (daily_report_events, 50033), (daily_report_auto, 50034),
-                 (org_events, 50035), (workday_events, 50036), (workday_auto_finishes, 50037)):
+                 (org_events, 50035), (workday_events, 50036), (workday_auto_finishes, 50037), (overtime_events, 50040)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):
