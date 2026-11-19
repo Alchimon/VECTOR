@@ -180,3 +180,73 @@ def test_engineer_sees_schedules_read_only(ui, qml_warnings):  # noqa: F811
     assert not ui.find("btnUnitSchedule").isVisible()
     assert ui.find("orgUnitSchedule").property("v").startswith("Смена наладчиков")
     assert qml_warnings == []
+
+
+def test_production_calendar_popup_file_import_and_day_edit(ui, qml_warnings):  # noqa: F811
+    """Производственный календарь (D-48, A-52 п. 3): из «Графиков работы» администратор открывает календарь — текущий
+    год загружен (демо), следующий встроенный; загружает следующий год из файла; правит день через форму (неверная
+    дата — кнопка неактивна); у нового графика отметка «учитывать календарь» включена; у «Смены наладчиков» — нет."""
+    from importlib import resources
+    from pathlib import Path
+    ui.login("admin")
+    page = _page(ui)
+    ov = _v(page, "ov")
+    shift = next(s for s in ov["schedules"] if s["name"] == "Смена наладчиков")
+    assert shift["use_calendar"] is False and "без производственного календаря" in shift["label"]
+    form = _popup(ui, "scheduleForm")
+    _call(form, "openFor", None)
+    ui.wait_idle()
+    assert _popup(ui, "sCalendar").property("checked") is True
+    form.close()
+    ui.click(ui.find("btnSchedules"))
+    ui.click(ui.find("btnCalendar"))
+    pop = _popup(ui, "calendarPopup")
+    assert pop.property("visible") is True
+    cv = _v(pop, "cv")
+    cur = cv["year"]
+    assert [y["selected"] for y in cv["years"]] == [False, True, False] and cv["year_state"] == "loaded"
+    assert cv["manage"] is True and cv["can_manage"] is True and cv["rows"]
+    assert any(r["kind"] == "holiday" for r in cv["rows"]) and ui.find("btnCalendarDownload").property("visible")
+    # Следующий год — из файла (тот же формат xmlcalendar.ru, что скачивается из интернета).
+    nxt = cur + 1
+    src = resources.files("vector.core").joinpath(f"prodcal_data/ru-{nxt}.xml")
+    ui.backend.setCalendarYear(nxt)
+    ui.wait_idle()
+    assert _v(pop, "cv")["year_state"] in ("builtin", "missing")
+    if src.is_file():
+        ui.backend.calendarImportFile("calendar-file", nxt, str(Path(str(src))))
+        ui.wait_idle()
+        cv = _v(pop, "cv")
+        assert cv["year"] == nxt and cv["year_state"] == "loaded" and "файл ru-" in cv["year_label"]
+    # Правка дня: неверная дата — нельзя сохранить; верная — день в списке с пометкой «правка администратора».
+    ui.backend.setCalendarYear(cur)
+    ui.wait_idle()
+    df = _popup(ui, "calendarDayForm")
+    _call(df, "openFor", None)
+    ui.wait_idle()
+    _popup(ui, "calDayDate").setProperty("text", "31.02." + str(cur))
+    ui.wait_idle()
+    assert df.property("canConfirm") is False
+    _popup(ui, "calDayDate").setProperty("text", f"15.07.{cur}")
+    _popup(ui, "calDayTitle").setProperty("text", "День компании")
+    ui.wait_idle()
+    QMetaObject.invokeMethod(df, "confirmed")
+    ui.wait_idle()
+    assert not df.property("visible"), df.property("error")
+    row = next(r for r in _v(pop, "cv")["rows"] if r["date"] == f"{cur}-07-15")
+    assert (row["kind"], row["title"], row["manual"], row["origin_label"]) == ("holiday", "День компании", True,
+                                                                              "правка администратора")
+    assert qml_warnings == []
+
+
+def test_engineer_sees_calendar_read_only(ui, qml_warnings):  # noqa: F811
+    """Инженер видит календарь (годы, особые дни), но кнопок загрузки и правки у него нет."""
+    ui.login("d.kuznetsov")
+    _page(ui)
+    ui.click(ui.find("btnSchedules"))
+    ui.click(ui.find("btnCalendar"))
+    pop = _popup(ui, "calendarPopup")
+    cv = _v(pop, "cv")
+    assert cv["manage"] is False and cv["rows"] and cv["auto_note"] == ""
+    assert not ui.find("btnCalendarDownload").property("visible") and not ui.find("btnCalendarDay").property("visible")
+    assert qml_warnings == []

@@ -173,9 +173,10 @@ class WorkdayMixin:
         return to if to is not None else [u for u in self._users_with_role(conn, "dept_head", now) if u != author_id]
 
     def _wd_schedule_start(self, conn, user_id: str, day: date, tz) -> tuple[Optional[Any], bool]:
-        """Начало рабочего дня day по графику сотрудника (UTC) в поясе tz его компьютера и «учёт не ведётся»."""
+        """Начало рабочего дня day по графику сотрудника (UTC) в поясе tz его компьютера и «учёт не ведётся».
+        Праздник по производственному календарю (D-48) — день нерабочий: начала по графику нет."""
         eff = self._schedule_for(conn, user_id)
-        win = sch.window(eff["schedule"], day, tz)
+        win = sch.window(eff["schedule"], day, tz, self._calendar_around(conn, day))
         return (win[0] if win else None), eff["exempt"]
 
     def _workday_start_request(self, ctx, p, ev):

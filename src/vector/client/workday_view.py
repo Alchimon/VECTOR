@@ -25,6 +25,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 
+from vector.core import prodcal as pc
 from vector.core import schedule as sch
 from vector.core import workday as wd
 
@@ -97,28 +98,43 @@ def _date_label(iso_d: Optional[str]) -> str:
         return iso_d or ""
 
 
-def _schedule_part(info: Optional[dict], day: date, tz=None) -> dict[str, Any]:
-    """Мой график в модели: подпись, откуда, учёт не ведётся, окно дня day по часам компьютера."""
+def calendar_days(calendar: Optional[dict], today: date) -> dict[str, dict]:
+    """Действующий производственный календарь из pull (work_calendar.days); до первого pull — встроенный в программу
+    на прошлый, текущий и следующий год (D-48)."""
+    days = (calendar or {}).get("days") if isinstance(calendar, dict) else None
+    if isinstance(days, dict):
+        return days
+    return pc.effective((today.year - 1, today.year, today.year + 1), {}, [], [])
+
+
+def _schedule_part(info: Optional[dict], day: date, tz=None, cal: Optional[dict] = None) -> dict[str, Any]:
+    """Мой график в модели: подпись, откуда, учёт не ведётся, окно дня day по часам компьютера; особый день по
+    производственному календарю (D-48) — подпись «праздник: …» / «сокращённый день…», если график его учитывает."""
     info = info if isinstance(info, dict) and info else {"schedule": dict(sch.BUILTIN), "exempt": False,
                                                          "source_label": "встроенный"}
     s = info.get("schedule")
-    win = sch.window(s, day, tz)
+    win = sch.window(s, day, tz, cal)
+    kind = sch.day_kind(s, day, cal)
+    note = pc.day_note((cal or {}).get(day.isoformat())) if kind else ""
     return {"schedule_label": sch.full_label(s) if s else sch.label(None),
             "schedule_source": info.get("source_label") or "", "exempt": bool(info.get("exempt")),
             "schedule_day": win is not None,
             "schedule_start_label": _hm(win[0], tz) if win else "", "schedule_end_label": _hm(win[1], tz) if win else "",
+            "calendar_kind": kind or "", "calendar_note": (note[:1].upper() + note[1:]) if note else "",
             "schedule_start": win[0] if win else None}
 
 
 def workday_view(days: list[dict], requests: list[dict], me_id: str, people: dict[str, str], online: bool,
                  now: Optional[datetime] = None, prompt: bool = False, tz=None, end_requests: Optional[list] = None,
-                 schedule: Optional[dict] = None, reminder: Optional[dict] = None) -> dict[str, Any]:
+                 schedule: Optional[dict] = None, reminder: Optional[dict] = None,
+                 calendar: Optional[dict] = None) -> dict[str, Any]:
     """Модель таймера и запросов для боковой панели и раздела «Рабочее время».
 
     days — свои рабочие дни (кэш с неотправленными нажатиями); requests / end_requests — запросы на фактическое
     начало / окончание (свои и, руководителю, сотрудников); prompt — показать окно «Начните рабочий день» (решает
     SyncClient.workday_prompt_needed); schedule — мой действующий график (pull: workday_schedule); reminder —
-    напоминание о конце дня (SyncClient.workday_reminder; показывается, если state = remind).
+    напоминание о конце дня (SyncClient.workday_reminder; показывается, если state = remind); calendar —
+    производственный календарь (pull: work_calendar, D-48).
     """
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     today = _local(now, tz).date()
@@ -130,7 +146,7 @@ def workday_view(days: list[dict], requests: list[dict], me_id: str, people: dic
         day_date = date.fromisoformat((d or {}).get("work_date") or "")
     except ValueError:
         day_date = today
-    sp = _schedule_part(schedule, day_date, tz)
+    sp = _schedule_part(schedule, day_date, tz, calendar_days(calendar, today))
     reqs = [_request_row(r, me_id, people, online, tz) for r in (requests or []) + (end_requests or [])]
     reqs.sort(key=lambda x: x["status"] != "pending")      # на согласовании — сверху (дальше порядок сервера)
     day_reqs = [r for r in reqs if d and r["workday_id"] == d.get("id") and r["kind"] == "start"]
@@ -147,7 +163,9 @@ def workday_view(days: list[dict], requests: list[dict], me_id: str, people: dic
     elif sp["exempt"]:
         why_not = "Учёт рабочего времени для вас не ведётся."
     elif sp["schedule_start"] is None:
-        why_not = "По графику работы этот день нерабочий — таймер считает с нажатия «Начать»."
+        why_not = ("По производственному календарю этот день нерабочий — таймер считает с нажатия «Начать»."
+                   if sp["calendar_kind"] == "holiday" else
+                   "По графику работы этот день нерабочий — таймер считает с нажатия «Начать».")
     elif not late:
         why_not = f"Вы начали день не позже начала по графику ({sp['schedule_start_label']}) — указывать не нужно."
     else:
@@ -246,7 +264,7 @@ def _parse_hhmm(text: str) -> Optional[tuple[int, int]]:
 
 
 def parse_start_time(text: str, workday: dict, now: Optional[datetime] = None, tz=None,
-                     schedule: Optional[dict] = None) -> dict[str, Any]:
+                     schedule: Optional[dict] = None, calendar: Optional[dict] = None) -> dict[str, Any]:
     """Поле «Фактическое начало» формы «Я начал раньше» («08:00» по часам компьютера) → время ISO с поясом для
     workday.start_request, с проверками ядра (раньше нажатия, не раньше начала по графику — D-47, A-51 п. 1). Если
     «ЧЧ:ММ» позже нажатия, а день начат после полуночи, — это вчерашний вечер (ночная смена). {ok, start_at, message}."""
@@ -262,7 +280,7 @@ def parse_start_time(text: str, workday: dict, now: Optional[datetime] = None, t
         day = date.fromisoformat(workday.get("work_date") or "")
     except ValueError:
         day = _local(pressed, tz).date()
-    sp = _schedule_part(schedule, day, tz)
+    sp = _schedule_part(schedule, day, tz, calendar_days(calendar, day))
     loc = _local(pressed, tz)
     cand = loc.replace(hour=hm[0], minute=hm[1], second=0, microsecond=0)
     if cand >= loc:

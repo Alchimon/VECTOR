@@ -16,6 +16,8 @@ import QtQuick.Layouts
 //  * Графики работы (D-47, ответ на A-51 п. 1): справочник «Графики работы» (видят все; администратор заводит и
 //    правит), график подразделения (действует на вложенные) и сотрудника лично, «учёт рабочего времени не ведётся».
 //    От графика считаются фактическое начало дня и напоминание о конце дня.
+//  * Производственный календарь (D-48, ответ на A-52 п. 3) — из окна «Графики работы»: праздники, сокращённые дни и
+//    переносы выходных (CalendarPopup.qml); у графика — отметка «учитывать производственный календарь».
 // Данные — снимок pull (ov = backend.orgOverview); править — только при связи (решает сервер).
 MasterDetail {
     id: page
@@ -249,10 +251,12 @@ MasterDetail {
             spacing: 10
             RowLayout { id: schHead; Layout.fillWidth: true; Layout.margins: Theme.padL; Layout.bottomMargin: 0
                 Text { text: "Графики работы"; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsL; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                VButton { objectName: "btnCalendar"; text: "Производственный календарь"; compact: true; iconName: "calendar-days"
+                          onClicked: calendarPopup.open() }
                 VButton { objectName: "btnNewSchedule"; visible: page.ov.schedule_manage === true; enabled: page.ov.can_schedule === true; text: "Новый график"; kind: "primary"; compact: true; iconName: "plus"
                           onClicked: scheduleForm.openFor(null) }
                 VButton { kind: "ghost"; iconName: "x"; compact: true; onClicked: schedulesPopup.close(); Accessible.name: "Закрыть" } }
-            Text { id: schHint; text: "Какой график действует для сотрудника: назначенный лично → подразделения (или вышестоящего) → «по умолчанию» в компании. Сейчас по умолчанию: " + (page.ov.default_schedule || "") + ". Время — по часам компьютера сотрудника."
+            Text { id: schHint; text: "Какой график действует для сотрудника: назначенный лично → подразделения (или вышестоящего) → «по умолчанию» в компании. Сейчас по умолчанию: " + (page.ov.default_schedule || "") + ". Время — по часам компьютера сотрудника. Праздники и переносы выходных — «Производственный календарь»."
                    color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.leftMargin: Theme.padL; Layout.rightMargin: Theme.padL }
             ListView {
                 id: schList
@@ -298,6 +302,7 @@ MasterDetail {
             for (var i = 0; i < 7; i++) dayRep.itemAt(i).checked = wd.charAt(i) === "1"
             sDefault.checked = x ? x.is_default === true : false
             sArchive.checked = x ? x.active !== true : false
+            sCalendar.checked = x ? x.use_calendar !== false : true
             open()
         }
         onConfirmed: {
@@ -305,7 +310,8 @@ MasterDetail {
             for (var i = 0; i < 7; i++) wd += dayRep.itemAt(i).checked ? "1" : "0"
             var b = parseInt(sBreak.text, 10)
             var p = { id: s ? s.id : backend.newId(), name: sName.text.trim(), start_time: sStart.text.trim(), end_time: sEnd.text.trim(),
-                      break_minutes: isNaN(b) ? -1 : b, weekdays: wd, is_default: sDefault.checked, active: !sArchive.checked }
+                      break_minutes: isNaN(b) ? -1 : b, weekdays: wd, is_default: sDefault.checked, active: !sArchive.checked,
+                      use_calendar: sCalendar.checked }
             if (s) sCmd.run("schedule.save", p, s.version); else sCmd.run("schedule.save", p)
         }
         VField { id: sName; objectName: "sName"; label: "Название"; required: true; placeholder: "Пятидневка 8–17" }
@@ -317,10 +323,15 @@ MasterDetail {
         RowLayout { Layout.fillWidth: true; spacing: 2
             Repeater { id: dayRep; model: 7
                 CheckBox { objectName: "sDay" + index; text: scheduleForm.dayNames[index] } } }
+        CheckBox { id: sCalendar; objectName: "sCalendar"; text: "Учитывать производственный календарь (праздники, сокращённые дни, переносы)"
+                   VTipArea { text: "В праздник день нерабочий, в рабочую субботу по переносу — рабочий, в предпраздничный день конец на час раньше. Круглосуточным сменам отметку обычно снимают." } }
         CheckBox { id: sDefault; objectName: "sDefault"; text: "По умолчанию в компании (для всех, кому не назначен другой)" }
         CheckBox { id: sArchive; objectName: "sArchive"; visible: scheduleForm.s !== null; text: "В архиве (больше не назначается; назначенным — график выше или «по умолчанию»)" }
     }
     Cmd { id: sCmd; dialog: scheduleForm; tag: "schedule-save" }
+
+    // ---------- производственный календарь (D-48)
+    CalendarPopup { id: calendarPopup }
 
     // ---------- назначить график подразделению / сотруднику
     FormDialog {

@@ -8,6 +8,10 @@
 * напоминание «рабочий день по графику закончился» и автоматическое завершение забытого дня (A-51 п. 5);
 * подсказки в окне «Начните рабочий день».
 
+Праздники и переносы выходных — производственный календарь (D-48, ответ на A-52 п. 3; vector.core.prodcal): если
+график его учитывает (по умолчанию — да), в праздник день нерабочий, в рабочую субботу по переносу — рабочий, в
+предпраздничный день конец на час раньше.
+
 Откуда берётся график сотрудника (resolve): свой (назначен лично) → подразделения (своего, а если не назначен —
 ближайшего вышестоящего по оргструктуре) → график «по умолчанию» компании → встроенный BUILTIN (09:00–18:00, пн–пт,
 перерыв 60 мин), пока администратор не завёл ни одного. Лично можно отметить и «учёт рабочего времени не ведётся» —
@@ -25,14 +29,16 @@ from datetime import date, datetime, timedelta, timezone, tzinfo
 from typing import Any, Iterable, Optional
 
 from .lifecycle import LifecycleError
+from .prodcal import SHORT_MINUTES  # одно значение на ядро: календарь и график
 
 MAX_NAME = 120
 MAX_BREAK = 240                      # перерыв по графику — не больше 4 часов
 WEEKDAY_SHORT_RU = ("пн", "вт", "ср", "чт", "пт", "сб", "вс")
+SHORT_DAY_MINUTES = SHORT_MINUTES    # предпраздничный (сокращённый) день — на час короче (ст. 95 ТК РФ; D-48)
 
 # Встроенный график — действует, пока администратор не завёл своих (и не отметил ни один «по умолчанию»).
 BUILTIN = {"id": "", "name": "Стандартный", "start_time": "09:00", "end_time": "18:00", "break_minutes": 60,
-           "weekdays": "1111100", "is_default": True, "active": True, "builtin": True}
+           "weekdays": "1111100", "is_default": True, "active": True, "builtin": True, "use_calendar": True}
 
 
 class ScheduleError(LifecycleError):
@@ -119,8 +125,9 @@ def label(s: Optional[dict]) -> str:
         return "учёт рабочего времени не ведётся"
     brk = int(s.get("break_minutes") or 0)
     night = " (ночной — до утра)" if is_night(s) else ""
+    cal = "" if uses_calendar(s) else ", без производственного календаря"
     return (f"{s['start_time']}–{s['end_time']}{night}, {weekdays_label(s['weekdays'])}"
-            + (f", перерыв {brk} мин" if brk else ", без перерыва"))
+            + (f", перерыв {brk} мин" if brk else ", без перерыва") + cal)
 
 
 def full_label(s: Optional[dict]) -> str:
@@ -128,20 +135,50 @@ def full_label(s: Optional[dict]) -> str:
     return label(None) if s is None else f"{s['name']}: {label(s)}"
 
 
-def is_workday(s: dict, day: date) -> bool:
-    """Рабочий ли день недели day по графику."""
+def uses_calendar(s: Optional[dict]) -> bool:
+    """Учитывает ли график производственный календарь (D-48, A-52 п. 3). Нет отметки — учитывает (пятидневка);
+    круглосуточным сменам администратор её снимает."""
+    return bool(s) and s.get("use_calendar", True) is not False
+
+
+def day_kind(s: Optional[dict], day: date, cal: Optional[dict] = None) -> Optional[str]:
+    """Особый ли день day по производственному календарю для графика s: holiday | short | workday | None (обычный
+    день или график календарь не учитывает). cal — действующий календарь {ГГГГ-ММ-ДД: {kind, title}}
+    (vector.core.prodcal.effective)."""
+    if not cal or not uses_calendar(s):
+        return None
+    info = cal.get(day.isoformat())
+    return info.get("kind") if info else None
+
+
+def is_workday(s: dict, day: date, cal: Optional[dict] = None) -> bool:
+    """Рабочий ли день day по графику: по дням недели графика, а если график учитывает производственный календарь —
+    праздник нерабочий, рабочий выходной (перенос) рабочий, сокращённый — рабочий (D-48)."""
+    kind = day_kind(s, day, cal)
+    if kind == "holiday":
+        return False
+    if kind in ("workday", "short"):
+        return True
     return (s.get("weekdays") or "0000000")[day.weekday()] == "1"
 
 
-def window(s: Optional[dict], day: date, tz: Optional[tzinfo] = None) -> Optional[tuple[datetime, datetime]]:
+def window(s: Optional[dict], day: date, tz: Optional[tzinfo] = None,
+           cal: Optional[dict] = None) -> Optional[tuple[datetime, datetime]]:
     """Рабочий день day по графику — (начало, конец) с поясом tz (по умолчанию — пояс этого компьютера), в UTC.
-    None — по графику день нерабочий (или учёт не ведётся). Ночной график: конец — утром следующего дня."""
-    if s is None or not is_workday(s, day):
+    None — по графику день нерабочий (или учёт не ведётся). Ночной график: конец — утром следующего дня.
+
+    cal — действующий производственный календарь (D-48, A-52 п. 3): в праздник — None; в рабочий выходной по
+    переносу — окно по времени графика; в сокращённый (предпраздничный) день конец на час раньше (ст. 95 ТК РФ), если
+    день после этого длиннее перерыва."""
+    if s is None or not is_workday(s, day, cal):
         return None
     a = parse_hhmm(s["start_time"], "start_time")
     tzi = tz or datetime.now().astimezone().tzinfo
     start = datetime.combine(day, datetime.min.time(), tzinfo=tzi) + timedelta(minutes=a)
-    end = start + timedelta(minutes=length_minutes(s))
+    minutes = length_minutes(s)
+    if day_kind(s, day, cal) == "short" and minutes - SHORT_DAY_MINUTES > int(s.get("break_minutes") or 0):
+        minutes -= SHORT_DAY_MINUTES
+    end = start + timedelta(minutes=minutes)
     return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
 
 

@@ -640,6 +640,22 @@ def main():
         h.shot(out / f"{theme}-59-work-schedule-form.png")
         sf.setProperty("visible", False)
         h.wait_idle()
+        # Производственный календарь (D-48, A-52 п. 3): годы, откуда календарь, особые дни; форма правки дня.
+        cp = next(o for o in h.win.findChildren(QObject) if o.objectName() == "calendarPopup")
+        cp.setProperty("visible", True)
+        h.wait_idle()
+        h.shot(out / f"{theme}-60-production-calendar.png")
+        df = next(o for o in h.win.findChildren(QObject) if o.objectName() == "calendarDayForm")
+        # Пустая форма (как «Изменить день»): openFor(null) из Python не вызвать — поля заполняются напрямую.
+        next(o for o in h.win.findChildren(QObject) if o.objectName() == "calDayDate").setProperty("text", "30.12.2026")
+        next(o for o in h.win.findChildren(QObject) if o.objectName() == "calDayKind").setProperty("currentIndex", 1)
+        next(o for o in h.win.findChildren(QObject) if o.objectName() == "calDayTitle").setProperty("text", "Решение директора")
+        df.setProperty("visible", True)
+        h.wait_idle()
+        h.shot(out / f"{theme}-61-production-calendar-day.png")
+        df.setProperty("visible", False)       # форма — внутри окна календаря: сначала она, затем само окно
+        cp.setProperty("visible", False)
+        h.wait_idle()
         h.backend.logout()
         h.wait_idle()
         h.login("admin")

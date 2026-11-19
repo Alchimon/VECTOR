@@ -24,6 +24,9 @@ e.orlova; у m.lebedev вчерашний день завершён (см. _seed
 Графики работы (D-47): «Пятидневка» по умолчанию, «Производство» — производственному участку, «Смена наладчиков»
 (ежедневно) — отделу АСУ ТП; у администратора учёт рабочего времени не ведётся; у i.belova день завершён
 автоматически (забыла «Завершить»), запрос «фактическое окончание» ждёт v.zaitseva (см. _seed_schedules).
+
+Производственный календарь (D-48): текущий год загружен из встроенного файла xmlcalendar.ru; «Смена наладчиков»
+календарь не учитывает (см. _seed_schedules).
 """
 from __future__ import annotations
 
@@ -614,6 +617,9 @@ def _seed_schedules(cmd, adm, login, people, svc, units, admin_login) -> dict:
       подобрано от момента установки стенда (за 5 часов до него, по UTC — часам сервера стенда), чтобы на стенде в
       любое время суток был виден запрос «фактическое начало» у d.kuznetsov (не раньше начала по графику) и окно
       «Начните рабочий день» у m.lebedev;
+    * у «Смены наладчиков» снята отметка «учитывать производственный календарь» (D-48: наладка — и в праздники);
+    * производственный календарь текущего года загружен в базу из встроенного в программу файла xmlcalendar.ru (как
+      «Из файла»: на стенде может не быть интернета); следующий год — встроенный;
     * администратор — «учёт рабочего времени не ведётся» (служебная учётная запись: окно не показывается);
     * i.belova забыла «Завершить»: день начат 11 часов назад, программа завершила его автоматически 2 часа назад
       (напоминание осталось без ответа); она просит считать окончание на час позже — запрос ждёт v.zaitseva.
@@ -632,7 +638,16 @@ def _seed_schedules(cmd, adm, login, people, svc, units, admin_login) -> dict:
     st = max(now - timedelta(hours=5), day_start).replace(minute=0, second=0, microsecond=0)
     begin = sch.hhmm(st.hour * 60)
     cmd(adm, "schedule.save", {"id": asu_s, "name": "Смена наладчиков", "start_time": begin,
-                               "end_time": sch.hhmm(st.hour * 60 + 9 * 60), "break_minutes": 60, "weekdays": "1111111"})
+                               "end_time": sch.hhmm(st.hour * 60 + 9 * 60), "break_minutes": 60, "weekdays": "1111111",
+                               "use_calendar": False})
+    # Производственный календарь текущего года (D-48) — из встроенного файла, как «Загрузить из файла».
+    from importlib import resources
+    try:
+        xml = resources.files("vector.core").joinpath(f"prodcal_data/ru-{now.year}.xml").read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        xml = None
+    if xml:
+        cmd(adm, "calendar.import", {"year": now.year, "xml": xml, "source": f"файл ru-{now.year}.xml (демо)"})
     cmd(adm, "schedule.assign", {"target_kind": "unit", "target_id": shop, "schedule_id": prod_s})
     cmd(adm, "schedule.assign", {"target_kind": "unit", "target_id": asu, "schedule_id": asu_s})
     with svc.engine.connect() as c:

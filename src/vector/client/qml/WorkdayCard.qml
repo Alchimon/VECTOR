@@ -68,9 +68,14 @@ VCard {
         // График работы (D-47): от него — фактическое начало и напоминание о конце дня.
         Text { visible: !wc.compact; objectName: "workdaySchedule"
                text: "График: " + (wc.w.schedule_label || "") + (wc.w.schedule_source ? " (" + wc.w.schedule_source + ")" : "")
-                     + (wc.w.has_day === true && wc.w.schedule_day !== true && wc.w.exempt !== true ? " · сегодня по графику выходной" : "")
+                     + (wc.w.has_day === true && wc.w.schedule_day !== true && wc.w.exempt !== true && wc.w.calendar_kind !== "holiday" ? " · сегодня по графику выходной" : "")
                color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true
                VTipArea { text: "График назначает администратор (раздел «Оргструктура» → «Графики работы»). Фактическое начало дня — не раньше начала по графику; в конце дня по графику программа напомнит завершить день." } }
+        // Особый день по производственному календарю (D-48): праздник, сокращённый день, рабочий выходной.
+        Text { visible: !wc.compact && (wc.w.calendar_note || "") !== "" && wc.w.exempt !== true; objectName: "workdayCalendarNote"
+               text: (wc.w.calendar_note || "") + (wc.w.calendar_kind === "short" && wc.w.schedule_end_label ? ": конец по графику — " + wc.w.schedule_end_label : "")
+               color: wc.w.calendar_kind === "holiday" ? Theme.danger : Theme.warning; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true
+               VTipArea { text: "Производственный календарь (раздел «Оргструктура» → «Графики работы» → «Производственный календарь»): в праздник окно «Начните рабочий день» не появляется, в сокращённый день конец по графику на час раньше, в рабочую субботу по переносу день рабочий." } }
         // Подробности дня: начало, перерывы, завершение — строкой; нажатия — отдельной строкой с переносом.
         RowLayout {
             visible: !wc.compact && wc.w.has_day === true

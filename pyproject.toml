@@ -41,7 +41,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "vector.client" = ["qml/**/*", "assets/**/*"]
-"vector.core" = ["contracts_data/*.json"]
+"vector.core" = ["contracts_data/*.json", "prodcal_data/*.xml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

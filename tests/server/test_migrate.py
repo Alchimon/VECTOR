@@ -842,3 +842,43 @@ def test_v23_to_v24_adds_schedules_and_forgotten_finish(backend, tmp_path, clock
     bad(db.workday_end_requests.update().values(status="x"))
     assert db.check_schema(eng) == db.SCHEMA_VERSION
     assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
+
+
+def test_v24_to_v25_adds_production_calendar(backend, tmp_path, clock, keys):
+    """v24 → v25 (D-48, ответ на A-52 п. 3): загруженные годы производственного календаря и их дни, ручные правки
+    дней, отметка «график учитывает календарь»; данные v24 не меняются; тип дня — из списка, день года — один."""
+    eng = make_v3(backend, tmp_path, clock, version=24)
+    now, uid, sid = clock.now(), new_id(), new_id()
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x", must_change_password=False,
+                                           password_changed_at=now, failed_attempts=0, active=True, created_at=now))
+        c.execute(db.work_schedules.insert().values(id=sid, name="Смена", start_time="08:00", end_time="20:00",
+                                                    break_minutes=60, weekdays="1111111", is_default=True, active=True,
+                                                    version=1, created_at=now, updated_at=now))
+    before = counts(eng, mg.tables_of_version(24))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (24, db.SCHEMA_VERSION)
+    assert rep.created_tables[:4] == ["work_calendar_years", "work_calendar_days", "work_calendar_overrides",
+                                      "work_schedule_calendar"]
+    after = counts(eng, mg.tables_of_version(24))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    with eng.begin() as c:
+        c.execute(db.work_calendar_years.insert().values(year=2026, source="файл", source_date="2025-09-30",
+                                                         days_count=1, loaded_by=uid, version=1, created_at=now,
+                                                         updated_at=now))
+        c.execute(db.work_calendar_days.insert().values(day="2026-01-01", year=2026, kind="holiday", title="Новый год"))
+        c.execute(db.work_calendar_overrides.insert().values(day="2026-12-30", kind="short", set_by=uid, version=1,
+                                                             created_at=now, updated_at=now))
+        c.execute(db.work_schedule_calendar.insert().values(schedule_id=sid, use_calendar=False, updated_at=now))
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    bad(db.work_calendar_days.insert().values(day="2026-01-01", year=2026, kind="short"))          # день — один
+    bad(db.work_calendar_days.insert().values(day="2026-01-02", year=2026, kind="party"))
+    bad(db.work_calendar_overrides.insert().values(day="2026-12-31", kind="x", set_by=uid, version=1, created_at=now,
+                                                   updated_at=now))
+    bad(db.work_schedule_calendar.insert().values(schedule_id=sid, use_calendar=True, updated_at=now))
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []

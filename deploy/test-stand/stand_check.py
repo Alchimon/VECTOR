@@ -1,4 +1,4 @@
-"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-20).
+"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-22).
 
 Запускается ПОСЛЕ установки, при запущенном сервере стенда, Python-ом из окружения стенда:
 
@@ -299,6 +299,8 @@ def main(argv: list[str] | None = None) -> int:
     check_workday(rep, sessions)
     print("\n12. Графики работы и забытое «Завершить» (D-47, П-21)")
     check_schedule(rep, sessions)
+    print("\n13. Производственный календарь: праздники, сокращённые дни, переносы (D-48, П-22)")
+    check_calendar(rep, sessions)
     return finish(rep, tmp)
 
 
@@ -413,6 +415,35 @@ def check_schedule(rep: Report, sessions: dict) -> None:
                  "установки) — " + FRESH_HINT)
 
 
+def check_calendar(rep: Report, sessions: dict) -> None:
+    """Раздел 13 (D-48): производственный календарь виден сотрудникам (откуда он на текущий год, сколько особых дней);
+    у «Смены наладчиков» календарь не учитывается. Только чтение (pull)."""
+    eng = sessions.get("d.kuznetsov")
+    if eng is None:
+        rep.warn("нет входа d.kuznetsov — производственный календарь не проверить")
+        return
+    cal = eng.get_meta("work_calendar")
+    if not isinstance(cal, dict):
+        rep.warn("сервер не прислал производственный календарь — обновите стенд (update.cmd): календарь появился в D-48")
+        return
+    # Годы — прошлый, текущий и следующий по часам сервера: текущий — средний.
+    ys = cal.get("years") or []
+    y = ys[1] if len(ys) == 3 else None
+    year = (y or {}).get("year") or "текущий"
+    days = [k for k in (cal.get("days") or {}) if k.startswith(f"{year}-")]
+    if y is None or not days:
+        rep.fail(f"производственного календаря на {year} год нет — ни загруженного, ни встроенного")
+        return
+    rep.ok(f"календарь на {year} год: {y.get('label')}; особых дней: {len(days)}")
+    if y.get("state") != "loaded":
+        rep.warn(f"календарь на {year} год не загружен в базу (действует встроенный) — " + FRESH_HINT)
+    shift = next((x for x in eng.get_meta("work_schedules") or [] if x.get("name") == "Смена наладчиков"), None)
+    if shift is not None and shift.get("use_calendar") is False:
+        rep.ok("«Смена наладчиков» производственный календарь не учитывает (наладка — и в праздники)")
+    elif shift is not None:
+        rep.warn("у «Смены наладчиков» включён производственный календарь — " + FRESH_HINT)
+
+
 def finish(rep: Report, tmp=None) -> int:
     """Удалить временный кэш и напечатать итог; код выхода — 1 при ошибках."""
     if tmp is not None:
@@ -425,7 +456,7 @@ def finish(rep: Report, tmp=None) -> int:
         print(f"ИТОГ: стенд работает; предупреждений {len(rep.warnings)} — часть сценариев на этих данных не проверить "
               "(см. выше).")
     else:
-        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-21; сценарии — test-pc.md § 6).")
+        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-22; сценарии — test-pc.md § 6).")
     return 0
 
 

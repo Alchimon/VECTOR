@@ -28,7 +28,7 @@ def view(c, prompt=False):
     return wv.workday_view(c.list_local("workday"), c.list_local("workday_start_request"), c.user_id,
                            {p["id"]: p["display_name"] for p in c.get_meta("people") or []}, c.t.online,
                            c.now(), prompt, UTC, c.list_local("workday_end_request"), c.workday_schedule_info(),
-                           c.workday_reminder(UTC))
+                           c.workday_reminder(UTC), c.get_meta("work_calendar"))
 
 
 def test_offline_marks_queue_live_timer_and_prompt(world, mk):
@@ -233,3 +233,42 @@ def test_finish_at_past_time_and_closed_app():
     assert wv.parse_finish_time("08:00", day, now, UTC)["ok"] is False   # раньше «Начать»
     assert wv.parse_finish_time("18:30", day, now, UTC)["ok"] is False   # «18:30» сейчас = вчера → раньше «Начать»
     assert wv.parse_finish_time("1740", day, now, UTC)["ok"] is False
+
+
+def test_production_calendar_moves_prompt_and_reminder(world, mk, tmp_path):
+    """Производственный календарь (D-48, A-52 п. 3): в праздник окно «Начните рабочий день» не появляется; в
+    сокращённый день напоминание о конце дня — на час раньше (17:00 по встроенному 09:00–18:00); календарь скачивается
+    (здесь — из файла по адресу file://) и загружается администратором; неудачная загрузка — понятная причина."""
+    from importlib import resources
+    world.clock.advance(seconds=61)                                      # понедельник 2026-11-16 09:01 UTC
+    a = world.login("admin")
+    a.ok("calendar.day_set", {"date": "2026-11-16", "kind": "short", "title": "Канун праздника города"})
+    a.ok("calendar.day_set", {"date": "2026-11-17", "kind": "holiday", "title": "Праздник города"})
+    eng = mk("eng1")
+    eng.pull()
+    assert eng.workday_calendar()["2026-11-17"]["kind"] == "holiday"
+    assert eng.workday_mark("start", UTC).status == "accepted"
+    v = view(eng)
+    assert v["calendar_kind"] == "short" and v["schedule_end_label"] == "17:00"
+    assert v["calendar_note"].startswith("Сокращённый день")
+    world.clock.advance(hours=7, minutes=59)                             # 17:00 — по сокращённому дню конец
+    assert eng.workday_reminder(UTC)["due_label"] == "17:00"
+    assert eng.workday_mark("finish", UTC).status == "queued"           # сеанс истёк за день — в очередь
+    world.clock.advance(hours=16)                                        # вторник 09:00 — праздник
+    assert eng.login("eng1", PWD).status == "accepted"
+    eng.sync()
+    assert eng.workday_prompt_needed(UTC) is False
+    # Скачать календарь (адреса — как у xmlcalendar.ru, здесь файлы на диске) и загрузить на сервер.
+    src = resources.files("vector.core").joinpath("prodcal_data/ru-2027.xml").read_text(encoding="utf-8")
+    (tmp_path / "2027.xml").write_text(src, encoding="utf-8")
+    tpl = (tmp_path / "{year}.xml").as_uri().replace("%7B", "{").replace("%7D", "}")
+    bad = eng.calendar_download(2028, urls=[tpl])
+    assert bad["ok"] is False and "2028" in bad["message"]
+    got = eng.calendar_download(2027, urls=[tpl])
+    assert got["ok"] is True and got["source"].endswith("2027.xml")
+    assert eng.calendar_import(2027, got["xml"], got["source"]).status == "denied"     # не администратор
+    world.clock.advance(seconds=61)
+    adm = mk("admin")
+    assert adm.calendar_import(2027, got["xml"], got["source"]).status == "accepted"
+    cal = adm.get_meta("work_calendar")
+    assert next(y for y in cal["years"] if y["year"] == 2027)["state"] == "loaded"

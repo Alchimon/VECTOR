@@ -37,6 +37,7 @@ from .quality import QualityMixin
 from .worktime import WorktimeMixin
 from .org import OrgMixin
 from .workday import WorkdayMixin
+from .prodcal import CalendarMixin
 from .schedule import ScheduleMixin
 from .production import ProductionMixin
 from .purchasing import PurchasingMixin
@@ -93,7 +94,7 @@ class Ctx:
 
 class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin, NotificationMixin,
               ProductionMixin, LifecycleMixin, QualityMixin, WorktimeMixin, OrgMixin, WorkdayMixin,
-              ScheduleMixin):
+              ScheduleMixin, CalendarMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
     склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py);
     замещение и основания решений — DelegationMixin (delegation.py, D-34/D-35); уведомления — NotificationMixin
@@ -102,7 +103,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
     рекламации, CAPA, запросы и извещения об изменении — QualityMixin (quality.py, D-39); рабочее время и дневные
     отчёты — WorktimeMixin (worktime.py, D-42); оргструктура (филиалы, структуры, отделы, руководители и сотрудники)
     и маршрут проверки отчётов — OrgMixin (org.py, D-44); таймер рабочего дня и фактическое начало дня —
-    WorkdayMixin (workday.py, D-46); графики работы — ScheduleMixin (schedule.py, D-47).
+    WorkdayMixin (workday.py, D-46); графики работы — ScheduleMixin (schedule.py, D-47);
+    производственный календарь — CalendarMixin (prodcal.py, D-48).
 
     Как устроен обработчик команды (все _xxx_yyy(ctx, p, ev) следуют одной схеме — так их легко проверять):
 
@@ -213,6 +215,7 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             # Графики работы, забытое «Завершить» и фактическое окончание дня (schedule.py, workday.py; D-47).
             "workday.end_request": self._workday_end_request, "workday.end_decide": self._workday_end_decide,
             "schedule.save": self._schedule_save, "schedule.assign": self._schedule_assign,
+            "calendar.import": self._calendar_import, "calendar.day_set": self._calendar_day_set,
         }
         diff = set(self.contracts.catalog["commands"]) ^ set(self.handlers)
         if diff:
@@ -1184,6 +1187,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         out.update(self._pull_workday(conn, uid, now))
         # Графики работы (справочник), назначения и мой действующий график (D-47).
         out.update(self._pull_schedule(conn, uid, now))
+        # Производственный календарь: праздники, сокращённые дни, переносы (D-48).
+        out.update(self._pull_calendar(conn, uid, now))
         me_roles = self._me_roles(conn, uid, now)
         # Справочник людей нужен и для выбора замещающего — поэтому он приходит всем, у кого есть хоть одна роль.
         if (out["tenders"] or out["projects"] or out["calc_revisions"] or out["warehouses"] or out["needs"]

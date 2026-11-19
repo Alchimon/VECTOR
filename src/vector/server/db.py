@@ -55,7 +55,10 @@ from vector.core import money
 #   v24 — графики работы и забытое «Завершить» (D-47 — ответы на A-51): графики (work_schedules), кому какой
 #         назначен — подразделению или сотруднику (work_schedule_links), автоматические завершения дня
 #         (workday_auto_finishes) и запросы «фактическое окончание дня» (workday_end_requests). Только новые таблицы.
-SCHEMA_VERSION = 24
+#   v25 — производственный календарь (D-48 — ответ на A-52 п. 3): загруженные годы (work_calendar_years) и их дни
+#         (work_calendar_days), ручные правки дней (work_calendar_overrides), учитывает ли график календарь
+#         (work_schedule_calendar). Только новые таблицы.
+SCHEMA_VERSION = 25
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1561,6 +1564,46 @@ workday_end_requests = sa.Table("workday_end_requests", metadata,
     sa.Column("authority", U(120)),
     sa.Column("version", sa.Integer, nullable=False),
     sa.CheckConstraint(WORKDAY_REQUEST_STATUS_CHECK, name="status"))
+
+# ---- производственный календарь (D-48, ответ владельца на A-52 п. 3) ----
+# Загруженный в базу календарь на год (xmlcalendar.ru из интернета или из файла; vector.core.prodcal). Загруженный год
+# важнее встроенного в программу. Повторная загрузка года заменяет его дни (версия растёт).
+work_calendar_years = sa.Table("work_calendar_years", metadata,
+    sa.Column("year", sa.Integer, primary_key=True, autoincrement=False),
+    sa.Column("source", U(200), nullable=False),
+    sa.Column("source_date", U(10)),
+    sa.Column("days_count", sa.Integer, nullable=False),
+    sa.Column("loaded_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
+
+# Особые дни загруженного года: holiday — нерабочий (праздник / перенесённый выходной), short — сокращённый на 1 час,
+# workday — рабочий выходной (перенос). Остальные дни — по дням недели графика.
+work_calendar_days = sa.Table("work_calendar_days", metadata,
+    sa.Column("day", U(10), primary_key=True),
+    sa.Column("year", sa.Integer, sa.ForeignKey("work_calendar_years.year"), nullable=False, index=True),
+    sa.Column("kind", U(8), nullable=False),
+    sa.Column("title", U(120)),
+    sa.Column("moved_from", U(10)),
+    sa.CheckConstraint("kind IN ('holiday','short','workday')", name="kind"))
+
+# Ручная правка дня администратором (региональный праздник, решение компании): важнее загруженного и встроенного
+# календаря и сохраняется при повторной загрузке года. normal — «обычный день по графику» (снять праздник).
+work_calendar_overrides = sa.Table("work_calendar_overrides", metadata,
+    sa.Column("day", U(10), primary_key=True),
+    sa.Column("kind", U(8), nullable=False),
+    sa.Column("title", U(120)),
+    sa.Column("set_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("kind IN ('holiday','short','workday','normal')", name="kind"))
+
+# Учитывает ли график производственный календарь (в work_schedules новых полей нет — схема только дополняется
+# таблицами). Строки нет — учитывает (пятидневка); круглосуточным сменам администратор снимает отметку.
+work_schedule_calendar = sa.Table("work_schedule_calendar", metadata,
+    sa.Column("schedule_id", ID, sa.ForeignKey("work_schedules.id"), primary_key=True),
+    sa.Column("use_calendar", sa.Boolean, nullable=False),
+    sa.Column("updated_at", UtcDateTime, nullable=False))
 
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),

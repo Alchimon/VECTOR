@@ -126,7 +126,9 @@ STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_
               "org_units", "org_members", "org_events", "org_me",
               # D-47: графики работы (справочник), их назначения и мой действующий график — по нему без связи
               # считаются окно «Начните рабочий день», напоминание о конце дня и граница фактического начала.
-              "work_schedules", "work_schedule_links", "workday_schedule")
+              "work_schedules", "work_schedule_links", "workday_schedule",
+              # D-48: производственный календарь — праздники, сокращённые дни, переносы выходных.
+              "work_calendar")
 
 
 # Онлайн-команды, которым не нужно сначала отправить очередь (их результат не зависит от неотправленных правок).
@@ -812,7 +814,15 @@ class SyncClient:
             day = work_date if isinstance(work_date, date) else date.fromisoformat(str(work_date or ""))
         except ValueError:
             return None
-        return sch.window(self.workday_schedule_info().get("schedule"), day, tz)
+        return sch.window(self.workday_schedule_info().get("schedule"), day, tz, self.workday_calendar(day))
+
+    def workday_calendar(self, day: Optional[date] = None) -> dict:
+        """Действующий производственный календарь ({ГГГГ-ММ-ДД: {kind, title, origin}}) из последнего pull; до него —
+        встроенный в программу (D-48). Праздник — день нерабочий, рабочая суббота — рабочий, сокращённый — конец
+        на час раньше (у графиков, которые учитывают календарь)."""
+        from .workday_view import calendar_days
+        meta = self.get_meta("work_calendar") if self.db is not None else None
+        return calendar_days(meta, day or self.now().date())
 
     def workday_prompt_needed(self, tz=None) -> bool:
         """Показать ли окно «Начните рабочий день» (A-49 п. 4; D-47 — A-51 пп. 3–4: обязательно, без «Позже»):
@@ -830,6 +840,44 @@ class SyncClient:
         if info.get("exempt") or self.workday_window(today, tz) is None:
             return False
         return wdy.need_start_prompt((cur or {}).get("events") or [])
+
+    # ------------------------------------------------------------ производственный календарь (D-48, A-52 п. 3)
+    def calendar_download(self, year: int, urls=None, timeout: float = 15.0) -> dict:
+        """Скачать производственный календарь на год с xmlcalendar.ru (или его копий — vector.core.prodcal.URLS, по
+        порядку, пока один не ответит) и проверить его. Интернет нужен только этому компьютеру (администратора), не
+        серверу. Ответ: {ok, xml, source, message}; ошибка сети или неверный файл — ok = False с причиной.
+
+        Размер ответа ограничен (MAX_XML); файл проверяется теми же правилами, что на сервере (parse_xml) — сервер
+        проверит ещё раз."""
+        import urllib.error
+        import urllib.request
+        from vector.core import prodcal as pc
+        problems = []
+        for tpl in urls or pc.URLS:
+            url = tpl.format(year=year)
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "VECTOR production calendar"})
+                with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — адреса из списка программы
+                    raw = resp.read(pc.MAX_XML + 1)
+                text = raw.decode("utf-8-sig")
+                pc.parse_xml(text, year)
+                return {"ok": True, "xml": text, "source": url, "message": ""}
+            except pc.CalendarError as e:
+                problems.append(f"{url}: {e.message_ru}")
+            except urllib.error.HTTPError as e:
+                problems.append(f"{url}: ответ {e.code}" + (" — календарь на этот год ещё не опубликован"
+                                                             if e.code == 404 else ""))
+            except (urllib.error.URLError, OSError, UnicodeDecodeError, ValueError) as e:
+                problems.append(f"{url}: {getattr(e, 'reason', e)}")
+        return {"ok": False, "xml": "", "source": "",
+                "message": f"Не удалось скачать календарь на {year} год. " + "; ".join(problems[-1:])}
+
+    def calendar_import(self, year: int, xml: str, source: str) -> LocalResult:
+        """Загрузить календарь на сервер (calendar.import, только при связи) и сразу обновить снимок."""
+        r = self.execute("calendar.import", {"year": year, "xml": xml, "source": source})
+        if r.status == "accepted":
+            self.pull()
+        return r
 
     def workday_open_days(self) -> list[dict]:
         """Свои незавершённые рабочие дни из кэша (обычно один — сегодняшний; забытые — тоже), старые — первыми."""

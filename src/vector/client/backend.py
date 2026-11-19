@@ -10,6 +10,7 @@ import logging
 import os
 import platform
 import re
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -24,7 +25,7 @@ from vector.core import stock
 from vector.core.contracts import Contracts
 
 from . import (calc_view, delegation_view, hints, lifecycle_view, notification_view, production_view, purchasing_view,
-               org_view, quality_view, stock_view, workday_view, worktime_view)
+               org_view, prodcal_view, quality_view, stock_view, workday_view, worktime_view)
 from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
 from .vault import KeyringStore, MemoryStore, VaultError
@@ -191,6 +192,7 @@ class Backend(QObject):
     dataChanged = Signal()
     orgChanged = Signal()                    # раздел «Оргструктура»: данные или строка поиска (D-44)
     toast = Signal(str, str)                 # kind (success|info|warning|error), text
+    _calendarFetched = Signal(object)        # D-48: календарь скачан в фоне (из потока загрузки — в поток интерфейса)
     commandDone = Signal(str, "QVariant")    # request tag, result dict
     queryDone = Signal(str, "QVariant")
     _deliver = Signal(int, object)
@@ -242,6 +244,11 @@ class Backend(QObject):
         # Строка поиска раздела «Оргструктура» (D-44) — состояние экрана; новые данные тоже перестраивают раздел.
         self._org_query = ""
         self.dataChanged.connect(self.orgChanged)
+        # Производственный календарь (D-48): выбранный год в окне и попытки фоновой загрузки — {год: дата попытки},
+        # чтобы программа администратора пробовала скачать календарь не чаще раза в день.
+        self._calendar_year = 0
+        self._calendar_tried: dict = {}
+        self._calendarFetched.connect(self._calendar_fetched)
         # Наибольший id уведомления, о котором уже сказали (None — ещё не было снимка после входа, D-35).
         self._notify_seen: Optional[int] = None
         # Склад: снимок остатков/резервов/журнала/потребностей на момент последнего обновления (meta кэша).
@@ -929,7 +936,8 @@ class Backend(QObject):
             days, self._data.get("workday_start_request", []), self._me.get("user_id") or "", self._people,
             self._online and self._session_mode == "online", self._now(), self._workday_prompt,
             end_requests=self._data.get("workday_end_request", []), schedule=self._stock.get("workday_schedule"),
-            reminder=self._workday_reminder if self._workday_prompt_auto else None))
+            reminder=self._workday_reminder if self._workday_prompt_auto else None,
+            calendar=self._stock.get("work_calendar")))
 
     @Slot(str, str)
     def workdayMark(self, tag: str, event: str):
@@ -1046,7 +1054,8 @@ class Backend(QObject):
         days = self._data.get("workday", [])
         cur = next((d for d in days if d.get("id") == self.workdayOverview.get("id")), None) or {}
         return qml_safe(workday_view.parse_start_time(text, cur, self._now(),
-                                                      schedule=self._stock.get("workday_schedule")))
+                                                      schedule=self._stock.get("workday_schedule"),
+                                                      calendar=self._stock.get("work_calendar")))
 
     @Slot(str, str, str, str)
     def workdayStartRequest(self, tag: str, workday_id: str, start_at: str, reason: str):
@@ -1080,6 +1089,133 @@ class Backend(QObject):
         """Поиск в оргструктуре: по названию, коду, руководителю и сотрудникам."""
         self._org_query = q or ""
         self.orgChanged.emit()
+
+    # ------------------------------------------------------------ производственный календарь (D-48, A-52 п. 3)
+    @Property("QVariantMap", notify=orgChanged)
+    def calendarOverview(self):
+        """Окно «Производственный календарь»: годы и откуда календарь, особые дни выбранного года, что можно
+        администратору (prodcal_view.calendar_view)."""
+        return qml_safe(prodcal_view.calendar_view(self._stock.get("work_calendar"), self._calendar_year,
+                                                   self._online and self._session_mode == "online",
+                                                   self._now().astimezone().date()))
+
+    @Slot(int)
+    def setCalendarYear(self, year: int):
+        """Выбрать год в окне «Производственный календарь»."""
+        self._calendar_year = int(year)
+        self.orgChanged.emit()
+
+    @Slot(str, result=str)
+    def calendarDayIso(self, text: str) -> str:
+        """Поле «Дата» формы «Изменить день»: «30.12.2026» → «2026-12-30»; неверная — пусто."""
+        return prodcal_view.parse_day(text) or ""
+
+    @Slot(str, int)
+    def calendarDownload(self, tag: str, year: int):
+        """«Загрузить из интернета»: скачать календарь на год с xmlcalendar.ru (этот компьютер, не сервер) и
+        загрузить на сервер (calendar.import, только при связи)."""
+        year = int(year)
+
+        def job():
+            """Скачать, проверить и загрузить в рабочем потоке."""
+            got = self.client.calendar_download(year)
+            if not got["ok"]:
+                return {"result": {"status": "rejected", "message_ru": got["message"], "response": None,
+                                   "operation_id": None}, "snap": self._snapshot(False)}
+            r = self.client.calendar_import(year, got["xml"], got["source"])
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "calendar.import", res, self._calendar_ok(res, year)))
+
+    @Slot(str, int, str)
+    def calendarImportFile(self, tag: str, year: int, file_url: str):
+        """«Загрузить из файла»: XML формата xmlcalendar.ru с диска (если у сервера и у этого компьютера нет
+        интернета — файл можно принести на флешке) → calendar.import."""
+        year = int(year)
+        path = Path(QUrl(file_url).toLocalFile() if "://" in file_url else file_url)
+
+        def job():
+            """Прочитать файл (не больше 64 КБ) и загрузить в рабочем потоке."""
+            try:
+                raw = path.read_bytes()[:prodcal_view.pc.MAX_XML + 1]
+                text = raw.decode("utf-8-sig")
+            except (OSError, UnicodeDecodeError) as e:
+                return {"result": {"status": "rejected", "message_ru": f"Не удалось прочитать файл: {e}.",
+                                   "response": None, "operation_id": None}, "snap": self._snapshot(False)}
+            r = self.client.calendar_import(year, text, "файл " + path.name)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "calendar.import", res, self._calendar_ok(res, year)))
+
+    @staticmethod
+    def _calendar_ok(res: dict, year: int) -> str:
+        """Текст уведомления об успешной загрузке: «Календарь на 2027 год загружен: праздничных…»."""
+        r = ((res or {}).get("result") or {}).get("response") or {}
+        y = r.get("work_calendar_year") or {}
+        return f"Производственный календарь на {year} год загружен: {y.get('counts_label') or 'готово'}."
+
+    @Slot(str, str, str, str)
+    def calendarDaySet(self, tag: str, day_text: str, kind: str, title: str):
+        """«Изменить день»: ручная правка дня календаря (calendar.day_set, только при связи); kind пусто — убрать
+        правку. Ожидаемая версия — версия правки, которую видел администратор."""
+        iso_day = prodcal_view.parse_day(day_text) or day_text
+        cur = next((o for o in (self._stock.get("work_calendar") or {}).get("overrides") or []
+                    if o.get("date") == iso_day), None)
+        payload = {"date": iso_day, "kind": kind or None, "title": title or None}
+
+        def job():
+            """Команда в рабочем потоке и снимок."""
+            r = self.client.execute("calendar.day_set", payload, (cur or {}).get("version"))
+            if r.status == "accepted":
+                self.client.pull()
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._finish_command(tag, "calendar.day_set", res,
+                                                        "День производственного календаря сохранён."))
+
+    def _calendar_auto(self):
+        """Каждый год сам (A-52 п. 3: «подтягиваться с нужных ресурсов на каждый год»): программа администратора при
+        связи скачивает календарь на годы, которые сервер просит загрузить (текущий — если не загружен; с октября —
+        следующий), не чаще раза в день на год. Скачивание — в отдельном потоке (интерфейс не ждёт сети); загрузка
+        на сервер — обычным заданием. В тестах и на стенде интерфейса (auto_timers=False) — выключено."""
+        if not (self._workday_prompt_auto and self.client and self._online and self._session_mode == "online"):
+            return
+        cal = self._stock.get("work_calendar") or {}
+        today = self._now().date().isoformat()
+        years = [int(y) for y in cal.get("auto_years") or [] if self._calendar_tried.get(int(y)) != today]
+        if not cal.get("manage") or not years:
+            return
+        for y in years:
+            self._calendar_tried[y] = today
+        client = self.client
+
+        def fetch():
+            """Поток загрузки: только сеть (без базы клиента); итог — сигналом в поток интерфейса."""
+            out = []
+            for y in years:
+                try:
+                    out.append((y, client.calendar_download(y)))
+                except Exception:  # сеть — не повод ронять программу; попробуем завтра
+                    log.exception("calendar download failed")
+            self._calendarFetched.emit(out)
+        threading.Thread(target=fetch, name="calendar-download", daemon=True).start()
+
+    def _calendar_fetched(self, got):
+        """Скачанные календари → calendar.import (только успешно скачанные; остальные — завтра)."""
+        ok = [(y, g) for y, g in got or [] if g.get("ok")]
+        if not ok or not self.client or not self.client.token:
+            return
+
+        def job():
+            """Загрузить на сервер в рабочем потоке."""
+            done = [y for y, g in ok if self.client.calendar_import(y, g["xml"], g["source"] + " (автоматически)")
+                    .status == "accepted"]
+            return {"years": done, "snap": self._snapshot(False)}
+
+        def fin(res):
+            """Снимок и уведомление администратору."""
+            self._apply_snapshot(res.get("snap"))
+            if res.get("years"):
+                self.toast.emit("info", "Производственный календарь загружен автоматически с xmlcalendar.ru: "
+                                        + ", ".join(f"{y} год" for y in res["years"]) + ".")
+        self._run(job, fin)
 
     @Property("QVariantMap", notify=dataChanged)
     def suppliersOverview(self):
@@ -1343,6 +1479,7 @@ class Backend(QObject):
             # по чужому состоянию (для него посчитается со своим снимком).
             self._workday_prompt = False
             self._workday_reminder, self._workday_reminded = {}, set()
+            self._calendar_year, self._calendar_tried = 0, {}
             self.changed.emit()
             self.dataChanged.emit()
         self._run(lambda: self.client.logout() if self.client else None, done)
@@ -1395,6 +1532,7 @@ class Backend(QObject):
         self._announce_notifications()
         self.changed.emit()
         self.dataChanged.emit()
+        self._calendar_auto()
 
     def _refresh_after(self, then, pull: bool):
         """Обновить снимок (с синхронизацией или без) и затем вызвать then()."""
@@ -1497,7 +1635,9 @@ class Backend(QObject):
                                  # (подтверждённое начало) и рассылает уведомления — сразу перечитываем снимок.
                                  "workday",
                                  # D-47: графики работы и их назначения приходят только снимком (справочник компании).
-                                 "schedule"})
+                                 "schedule",
+                                 # D-48: производственный календарь — тоже только снимком.
+                                 "calendar"})
 
     def _finish_command(self, tag: str, command: str, res: dict, ok_text: str = ""):
         """Общий разбор результата команды: снимок данных, уведомление, сигнал commandDone для формы. ok_text — своё

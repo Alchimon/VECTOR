@@ -5,8 +5,9 @@
 
 Команды (только при связи — меняют справочник компании; ведут администраторы, как оргструктуру — A-50 п. 1):
 
-    schedule.save   {id, name, start_time, end_time, break_minutes, weekdays, is_default?, active?}
-                    — создать график (новый id) или изменить (с ожидаемой версией); active = false — в архив
+    schedule.save   {id, name, start_time, end_time, break_minutes, weekdays, is_default?, active?, use_calendar?}
+                    — создать график (новый id) или изменить (с ожидаемой версией); active = false — в архив;
+                      use_calendar — учитывать производственный календарь (D-48; по умолчанию — да)
     schedule.assign {target_kind (unit|user), target_id, schedule_id?, exempt?}
                     — назначить график подразделению или сотруднику; пусто — снять (действует график выше по
                       оргструктуре или «по умолчанию»); exempt — «учёт рабочего времени не ведётся» (только сотруднику)
@@ -24,7 +25,7 @@ import sqlalchemy as sa
 from vector.core import schedule as sch
 from vector.core.errors import Rejected
 
-from .db import org_members, org_units, users, work_schedule_links, work_schedules
+from .db import org_members, org_units, users, work_schedule_calendar, work_schedule_links, work_schedules
 from .validation import iso, only_keys, req_uuid
 
 
@@ -45,7 +46,8 @@ class ScheduleMixin:
         """График для клиента: поля, подпись правила («08:00–17:00, пн–пт, перерыв 60 мин»), версия."""
         return {"id": o["id"], "name": o["name"], "start_time": o["start_time"], "end_time": o["end_time"],
                 "break_minutes": o["break_minutes"], "weekdays": o["weekdays"], "is_default": bool(o["is_default"]),
-                "active": bool(o["active"]), "label": sch.label(o), "version": o["version"],
+                "active": bool(o["active"]), "use_calendar": sch.uses_calendar(o), "label": sch.label(o),
+                "version": o["version"],
                 "updated_at": iso(o["updated_at"])}
 
     @staticmethod
@@ -56,8 +58,21 @@ class ScheduleMixin:
                 "updated_at": iso(o["updated_at"])}
 
     def _schedules(self, conn) -> list[dict]:
-        """Все графики (с архивными), по названию."""
-        return [dict(r._mapping) for r in conn.execute(sa.select(work_schedules).order_by(work_schedules.c.name))]
+        """Все графики (с архивными), по названию; use_calendar — учитывает ли график производственный календарь
+        (отдельная таблица work_schedule_calendar, D-48: строки нет — учитывает)."""
+        cal = {r.schedule_id: bool(r.use_calendar) for r in conn.execute(sa.select(work_schedule_calendar))}
+        return [{**dict(r._mapping), "use_calendar": cal.get(r.id, True)}
+                for r in conn.execute(sa.select(work_schedules).order_by(work_schedules.c.name))]
+
+    def _schedule_get(self, conn, sid: str) -> Optional[dict]:
+        """Один график с отметкой use_calendar (или None)."""
+        return next((s for s in self._schedules(conn) if s["id"] == sid), None)
+
+    def _schedule_set_calendar(self, conn, sid: str, use: bool, now) -> None:
+        """Записать отметку «учитывать производственный календарь» (одна строка на график)."""
+        t = work_schedule_calendar
+        if conn.execute(t.update().where(t.c.schedule_id == sid).values(use_calendar=use, updated_at=now)).rowcount == 0:
+            conn.execute(t.insert().values(schedule_id=sid, use_calendar=use, updated_at=now))
 
     def _schedule_links(self, conn) -> list[dict]:
         """Все назначения графиков."""
@@ -74,16 +89,20 @@ class ScheduleMixin:
 
     # ------------------------------------------------------------ schedule.save
     def _schedule_save(self, ctx, p, ev):
-        """schedule.save {id, name, start_time, end_time, break_minutes, weekdays, is_default?, active?} — создать
-        или изменить график работы (администратор, при связи). «По умолчанию» в компании — один график: отметка
-        снимается с прежнего. В архив нельзя график «по умолчанию» (сначала отметьте другой)."""
-        only_keys(p, {"id", "name", "start_time", "end_time", "break_minutes", "weekdays", "is_default", "active"})
+        """schedule.save {id, name, start_time, end_time, break_minutes, weekdays, is_default?, active?,
+        use_calendar?} — создать или изменить график работы (администратор, при связи). «По умолчанию» в компании —
+        один график: отметка снимается с прежнего. В архив нельзя график «по умолчанию» (сначала отметьте другой).
+        use_calendar (D-48): учитывать производственный календарь; не передано — у нового графика «да», у
+        существующего — как было."""
+        only_keys(p, {"id", "name", "start_time", "end_time", "break_minutes", "weekdays", "is_default", "active",
+                      "use_calendar"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "schedule.save", ctx.now)
         sid = req_uuid(p, "id")
         f = _s(sch.check_schedule, p)
         is_default = p.get("is_default", False)
         active = p.get("active", True)
-        for k, v in (("is_default", is_default), ("active", active)):
+        use_cal = p.get("use_calendar")
+        for k, v in (("is_default", is_default), ("active", active)) + ((("use_calendar", use_cal),) if use_cal is not None else ()):
             if not isinstance(v, bool):
                 raise Rejected("invalid_value", "Ожидается да или нет.", {"field": k})
         if is_default and not active:
@@ -102,8 +121,10 @@ class ScheduleMixin:
         if o is None:
             ctx.conn.execute(work_schedules.insert().values(id=sid, **f, is_default=is_default, active=active,
                                                             version=1, created_at=ctx.now, updated_at=ctx.now))
-            n = self._get(ctx.conn, work_schedules, sid)
-            ctx.log("work_schedule", sid, auth, None, 1, {"event": "WorkScheduleCreated", **f, "is_default": is_default})
+            self._schedule_set_calendar(ctx.conn, sid, True if use_cal is None else use_cal, ctx.now)
+            n = self._schedule_get(ctx.conn, sid)
+            ctx.log("work_schedule", sid, auth, None, 1, {"event": "WorkScheduleCreated", **f, "is_default": is_default,
+                                                         "use_calendar": n["use_calendar"]})
         else:
             self._check_version(o, ev, self.v_schedule)
             if o["is_default"] and not is_default and not any(
@@ -114,8 +135,12 @@ class ScheduleMixin:
                                                    "график.", {"field": "is_default"})
             n = self._update_versioned(ctx, work_schedules, o, {**f, "is_default": is_default, "active": active,
                                                                 "updated_at": ctx.now})
+            if use_cal is not None:
+                self._schedule_set_calendar(ctx.conn, sid, use_cal, ctx.now)
+            n = self._schedule_get(ctx.conn, sid)
             ctx.log("work_schedule", sid, auth, o["version"], n["version"],
-                    {"event": "WorkScheduleUpdated", **f, "is_default": is_default, "active": active})
+                    {"event": "WorkScheduleUpdated", **f, "is_default": is_default, "active": active,
+                     "use_calendar": n["use_calendar"]})
         return {"work_schedule": self.v_schedule(n)}
 
     # ------------------------------------------------------------ schedule.assign
