@@ -461,6 +461,32 @@ class WorktimeMixin:
                                             actor_id=ctx.user_id, authority=authority.describe(), at=ctx.now))
         self._record_basis(ctx, "overtime_event", f"{rid}#{seq}", 1, authority)
 
+    def _check_overtime_legal_limits(self, conn, user_id: str, work_date: date, minutes: int, exclude_id: str | None = None) -> None:
+        """Reserve statutory overtime limits conservatively: no more than 4 hours per day and 120 per calendar year.
+
+        Holiday/weekend work uses separate labor-code limits and does not consume this overtime bucket. We do not enable
+        any increased annual cap here: it requires a qualifying collective/sector agreement and employee safeguards
+        that are not represented in the current HR data model.
+        """
+        table = overtime_requests
+        base = [table.c.user_id == user_id, table.c.kind == "overtime",
+                table.c.status.in_(("pending", "approved"))]
+        if exclude_id:
+            base.append(table.c.id != exclude_id)
+        day_total = conn.execute(sa.select(sa.func.coalesce(sa.func.sum(table.c.minutes), 0)).where(
+            *base, table.c.work_date == work_date)).scalar_one()
+        if int(day_total) + minutes > 4 * 60:
+            raise Rejected("daily_overtime_limit", "Сверхурочная работа ограничена четырьмя часами в день.",
+                           {"date": work_date.isoformat(), "already_reserved_minutes": int(day_total),
+                            "requested_minutes": minutes, "limit_minutes": 240})
+        year_start, year_end = date(work_date.year, 1, 1), date(work_date.year, 12, 31)
+        year_total = conn.execute(sa.select(sa.func.coalesce(sa.func.sum(table.c.minutes), 0)).where(
+            *base, table.c.work_date >= year_start, table.c.work_date <= year_end)).scalar_one()
+        if int(year_total) + minutes > 120 * 60:
+            raise Rejected("annual_overtime_limit", "Годовой лимит сверхурочной работы — 120 часов; повышенный лимит не настроен.",
+                           {"year": work_date.year, "already_reserved_minutes": int(year_total),
+                            "requested_minutes": minutes, "limit_minutes": 7200})
+
     def _overtime_request_create(self, ctx, p, ev):
         """Создать предварительную заявку или срочную запись после факта: минуты и причину вводит сам сотрудник, никакие действия программы не выводятся автоматически."""
         only_keys(p, {"id", "work_date", "start_at", "end_at", "minutes", "kind", "mode", "reason"})
@@ -496,6 +522,8 @@ class WorktimeMixin:
         if kind == "overtime" and day_type in ("holiday", "weekend"):
             raise Rejected("day_kind_mismatch", "Для работы в нерабочий день выберите «выходной» или «праздник».",
                            {"field": "kind", "day_type": day_type})
+        if kind == "overtime":
+            self._check_overtime_legal_limits(ctx.conn, ctx.user_id, work_date, minutes)
         raw_start = p.get("start_at")
         try:
             local_start = raw_start if isinstance(raw_start, datetime) else datetime.fromisoformat(str(raw_start).replace("Z", "+00:00"))
@@ -546,6 +574,9 @@ class WorktimeMixin:
         if decision not in ("approve", "reject"):
             raise Rejected("invalid_decision", "Выберите «согласовать» или «отклонить».", {"field": "decision"})
         comment = _w(wd.parse_reason, p.get("comment"), decision == "reject", "comment", "причину отказа")
+        if decision == "approve" and o["kind"] == "overtime":
+            # Pending applications reserve capacity, and the same limits are rechecked at decision time.
+            self._check_overtime_legal_limits(ctx.conn, o["user_id"], o["work_date"], int(o["minutes"]), o["id"])
         status = "approved" if decision == "approve" else "rejected"
         n = self._update_versioned(ctx, overtime_requests, o, {"status": status, "decided_by": ctx.user_id,
             "decided_at": ctx.now, "decision_comment": comment, "authority": auth.describe()})

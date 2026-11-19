@@ -1,4 +1,6 @@
 """A-55/A-56: explicit overtime/off-day requests and separate manager decisions; never infer activity or calculate money."""
+from datetime import date, datetime, timedelta, timezone
+
 import sqlalchemy as sa
 
 from conftest import new_id
@@ -59,6 +61,40 @@ def test_company_must_select_accounting_period_before_requests(world):
                "end_at": "2026-11-17T19:00:00+03:00", "minutes": 60, "kind": "overtime",
                "mode": "planned", "reason": "Подготовка испытаний"}
     assert employee.cmd("overtime.request", payload)["code"] == "period_not_configured"
+
+
+def test_daily_overtime_cap_rejects_excess_at_creation(world):
+    """The worker cannot reserve more than four overtime hours in one calendar day."""
+    world.admin.ok("overtime.period_set", {"mode": "month"})
+    employee = world.login("eng1")
+    base = {"work_date": "2026-11-17", "start_at": "2026-11-17T18:00:00+03:00",
+            "end_at": "2026-11-17T23:00:00+03:00", "minutes": 241, "kind": "overtime",
+            "mode": "planned", "reason": "Испытание дневного ограничения"}
+    result = employee.cmd("overtime.request", {"id": new_id(), **base})
+    assert result["code"] == "daily_overtime_limit"
+
+
+def test_annual_overtime_cap_rejects_reservation(world):
+    """Without validated agreement/HR scope, annual overtime is conservatively capped at 120 hours."""
+    world.admin.ok("overtime.period_set", {"mode": "month"})
+    user_id = world.users["eng1"]
+    first = date(2026, 11, 17)
+    rows = []
+    for index in range(30):
+        day = first + timedelta(days=index)
+        start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc)
+        rows.append({"id": new_id(), "user_id": user_id, "work_date": day, "start_at": start,
+                     "end_at": start + timedelta(hours=4), "minutes": 240, "kind": "overtime", "mode": "planned",
+                     "reason": "Existing approved overtime", "status": "approved", "created_at": world.clock.now(),
+                     "decided_by": world.users["head1"], "decided_at": world.clock.now(),
+                     "decision_comment": None, "authority": "test", "version": 2})
+    with world.svc.engine.begin() as conn:
+        conn.execute(db.overtime_requests.insert(), rows)
+    employee = world.login("eng1")
+    result = employee.cmd("overtime.request", {"id": new_id(), "work_date": "2026-12-17",
+        "start_at": "2026-12-17T18:00:00+03:00", "end_at": "2026-12-17T19:00:00+03:00", "minutes": 60,
+        "kind": "overtime", "mode": "planned", "reason": "Испытание годового ограничения"})
+    assert result["code"] == "annual_overtime_limit"
 
 
 def test_period_close_is_blocked_by_pending_decision(world):
