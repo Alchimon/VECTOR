@@ -1,4 +1,4 @@
-"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-22).
+"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-23).
 
 Запускается ПОСЛЕ установки, при запущенном сервере стенда, Python-ом из окружения стенда:
 
@@ -301,6 +301,8 @@ def main(argv: list[str] | None = None) -> int:
     check_schedule(rep, sessions)
     print("\n13. Производственный календарь: праздники, сокращённые дни, переносы (D-48, П-22)")
     check_calendar(rep, sessions)
+    print("\n14. Сверхурочно, работа в выходной и праздник; настройки напоминания (D-49, П-23)")
+    check_day_marks(rep, sessions)
     return finish(rep, tmp)
 
 
@@ -444,6 +446,37 @@ def check_calendar(rep: Report, sessions: dict) -> None:
         rep.warn("у «Смены наладчиков» включён производственный календарь — " + FRESH_HINT)
 
 
+def check_day_marks(rep: Report, sessions: dict) -> None:
+    """Раздел 14 (D-49, ответы владельца на A-53): v.zaitseva видит в отправленных отчётах сотрудников отметки дня
+    (сверхурочно, работа в выходной / праздничный день); интервалы напоминания о конце дня — из настроек компании.
+    Только чтение (pull)."""
+    boss = sessions.get("v.zaitseva")
+    if boss is None:
+        rep.warn("нет входа v.zaitseva — отметки дня не проверить")
+        return
+    reports = [r for r in boss.list_local("daily_report") if r.get("user_id") != boss.user_id]
+    if reports and all("day_marks" not in r for r in reports):
+        rep.warn("в отчётах нет отметок дня — обновите стенд (update.cmd): отметки появились в D-49")
+        return
+    marks = [r["day_marks"] for r in reports if (r.get("day_marks") or {}).get("mark")]
+    over = sum(1 for m in marks if m["mark"] == "overtime")
+    off = sum(1 for m in marks if m["mark"] in ("weekend", "holiday"))
+    if over and off:
+        rep.ok(f"v.zaitseva видит отметки в отчётах сотрудников: сверхурочно — {over}, работа в выходной или праздник "
+               f"— {off} (например: «{next(m['label'] for m in marks if m['mark'] != 'overtime')}»)")
+    else:
+        rep.warn("v.zaitseva не видит отчётов со сверхурочными и работой в выходной (демо-отчёты s.morozov и "
+                 "o.nikitina) — " + FRESH_HINT)
+    cfg = {c.get("key"): c for c in boss.get_meta("config") or []}
+    rem, wait = cfg.get("workday.reminder_repeat"), cfg.get("workday.auto_finish_wait")
+    if rem is None or wait is None:
+        rep.warn("в настройках компании нет интервалов напоминания — обновите стенд (update.cmd): они появились в D-49")
+    else:
+        rep.ok(f"настройки компании: повтор напоминания — {rem.get('value_label_ru') or rem.get('value')}; "
+               f"автоматическое завершение — {wait.get('value_label_ru') or wait.get('value')}"
+               + ("" if rem.get("is_set") or wait.get("is_set") else " (не заданы — действуют решения владельца)"))
+
+
 def finish(rep: Report, tmp=None) -> int:
     """Удалить временный кэш и напечатать итог; код выхода — 1 при ошибках."""
     if tmp is not None:
@@ -456,7 +489,7 @@ def finish(rep: Report, tmp=None) -> int:
         print(f"ИТОГ: стенд работает; предупреждений {len(rep.warnings)} — часть сценариев на этих данных не проверить "
               "(см. выше).")
     else:
-        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-22; сценарии — test-pc.md § 6).")
+        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-23; сценарии — test-pc.md § 6).")
     return 0
 
 

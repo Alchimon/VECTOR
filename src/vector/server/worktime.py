@@ -40,6 +40,7 @@ from typing import Any, Optional
 
 import sqlalchemy as sa
 
+from vector.core import workday as wd
 from vector.core import worktime as wt
 from vector.core.errors import Conflict, Denied, Rejected
 
@@ -141,8 +142,26 @@ class WorktimeMixin:
                  "project_title": r.project_title, "task_id": r.task_id, "task_title": r.task_title,
                  "minutes": r.minutes, "note": r.note, "source": src.get(r.line_no)} for r in rows]
 
-    def v_daily_report(self, conn, o: dict) -> dict:
-        """Дневной отчёт для клиента: смена «ЧЧ:ММ», строки, итоги, статус, проверка и история."""
+    def _report_marks(self, conn, o: dict, cache: Optional[dict] = None) -> dict:
+        """Отметки дня отчёта (D-49, A-53 п. 3): работа в праздничный / выходной день, сверхурочно — по «чистому»
+        времени смены (без перерыва) против нормы графика автора на эту дату (график и производственный календарь —
+        действующие сейчас: отметка пересчитывается, если администратор поправил график или календарь). cache —
+        {("s", user_id): график, ("c", год): календарь} на время одного pull, чтобы не читать их на каждый отчёт."""
+        cache = {} if cache is None else cache
+        key = ("s", o["user_id"])
+        if key not in cache:
+            cache[key] = self._schedule_for(conn, o["user_id"])
+        eff = cache[key]
+        day = o["work_date"]
+        ckey = ("c", day.year)
+        if ckey not in cache:
+            cache[ckey] = self._calendar_around(conn, day)
+        net = wt.shift_net(o["shift_start"], o["shift_end"], o["break_minutes"])
+        return wd.day_marks(eff["schedule"], day, net, cache[ckey], bool(eff["exempt"]))
+
+    def v_daily_report(self, conn, o: dict, cache: Optional[dict] = None) -> dict:
+        """Дневной отчёт для клиента: смена «ЧЧ:ММ», строки, итоги, статус, проверка и история; отметки дня
+        (праздник, выходной, сверхурочно — D-49)."""
         auto = self._get(conn, daily_report_auto, o["id"], "report_id")
         return {"id": o["id"], "user_id": o["user_id"], "work_date": o["work_date"].isoformat(), "status": o["status"],
                 "status_label": wt.STATUS_LABELS_RU[o["status"]], "origin": "auto" if auto else "manual",
@@ -153,7 +172,7 @@ class WorktimeMixin:
                 "lines": self._report_lines(conn, o["id"]), "submitted_at": iso(o["submitted_at"]),
                 "reviewed_by": o["reviewed_by"], "reviewed_at": iso(o["reviewed_at"]), "review_comment": o["review_comment"],
                 "version": o["version"], "created_at": iso(o["created_at"]), "updated_at": iso(o["updated_at"]),
-                "history": self._whistory(conn, o["id"])}
+                "history": self._whistory(conn, o["id"]), "day_marks": self._report_marks(conn, o, cache)}
 
     # ------------------------------------------------------------ общие проверки
     def _own_report(self, ctx, rid: Any, ev: Optional[int]) -> dict:
@@ -396,7 +415,8 @@ class WorktimeMixin:
         mine = [{"id": r.id, "code": r.code, "title": r.title}
                 for r in conn.execute(sa.select(projects.c.id, projects.c.code, projects.c.title).order_by(projects.c.code))
                 if project_member(conn, uid, r.id, now)]
-        return {"daily_reports": [self.v_daily_report(conn, dict(r._mapping)) for r in rows],
+        cache: dict = {}
+        return {"daily_reports": [self.v_daily_report(conn, dict(r._mapping), cache) for r in rows],
                 "worktime_projects": mine, "worktime_reviewer": reviewer,
                 "worktime_activity": self._worktime_activity(conn, uid, now)}
 

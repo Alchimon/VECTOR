@@ -21,6 +21,16 @@
   программа была закрыта) день завершается автоматически — в конце по графику (или когда истекло «работаю дальше»);
   работал дольше — «фактическое окончание» через согласование руководителя, как фактическое начало.
 
+Ответы владельца на A-53 (D-49):
+
+* п. 1 — «да, но надо исключить тот факт, что человек заработался и не нажал, а он по факту работал»: пока за
+  компьютером работают (клавиатура, мышь — программа знает только время последнего нажатия, ничего больше), день
+  сам не завершается; ушли — день завершается **временем последней активности** (не раньше конца по графику или
+  повторного напоминания): reminder_state, auto_finish_time;
+* п. 3 — работу в праздничные и выходные дни отметить, время сверх нормы — «сверхурочно»: day_marks;
+* п. 5 — «дать возможность менять» интервалы: повтор напоминания и ожидание до автоматического завершения —
+  настройки компании (workday.reminder_repeat, workday.auto_finish_wait; settings_minutes).
+
 Чистые функции без БД и Qt — общие для сервера (проверка событий при синхронизации) и клиента (живой таймер,
 окно «Начните рабочий день», напоминание о конце дня, заполнение смены отчёта).
 
@@ -33,6 +43,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable, Optional
 
+from . import schedule as sch
 from .lifecycle import LifecycleError
 
 EVENTS = ("start", "pause", "resume", "finish")
@@ -51,6 +62,14 @@ REQUEST_WINDOW = timedelta(hours=24)  # согласовать фактичес�
 SNOOZE = timedelta(hours=1)          # «Работаю дальше» — напомнить снова через час (A-51 п. 5)
 AUTO_FINISH_AFTER = timedelta(minutes=30)   # напоминание без ответа 30 минут — день завершается автоматически
 MAX_REASON = 500
+# Настройки компании (D-49, A-53 п. 5): ключ → (значение по умолчанию, допустимые минуты). Значения в каталоге
+# настроек — строки («60»), как у всех вариантов перечисления (contracts/settings.slice1.json).
+SETTING_REMIND = "workday.reminder_repeat"
+SETTING_WAIT = "workday.auto_finish_wait"
+SETTING_CHOICES = {SETTING_REMIND: (60, (15, 30, 60, 90, 120)), SETTING_WAIT: (30, (15, 30, 60, 120))}
+# Отметки рабочего дня (D-49, A-53 п. 3): тип дня по графику и производственному календарю.
+DAY_TYPE_LABELS_RU = {"workday": "рабочий день", "short": "сокращённый день", "weekend": "выходной день",
+                      "holiday": "праздничный день"}
 
 REQUEST_STATUSES = ("pending", "approved", "rejected")
 REQUEST_LABELS_RU = {"pending": "На согласовании", "approved": "Согласовано", "rejected": "Отклонено"}
@@ -272,31 +291,148 @@ def check_end_request(state: dict, requested: datetime, now: datetime) -> None:
 
 
 def due_at(state: dict, schedule_end: Optional[datetime], schedule_minutes: int,
-           snooze_until: Optional[datetime] = None) -> Optional[datetime]:
+           snooze_until: Optional[datetime] = None, snooze: timedelta = SNOOZE) -> Optional[datetime]:
     """Когда напомнить «рабочий день по графику закончился» (D-47, A-51 п. 5) для идущего или прерванного дня.
 
     Конец по графику (schedule_end; день нерабочий по графику — начало + длительность дня по графику). Нажал кнопку
-    таймера после конца по графику («Продолжить» в 19:00 — значит, на месте) — напомнить через час после нажатия
-    (SNOOZE); «Работаю дальше» — в конце отсрочки (snooze_until). Не дальше суток от начала. Завершённый или не
-    начатый день — None."""
+    таймера после конца по графику («Продолжить» в 19:00 — значит, на месте) — напомнить через snooze после нажатия
+    (по умолчанию час; настройка компании workday.reminder_repeat, D-49); «Работаю дальше» — в конце отсрочки
+    (snooze_until). Не дальше суток от начала. Завершённый или не начатый день — None."""
     if state.get("status") not in ("working", "paused") or not state.get("pressed_at"):
         return None
     start = state["pressed_at"]
     due = schedule_end or (start + timedelta(minutes=schedule_minutes))
     last = state.get("last_event_at")
     if last is not None and last >= due:
-        due = last + SNOOZE
+        due = last + snooze
     if snooze_until is not None and snooze_until > due:
         due = snooze_until
     return min(due, start + MAX_DAY)
 
 
-def reminder_state(due: Optional[datetime], now: datetime) -> str:
-    """none — рано (или день не идёт); remind — показать напоминание о конце дня; auto — напоминание осталось без
-    ответа AUTO_FINISH_AFTER (или программа была закрыта): завершить день автоматически в момент due."""
+def reminder_state(due: Optional[datetime], now: datetime, wait: timedelta = AUTO_FINISH_AFTER,
+                   last_activity: Optional[datetime] = None, hard_stop: Optional[datetime] = None) -> str:
+    """none — рано (или день не идёт); remind — показать напоминание о конце дня; auto — завершить день
+    автоматически (время — auto_finish_time).
+
+    auto — когда с момента напоминания (due) прошло wait (по умолчанию 30 минут; настройка компании
+    workday.auto_finish_wait, D-49) **и** столько же за компьютером никто не работал (D-49, A-53 п. 1: «исключить
+    тот факт, что человек заработался и не нажал»): last_activity — время последнего нажатия клавиатуры или мыши
+    (None — неизвестно, например программа была закрыта). Работают — напоминание висит, день идёт дальше.
+    hard_stop — сутки от начала дня (MAX_DAY): дальше день не продлевается, даже если за компьютером работают.
+
+    Порядок в программе важен: сначала решается, пора ли завершать, по активности, записанной раньше, и только
+    потом запоминается новая — иначе утреннее нажатие после выключенного на ночь компьютера «продлило» бы вчерашний
+    день до утра."""
     if due is None or now < due:
         return "none"
-    return "auto" if now - due >= AUTO_FINISH_AFTER else "remind"
+    if hard_stop is not None and now >= hard_stop:
+        return "auto"
+    quiet_since = max(due, last_activity) if last_activity is not None else due
+    return "auto" if now - quiet_since >= wait else "remind"
+
+
+def auto_finish_time(state: dict, due: datetime, now: datetime, last_activity: Optional[datetime] = None) -> datetime:
+    """Во сколько записать автоматическое «Завершить» (D-47; D-49 — A-53 пп. 1–2).
+
+    * на перерыве — момент «Перерыв» (перерыв считается только по кнопке, работы после него не было — A-49 п. 3);
+    * иначе — момент напоминания (конец по графику или конец «Работаю дальше»), а если за компьютером работали и
+      после него — **время последней активности** («по факту работал»);
+    * не позже «сейчас» и суток от начала дня, не раньше последнего нажатия таймера.
+    """
+    last_ev = state.get("last_event_at")
+    if state.get("status") == "paused" and last_ev is not None:
+        return last_ev
+    at = max(due, last_activity) if last_activity is not None else due
+    at = min(at, now)
+    if state.get("pressed_at") is not None:
+        at = min(at, state["pressed_at"] + MAX_DAY)
+    return max(at, last_ev) if last_ev is not None else at
+
+
+def settings_minutes(config: Optional[Iterable[dict]], key: str) -> int:
+    """Минуты из настройки компании key (pull: config — [{key, value}]) — только из допустимых; не задано или
+    неизвестное значение — значение по умолчанию (как решил владелец: час и 30 минут, A-52 п. 1, D-47)."""
+    default, allowed = SETTING_CHOICES[key]
+    for c in config or []:
+        if isinstance(c, dict) and c.get("key") == key:
+            try:
+                v = int(str(c.get("value")))
+            except ValueError:
+                return default
+            return v if v in allowed else default
+    return default
+
+
+def minutes_label(minutes: int) -> str:
+    """60 → «час», 90 → «1 ч 30 мин», 30 → «30 минут» — для текстов напоминания."""
+    if minutes == 60:
+        return "час"
+    if minutes % 60 == 0:
+        return f"{minutes // 60} ч"
+    return f"{minutes // 60} ч {minutes % 60:02d} мин" if minutes > 60 else f"{minutes} минут"
+
+
+def day_type(s: Optional[dict], day: date, cal: Optional[dict] = None) -> str:
+    """Тип дня day для отметок (D-49, A-53 п. 3): holiday — праздник по производственному календарю (график его
+    учитывает); weekend — выходной по графику; short — сокращённый предпраздничный; workday — рабочий."""
+    s = s or sch.BUILTIN
+    kind = sch.day_kind(s, day, cal)
+    if kind == "holiday":
+        return "holiday"
+    if not sch.is_workday(s, day, cal):
+        return "weekend"
+    return "short" if kind == "short" else "workday"
+
+
+def norm_minutes(s: Optional[dict], day: date, cal: Optional[dict] = None) -> int:
+    """Норма рабочего дня day по графику — без перерыва по графику; сокращённый день — на час короче (как окно
+    vector.core.schedule.window); нерабочий день — 0."""
+    s = s or sch.BUILTIN
+    t = day_type(s, day, cal)
+    if t in ("holiday", "weekend"):
+        return 0
+    length = sch.length_minutes(s)
+    brk = int(s.get("break_minutes") or 0)
+    if t == "short" and length - sch.SHORT_DAY_MINUTES > brk:
+        length -= sch.SHORT_DAY_MINUTES
+    return max(0, length - brk)
+
+
+def day_marks(s: Optional[dict], day: date, worked_minutes: Optional[int], cal: Optional[dict] = None,
+              exempt: bool = False) -> dict:
+    """Отметки рабочего дня (D-49, A-53 п. 3: «работа в праздничные дни надо отметить… как и выходные, также
+    отмечать время, что человек работал сверхурочно»).
+
+    worked_minutes — сколько отработано (таймер или смена отчёта без перерывов). Праздник — всё время «работа в
+    праздничный день»; выходной по графику — «работа в выходной день»; рабочий день — сверх нормы по графику
+    («сверхурочно», ст. 99 Трудового кодекса РФ: сверх установленной продолжительности). Без округления — целые
+    минуты. Учёт не ведётся или времени нет — пустые отметки.
+
+    Возвращает {day_type, day_type_label, title (название праздника), norm_minutes, worked_minutes,
+    offday_minutes, overtime_minutes, mark (holiday | weekend | overtime | ""), label, short_label (для строки
+    списка), tone}.
+    """
+    t = day_type(s, day, cal)
+    title = ((cal or {}).get(day.isoformat()) or {}).get("title") or "" if t == "holiday" else ""
+    norm = norm_minutes(s, day, cal)
+    worked = max(0, int(worked_minutes or 0))
+    out = {"day_type": t, "day_type_label": DAY_TYPE_LABELS_RU[t], "title": title, "norm_minutes": norm,
+           "worked_minutes": worked, "offday_minutes": 0, "overtime_minutes": 0, "mark": "", "label": "",
+           "short_label": "", "tone": "neutral"}
+    if exempt or worked <= 0:
+        return out
+    if t in ("holiday", "weekend"):
+        what = "праздничный день" + (f" ({title})" if title else "") if t == "holiday" else "выходной день"
+        out.update(offday_minutes=worked, mark=t, label=f"Работа в {what} — {duration_label(worked * 60)}",
+                   short_label=("работа в праздник" if t == "holiday" else "работа в выходной"),
+                   tone="danger" if t == "holiday" else "warning")
+    elif worked > norm:
+        over = worked - norm
+        out.update(overtime_minutes=over, mark="overtime",
+                   label=f"Сверхурочно — {duration_label(over * 60)} (норма по графику {duration_label(norm * 60)})",
+                   short_label=f"сверхурочно {duration_label(over * 60)}", tone="warning")
+    return out
 
 
 def check_early_finish(state: dict, at: datetime, now: datetime) -> None:

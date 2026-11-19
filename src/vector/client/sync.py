@@ -884,13 +884,47 @@ class SyncClient:
         return sorted((d for d in self.list_local("workday") if d.get("user_id") in (None, self.user_id)
                        and d.get("status") in ("working", "paused")), key=lambda d: d.get("work_date") or "")
 
+    def workday_intervals(self) -> dict:
+        """Интервалы напоминания из настроек компании (D-49, A-53 п. 5: «дать возможность менять»): {remind — повтор
+        напоминания после «Работаю дальше», wait — ожидание до автоматического завершения} в минутах; не задано —
+        час и 30 минут (vector.core.workday.SETTING_CHOICES)."""
+        from vector.core import workday as wdy
+        cfg = self.get_meta("config") if self.db is not None else None
+        return {"remind": wdy.settings_minutes(cfg, wdy.SETTING_REMIND), "wait": wdy.settings_minutes(cfg, wdy.SETTING_WAIT)}
+
+    def workday_note_activity(self, at: Optional[datetime]) -> None:
+        """Запомнить время последней работы за компьютером (D-49, A-53 п. 1): нажатие клавиатуры или мыши — только
+        время, ничего больше; хранится в зашифрованном кэше этого компьютера и уходит на сервер только как время
+        автоматического «Завершить». Раньше уже запомненного — не перезаписывается."""
+        if self.db is None or at is None:
+            return
+        from vector.core import workday as wdy
+        at = at.astimezone(timezone.utc)
+        prev = wdy._opt_dt((self.get_meta("workday_activity") or {}).get("at"))
+        if prev is None or at > prev:
+            self._set_meta("workday_activity", {"at": at.isoformat()})
+
+    def workday_last_activity(self) -> Optional[datetime]:
+        """Время последней работы за компьютером из кэша (None — неизвестно)."""
+        from vector.core import workday as wdy
+        if self.db is None:
+            return None
+        return wdy._opt_dt((self.get_meta("workday_activity") or {}).get("at"))
+
     def workday_reminder(self, tz=None) -> dict:
         """Напоминание о конце рабочего дня (D-47, A-51 п. 5) для самого старого незавершённого дня: {state (none |
-        remind | auto), workday_id, due (ISO), due_label («18:00»), auto_at (ISO — время автоматического завершения:
-        на перерыве — момент «Перерыв», иначе due)}. Учёт не ведётся — none."""
+        remind | auto), workday_id, due (ISO), due_label («18:00»), auto_at (ISO — время автоматического завершения),
+        auto_label, remind_minutes, wait_minutes, active (после напоминания за компьютером работали)}. Учёт не
+        ведётся — none.
+
+        D-49 (A-53 п. 1): пока за компьютером работают, день сам не завершается (state остаётся remind); ушли —
+        auto, и «Завершить» записывается временем последней активности (не раньше напоминания); на перерыве —
+        моментом «Перерыв». Интервалы — из настроек компании (workday_intervals)."""
         from vector.core import schedule as sch
         from vector.core import workday as wdy
-        none = {"state": "none", "workday_id": "", "due": "", "due_label": "", "auto_at": ""}
+        iv = self.workday_intervals()
+        none = {"state": "none", "workday_id": "", "due": "", "due_label": "", "auto_at": "", "auto_label": "",
+                "remind_minutes": iv["remind"], "wait_minutes": iv["wait"], "active": False}
         if self.db is None or not self.user_id:
             return none
         info = self.workday_schedule_info()
@@ -899,29 +933,37 @@ class SyncClient:
             return none
         snooze = self.get_meta("workday_snooze") or {}
         now = self.now()
+        activity = self.workday_last_activity()
         for d in self.workday_open_days():
             st = wdy.day_state(d.get("events") or [], now, d.get("approved_start_at"))
             win = self.workday_window(d.get("work_date"), tz)
             until = wdy._opt_dt(snooze.get("until")) if snooze.get("workday_id") == d.get("id") else None
-            due = wdy.due_at(st, win[1] if win else None, sch.length_minutes(s), until)
-            state = wdy.reminder_state(due, now)
+            due = wdy.due_at(st, win[1] if win else None, sch.length_minutes(s), until, timedelta(minutes=iv["remind"]))
+            # Активность до начала этого дня (вчерашняя запись в кэше) к нему не относится.
+            act = activity if activity is not None and st["pressed_at"] is not None and activity > st["pressed_at"] else None
+            state = wdy.reminder_state(due, now, timedelta(minutes=iv["wait"]), act,
+                                       st["pressed_at"] + wdy.MAX_DAY if st["pressed_at"] else None)
             if state == "none":
                 continue
-            auto_at = st["last_event_at"] if st["status"] == "paused" and st["last_event_at"] else due
-            return {"state": state, "workday_id": d.get("id") or "", "due": due.isoformat(),
-                    "due_label": f"{due.astimezone(tz):%H:%M}", "auto_at": max(auto_at, st["last_event_at"] or auto_at).isoformat()}
+            auto_at = wdy.auto_finish_time(st, due, now, act)
+            return {**none, "state": state, "workday_id": d.get("id") or "", "due": due.isoformat(),
+                    "due_label": f"{due.astimezone(tz):%H:%M}", "auto_at": auto_at.isoformat(),
+                    "auto_label": f"{auto_at.astimezone(tz):%H:%M}", "active": act is not None and act > due}
         return none
 
     def workday_snooze(self, workday_id: str, tz=None) -> None:
-        """«Работаю дальше» в напоминании о конце дня: напомнить снова через час (vector.core.workday.SNOOZE)."""
-        from vector.core import workday as wdy
+        """«Работаю дальше» в напоминании о конце дня: напомнить снова через час (или как задано в настройках
+        компании — workday.reminder_repeat, D-49)."""
         if self.db is not None:
-            self._set_meta("workday_snooze", {"workday_id": workday_id, "until": (self.now() + wdy.SNOOZE).isoformat()})
+            mins = self.workday_intervals()["remind"]
+            self._set_meta("workday_snooze", {"workday_id": workday_id,
+                                              "until": (self.now() + timedelta(minutes=mins)).isoformat()})
 
     def workday_auto_finish(self, reason: str = "closed", tz=None) -> list[LocalResult]:
-        """Завершить забытые дни (D-47, A-51 п. 5): напоминание без ответа 30 минут (no_answer) или программа была
-        закрыта (closed) — «Завершить» с временем конца по графику (на перерыве — с моментом «Перерыв»), пометка auto.
-        Если сотрудник работал дольше — «Я работал дольше» (фактическое окончание через руководителя)."""
+        """Завершить забытые дни (D-47, A-51 п. 5; D-49, A-53 п. 1): напоминание без ответа и без работы за
+        компьютером (no_answer) или программа была закрыта (closed) — «Завершить» с временем последней активности,
+        но не раньше конца по графику (на перерыве — с моментом «Перерыв»), пометка auto. Если сотрудник работал
+        дольше (например, программа была закрыта) — «Я работал дольше» (фактическое окончание через руководителя)."""
         from vector.core import workday as wdy
         out = []
         for _ in range(10):                               # по одному дню за проход; дней немного

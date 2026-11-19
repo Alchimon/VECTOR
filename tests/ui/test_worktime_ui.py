@@ -157,3 +157,24 @@ def test_assembled_report_self_check_keeps_sources_and_submits(ui, qml_warnings)
     _confirm(ui, sf)
     assert next(r for r in _wv(ui)["mine"] if r["id"] == auto["id"])["status"] == "submitted"
     assert qml_warnings == []
+
+
+def test_head_sees_overtime_and_holiday_marks(ui, qml_warnings):  # noqa: F811
+    """D-49 (A-53 п. 3): v.zaitseva (руководитель коммерческой службы) видит в отправленных отчётах отметки дня —
+    «Сверхурочно» у s.morozov и «Работа в выходной (праздничный) день» у o.nikitina: в списке и баннером в отчёте."""
+    ui.login("v.zaitseva")
+    v = _wv(ui)
+    marked = {r["user_name"]: r for r in v["review"] if r["day_mark"]}
+    over = next(r for r in marked.values() if r["day_mark"] == "overtime")
+    off = next(r for r in marked.values() if r["day_mark"] in ("weekend", "holiday"))
+    assert over["day_mark_label"] == "Сверхурочно — 3 ч 00 мин (норма по графику 8 ч 00 мин)"
+    assert off["day_mark_label"].startswith("Работа в ") and off["day_mark_label"].endswith("— 4 ч 00 мин")
+    assert over["day_mark_short"] == "сверхурочно 3 ч 00 мин"
+    for r in (over, off):
+        ui.go("worktime", r["id"])
+        page = ui.find("worktimePage")
+        page.setProperty("selectedId", r["id"])
+        ui.wait_idle()
+        banner = ui.find("reportDayMark")
+        assert banner.isVisible() and banner.property("text").startswith(r["day_mark_label"])
+    assert qml_warnings == []

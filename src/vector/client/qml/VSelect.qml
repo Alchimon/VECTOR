@@ -20,7 +20,10 @@ ColumnLayout {
         var ab = backend.tip(box.displayText)
         return own !== "" && ab !== "" ? own + "\n" + ab : own + ab
     }
-    readonly property var currentValue: box.currentIndex >= 0 && model.length > box.currentIndex ? model[box.currentIndex][valueRole] : ""
+    // Пока модель меняется (новый снимок данных), строки по индексу может ещё не быть — тогда значение пустое, без
+    // ошибки QML (редкий случай в полном прогоне тестов).
+    readonly property var currentValue: box.currentIndex >= 0 && model && model.length > box.currentIndex && model[box.currentIndex]
+                                        ? model[box.currentIndex][valueRole] : ""
     spacing: 6
     Layout.fillWidth: true
     Text { visible: s.label !== ""; text: s.label; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; font.weight: Font.Medium

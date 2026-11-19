@@ -24,6 +24,7 @@ from vector import __version__
 from vector.core import stock
 from vector.core.contracts import Contracts
 
+from . import activity
 from . import (calc_view, delegation_view, hints, lifecycle_view, notification_view, production_view, purchasing_view,
                org_view, prodcal_view, quality_view, stock_view, workday_view, worktime_view)
 from .sync import STOCK_META, SyncClient
@@ -235,8 +236,9 @@ class Backend(QObject):
         self._workday_prompt = False
         self._workday_prompt_auto = auto_timers
         # Напоминание о конце рабочего дня (D-47, A-51 п. 5) из последнего снимка и дни, по которым оно уже
-        # показывалось в этом сеансе: если человек не ответил 30 минут — автоматическое «Завершить» с пометкой
-        # no_answer; если программа была закрыта (напоминания не было) — closed.
+        # показывалось в этом сеансе: если человек не ответил и не работал за компьютером (30 минут или как задано в
+        # настройках компании, D-49) — автоматическое «Завершить» с пометкой no_answer временем последней работы; если
+        # программа была закрыта (напоминания не было) — closed.
         self._workday_reminder: dict = {}
         self._workday_reminded: set = set()
         # Фильтр вкладки «Заказы поставщикам» (active / approval / draft / placed / closed / all) — состояние экрана.
@@ -278,6 +280,16 @@ class Backend(QObject):
             self._wd_timer.setInterval(30000)
             self._wd_timer.timeout.connect(self.workdayCheckReminder)
             self._wd_timer.start()
+        # Последняя работа за компьютером (D-49, A-53 п. 1): ввод в окне ВЕКТОРа (на Windows — ещё и в любой
+        # программе, vector.client.activity). Только в боевом режиме: в тестах и на стенде интерфейса синтетические
+        # нажатия не должны откладывать автоматическое завершение дня.
+        self._input_watcher: Optional[activity.InputWatcher] = None
+        if auto_timers:
+            from PySide6.QtCore import QCoreApplication
+            app = QCoreApplication.instance()
+            if app is not None:
+                self._input_watcher = activity.InputWatcher(self._now, self)
+                app.installEventFilter(self._input_watcher)
 
     # ------------------------------------------------------------ инфраструктура
     def _default_factory(self, server_url: str, ca_file: str) -> SyncClient:
@@ -961,7 +973,8 @@ class Backend(QObject):
 
     @Slot()
     def workdaySnooze(self):
-        """«Работаю дальше» в напоминании о конце дня (D-47): напомнить снова через час."""
+        """«Работаю дальше» в напоминании о конце дня (D-47): напомнить снова через час (или как задано в настройках
+        компании, D-49)."""
         wid = self._workday_reminder.get("workday_id") or ""
 
         def job():
@@ -969,24 +982,31 @@ class Backend(QObject):
             self.client.workday_snooze(wid)
             return self._snapshot(False)
         self._run(job, self._apply_snapshot)
-        self.toast.emit("info", "Хорошо — напомним через час. Закончите — «Завершить день».")
+        from vector.core import workday as wdy
+        mins = self.client.workday_intervals()["remind"] if self.client else 60
+        self.toast.emit("info", f"Хорошо — напомним через {wdy.minutes_label(mins)}. Закончите — «Завершить день».")
 
     @Slot()
     def workdayCheckReminder(self):
         """Проверить напоминание о конце дня и завершить забытые дни (D-47, A-51 п. 5): раз в 30 секунд (в боевом
-        режиме) и по вызову из тестов. Напоминание показывалось и осталось без ответа 30 минут — no_answer; программа
-        была закрыта — closed. Без связи — нажатие уходит в очередь."""
+        режиме) и по вызову из тестов. Напоминание показывалось и осталось без ответа (и за компьютером не работали —
+        D-49) — no_answer; программа была закрыта — closed. Без связи — нажатие уходит в очередь.
+
+        Сначала решается, пора ли завершать, по уже записанной активности, и только потом запоминается новая
+        (vector.core.workday.reminder_state): утреннее нажатие не продлевает вчерашний день."""
         if not self.client or self._screen != "main" or self._busy or not self._workday_prompt_auto:
             return
         reminded = set(self._workday_reminded)
+        fresh = activity.last_activity(self._input_watcher, self._now())
 
         def job():
-            """Автоматическое «Завершить» (если пора) и снимок в рабочем потоке."""
+            """Автоматическое «Завершить» (если пора), запомнить активность и снять снимок в рабочем потоке."""
             rem = self.client.workday_reminder()
             done = []
             if rem.get("state") == "auto":
                 why = "no_answer" if rem.get("workday_id") in reminded else "closed"
                 done = [r.__dict__ for r in self.client.workday_auto_finish(why)]
+            self.client.workday_note_activity(fresh)
             snap = self._snapshot(False)
             snap["auto_finished"] = [d for d in done if d.get("status") in ("accepted", "queued")]
             return snap
@@ -995,8 +1015,9 @@ class Backend(QObject):
             """Применить снимок; сообщить об автоматическом завершении."""
             self._apply_snapshot(snap)
             if isinstance(snap, dict) and snap.get("auto_finished"):
-                self.toast.emit("warning", "Рабочий день завершён автоматически в конце по графику. Работали дольше — "
-                                           "«Я работал дольше» в разделе «Рабочее время».")
+                self.toast.emit("warning", "Рабочий день завершён автоматически — временем последней работы за "
+                                           "компьютером (не раньше конца по графику). Работали дольше — «Я работал "
+                                           "дольше» в разделе «Рабочее время».")
         self._run(job, apply)
 
     @Slot(str, result="QVariantMap")

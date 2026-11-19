@@ -422,6 +422,7 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     prod.update(_seed_schedules(cmd, adm, login, people, svc, prod["org_units"], admin_login))
     prod.update(_seed_worktime(cmd, login, people, svc, pid))
     prod.update(_seed_workday(cmd, login, svc, prod["asu_schedule_hour"]))
+    prod.update(_seed_day_marks(cmd, login, svc))
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
             "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
             "suppliers": sups, "contracts": contracts, "delegations": [deleg["id"], pdeleg["id"]],
@@ -707,6 +708,40 @@ def _seed_workday(cmd, login, svc, asu_hour=None) -> dict:
     mark(lead, d2, "resume", y + timedelta(hours=4, minutes=53))
     mark(lead, d2, "finish", y + timedelta(hours=9, minutes=3))
     return {"workdays": [d1, d2], "workday_requests": reqs}
+
+
+def _seed_day_marks(cmd, login, svc) -> dict:
+    """Отметки дня (D-49, ответ владельца на A-53 п. 3) — отправленные отчёты коммерческой службы, их проверяет
+    v.zaitseva (руководитель подразделения, D-45). График — «Пятидневка» 08:00–17:00, пн–пт, перерыв 60 мин, норма 8 ч.
+
+    * s.morozov: в последний рабочий день по графику — 08:00–20:00 с перерывом час → «Сверхурочно — 3 ч»;
+    * o.nikitina: в последний выходной или праздник — 10:00–14:00 без перерыва → «Работа в выходной (праздничный)
+      день — 4 ч» (закрытие квартала).
+    Отчёты — у сотрудников, которым раздел «Рабочее время» в демо больше ничем не нужен (у i.belova своих отчётов
+    нет — по ней проверяется отчёт «не по проекту»).
+    Дни подбираются от даты установки по встроенному календарю программы, чтобы отметки были на стенде всегда.
+    """
+    from vector.core import prodcal as pc
+    from vector.core import schedule as sch
+    from vector.core import workday as wd
+    today = svc.now().date()
+    five = {**sch.BUILTIN, "start_time": "08:00", "end_time": "17:00"}
+    cal = pc.effective((today.year - 1, today.year), {}, [], [])
+    back = [today - timedelta(days=n) for n in range(1, 15)]
+    workday = next(d for d in back if wd.day_type(five, d, cal) in ("workday", "short"))
+    offday = next(d for d in back if wd.day_type(five, d, cal) in ("weekend", "holiday"))
+    sc = {"shift": True, "lines": True, "hours": True}
+    out = []
+    for who, day, start, end, brk, minutes, note in (
+            ("s.morozov", workday, "08:00", "20:00", 60, 660, "Сверка спецификаций с поставщиком перед отгрузкой"),
+            ("o.nikitina", offday, "10:00", "14:00", 0, 240, "Сверка взаиморасчётов с поставщиками к закрытию квартала")):
+        tok = login(who)
+        r = cmd(tok, "report.create", {"id": str(uuid.uuid4()), "work_date": day.isoformat(), "shift_start": start,
+                                       "shift_end": end, "break_minutes": brk,
+                                       "lines": [{"minutes": minutes, "note": note}]})["daily_report"]
+        cmd(tok, "report.submit", {"id": r["id"], "self_check": sc}, r["version"])
+        out.append(r["id"])
+    return {"day_mark_reports": out}
 
 
 def _seed_worktime(cmd, login, people, svc, pid) -> dict:

@@ -70,7 +70,9 @@ MasterDetail {
     list.model: items
     list.delegate: ListRow {
         title: modelData.date_label + (modelData.is_own ? "" : "  ·  " + modelData.user_name)
-        subtitle: modelData.shift_label + "  ·  в строках " + modelData.total_label
+        // Отметка дня (D-49) — первой: длинная строка обрезается справа, а отметку руководитель должен видеть.
+        subtitle: (modelData.day_mark_short ? modelData.day_mark_short + "  ·  " : "")
+                  + modelData.shift_label + "  ·  в строках " + modelData.total_label
         iconName: modelData.is_own ? "clock" : "user"
         chipText: modelData.status_label; chipTone: modelData.status_tone
         pending: modelData.pending === true
@@ -93,6 +95,10 @@ MasterDetail {
     Banner { objectName: "reportAssembled"; visible: sel !== null && sel.origin === "auto" && sel.status === "self_check"; tone: "info"
              text: sel ? "Отчёт собран программой " + sel.assembled_label + ". Проверьте смену и строки: «оценка программы» — "
                          + "время, разделённое по числу действий, его стоит уточнить. Руководителю отдела отчёт уйдёт только после самопроверки." : "" }
+    // Отметка дня (D-49, A-53 п. 3): работа в праздничный / выходной день, сверхурочно — считает сервер по графику
+    // сотрудника и производственному календарю.
+    Banner { objectName: "reportDayMark"; visible: sel !== null && sel.day_mark_label !== ""; tone: sel ? sel.day_mark_tone : "warning"
+             text: sel ? sel.day_mark_label + ". Считается по смене без перерыва и графику работы сотрудника." : "" }
     Banner { objectName: "reportReturned"; visible: sel !== null && sel.status === "returned"; tone: "danger"
              text: sel ? "Возвращён: " + sel.review_comment + (sel.reviewed_label ? "  (" + sel.reviewed_label + ")" : "") : "" }
     Banner { objectName: "reportProblems"; visible: sel !== null && sel.is_own && sel.problems.length > 0; tone: "warning"

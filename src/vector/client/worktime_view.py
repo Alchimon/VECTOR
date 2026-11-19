@@ -146,6 +146,12 @@ def _row(r: dict, me_id: str, reviewer: bool, online: bool, people: dict[str, st
         "history": _history(r.get("history"), people), "pending": pending, "version": int(r.get("version") or 0),
         "origin": r.get("origin") or "manual", "assembled_label": _assembled_label(r.get("assembled")),
         "overnight": wt.overnight(core["shift_start"], core["shift_end"]), "_core": core,
+        # Отметка дня (D-49, A-53 п. 3) — считает сервер по графику автора и производственному календарю: работа в
+        # праздничный / выходной день, сверхурочно (сверх нормы по графику). Старый кэш без отметки — пусто.
+        "day_mark": (r.get("day_marks") or {}).get("mark") or "",
+        "day_mark_label": (r.get("day_marks") or {}).get("label") or "",
+        "day_mark_tone": (r.get("day_marks") or {}).get("tone") or "neutral",
+        "day_mark_short": (r.get("day_marks") or {}).get("short_label") or "",
         "problems": problems,
         "next": NEXT_REVIEW if may_review else (NEXT_OWN.get(st, "") if own else ""),
         "can_edit": editable,

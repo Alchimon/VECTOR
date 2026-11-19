@@ -97,6 +97,8 @@ def test_fresh_stand_is_ready_and_check_is_read_only(stand, svc, capsys):
     assert "«Смена наладчиков» производственный календарь не учитывает" in out
     assert "d.kuznetsov: Смена наладчиков:" in out and "подразделения «Отдел АСУ ТП»" in out
     assert "v.zaitseva видит запросы на фактическое окончание дня: 1 (на согласовании — 1)" in out
+    assert "v.zaitseva видит отметки в отчётах сотрудников: сверхурочно — 1, работа в выходной или праздник — 1" in out
+    assert "настройки компании: повтор напоминания — Через час" in out and "(не заданы — действуют решения" in out
     assert _counts(svc) == before          # ни «прочитано», ни заказы, ни замещения не изменились
 
 

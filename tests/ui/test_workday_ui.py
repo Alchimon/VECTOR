@@ -238,3 +238,78 @@ def test_head_approves_actual_end(ui, qml_warnings):  # noqa: F811
     assert wd["pending_end_request"] == {}
     assert wd["my_requests"][0]["status_label"] == "Согласовано"
     assert qml_warnings == []
+
+
+def test_working_at_computer_keeps_day_open_then_finish_at_last_activity(ui, qml_warnings):  # noqa: F811
+    """D-49 (ответ владельца на A-53 п. 1: «заработался и не нажал, а он по факту работал»): d.kuznetsov не ответил
+    на напоминание, но работает за компьютером — окно остаётся, день сам не завершается, в окне — «Вы работаете за
+    компьютером»; перестал — через 30 минут тишины день завершается временем последней работы; под таймером —
+    «Сверхурочно» (норма «Смены наладчиков» — 8 ч).
+    Активность в тестах записывается напрямую (SyncClient.workday_note_activity) — как её записывает проверка раз в
+    30 секунд в боевом режиме (activity.last_activity)."""
+    from datetime import datetime, timedelta, timezone
+    ui.backend.setWorkdayPromptAuto(True)
+    ui.login("d.kuznetsov")
+    c = ui.backend.client
+    c.clock = _Clock(datetime.now(timezone.utc) + timedelta(hours=20))
+    due = datetime.fromisoformat(c.workday_reminder()["due"])
+    c.t.online = False
+    c.clock = _Clock(due + timedelta(minutes=1))
+    ui.backend.workdayCheckReminder()
+    ui.wait_idle()
+    prompt = _popup(ui, "workdayEndPrompt")
+    assert prompt.property("visible") is True
+    assert "Без ответа и без работы за компьютером 30 минут" in prompt.property("subtitle")
+    last = due + timedelta(minutes=170)                                    # работал ещё почти три часа
+    c.workday_note_activity(last)
+    c.clock = _Clock(due + timedelta(minutes=185))                         # тишина 15 минут — ещё рано
+    ui.backend.workdayCheckReminder()
+    ui.wait_idle()
+    wd = _wd(ui)
+    assert wd["status"] == "working" and prompt.property("visible") is True
+    assert "Вы работаете за компьютером — день сам не завершится" in prompt.property("subtitle")
+    c.clock = _Clock(due + timedelta(minutes=201))                         # тишина 31 минута
+    ui.backend.workdayCheckReminder()
+    ui.wait_idle()
+    wd = _wd(ui)
+    assert wd["auto_finished"] is True, wd.get("end_label")
+    assert f"завершён автоматически в {last.astimezone():%H:%M}" in wd["end_label"]
+    assert wd["day_mark"] == "overtime" and wd["day_mark_label"].startswith("Сверхурочно — ")
+    prompt_start = _popup(ui, "workdayPrompt")
+    if prompt_start.property("visible"):                                   # на подставных часах уже новый день
+        prompt_start.setProperty("insist", False)
+        ui.backend.setWorkdayPromptAuto(False)
+        prompt_start.close()
+    ui.go("worktime")
+    mark = ui.find("workdayDayMark")
+    assert mark.isVisible() and mark.property("text") == wd["day_mark_label"]
+    assert qml_warnings == []
+
+
+def test_admin_sets_reminder_intervals(ui, qml_warnings):  # noqa: F811
+    """D-49 (A-53 п. 5: интервалы «1 ч / 30 мин» «дать возможность менять»): в «Администрирование» → «Настройки
+    компании» — повтор напоминания и автоматическое завершение; пока не задано — решения владельца (час и 30 минут);
+    администратор публикует «через 30 минут» с причиной."""
+    ui.login("admin")
+    ui.go("admin")
+    page = next(i for i in ui.items("sv") if i.isVisible())
+    page.setProperty("tab", "settings")
+    ui.wait_idle()
+    items = {x["key"]: x for x in _v(page, "sv")["items"]}
+    rem, wait = items["workday.reminder_repeat"], items["workday.auto_finish_wait"]
+    assert (rem["value"], rem["is_set"], wait["value"]) == ("60", False, "30")
+    assert [o["id"] for o in rem["options"]] == ["15", "30", "60", "90", "120"]
+    assert [o["id"] for o in wait["options"]] == ["15", "30", "60", "120"]
+    dlg = _popup(ui, "publishForm")
+    _call(dlg, "openFor", rem)
+    ui.wait_idle()
+    _popup(ui, "pValue").setProperty("currentIndex", 1)
+    _popup(ui, "pReason").setProperty("text", "Решение руководства: напоминать чаще")
+    ui.wait_idle()
+    QMetaObject.invokeMethod(dlg, "confirmed")
+    ui.wait_idle()
+    assert dlg.property("error") == "" and not dlg.property("visible")
+    rem = next(x for x in _v(page, "sv")["items"] if x["key"] == "workday.reminder_repeat")
+    assert (rem["value"], rem["is_set"]) == ("30", True)
+    assert ui.backend.client.workday_intervals() == {"remind": 30, "wait": 30}
+    assert qml_warnings == []

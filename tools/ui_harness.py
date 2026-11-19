@@ -620,8 +620,21 @@ def main():
         h.backend.workdayCheckReminder()
         h.wait_idle()
         h.shot(out / f"{theme}-57-workday-end-prompt.png")
+        # D-49 (A-53 п. 1): напоминание без ответа, но за компьютером работают — день сам не завершается.
+        c.workday_note_activity(due + _td(minutes=50))
+        c.clock = _Clock(due + _td(minutes=65))
+        h.backend.workdayCheckReminder()
+        h.wait_idle()
+        h.shot(out / f"{theme}-62-workday-still-working.png")
         h.backend.setWorkdayPromptAuto(False)
         c.clock = None
+        h.backend.logout()
+        h.wait_idle()
+        # D-49 (A-53 п. 3): руководитель коммерческой службы — отчёт сотрудника со сверхурочными.
+        h.login("v.zaitseva")
+        h.go("worktime", h.ids["day_mark_reports"][0])
+        h.wait_idle()
+        h.shot(out / f"{theme}-63-worktime-day-mark.png")
         h.backend.logout()
         h.wait_idle()
         h.login("admin")

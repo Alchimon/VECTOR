@@ -293,3 +293,29 @@ def test_pull_activity_has_own_actions_projects_and_timers(world, proj):  # noqa
     assert t["label"] == "Создать задачу" and t["operation_id"]
     assert all(a["command"] != "task.create" for a in pull(head)["worktime_activity"]["actions"])
     assert act["timers"] == []
+
+
+def test_day_marks_holiday_weekend_overtime(world, proj):  # noqa: F811
+    """Отметки дня в отчёте (D-49, A-53 п. 3) — считает сервер по графику автора (встроенный 09:00–18:00, пн–пт,
+    перерыв 60 мин — норма 8 ч) и производственному календарю: праздник, выходной, сверхурочно; руководитель видит их
+    в отправленном отчёте."""
+    eng, head = proj.eng, world.login("head1")
+    plain = create(eng)["result"]["daily_report"]["day_marks"]                       # 08:30–17:30 − 60 мин = 8 ч
+    assert (plain["day_type"], plain["mark"], plain["norm_minutes"], plain["worked_minutes"]) == ("workday", "", 480, 480)
+    rid = new_id()
+    assert create(eng, rid, day="2026-11-17")["status"] == "accepted"
+    eng.ok("report.save", {"id": rid, "shift_end": "19:30"}, expected_version=1)      # 08:30–19:30 − 60 мин = 10 ч
+    over = [x for x in pull(eng)["daily_reports"] if x["id"] == rid][0]["day_marks"]
+    assert (over["mark"], over["overtime_minutes"]) == ("overtime", 120)
+    assert over["label"] == "Сверхурочно — 2 ч 00 мин (норма по графику 8 ч 00 мин)"
+    sat = create(eng, day="2026-11-14", shift_start="10:00", shift_end="13:10", break_minutes=0,
+                 lines=[{"minutes": 190, "note": "Срочная правка"}])["result"]["daily_report"]
+    assert (sat["day_marks"]["mark"], sat["day_marks"]["label"]) == ("weekend", "Работа в выходной день — 3 ч 10 мин")
+    hol_id = new_id()
+    hol = create(eng, hol_id, day="2026-11-04", shift_start="10:00", shift_end="12:00", break_minutes=0,
+                 lines=[{"minutes": 120, "note": "Авария на объекте"}])["result"]["daily_report"]["day_marks"]
+    assert (hol["mark"], hol["offday_minutes"], hol["tone"]) == ("holiday", 120, "danger")
+    assert hol["label"] == "Работа в праздничный день (День народного единства) — 2 ч 00 мин"
+    eng.ok("report.submit", {"id": hol_id, "self_check": SC}, expected_version=1)
+    seen = [x for x in pull(head)["daily_reports"] if x["id"] == hol_id][0]
+    assert seen["day_marks"]["mark"] == "holiday"
