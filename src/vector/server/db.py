@@ -66,7 +66,10 @@ from vector.core import money
 #         (sales_opportunities), параллельные потоки проекта (project_workstreams), риск-разрешения РП
 #         (project_risk_acceptances), журнал событий проекта для карточки (project_events), неизменяемый снимок
 #         закрытия в архив (project_closeouts).
-SCHEMA_VERSION = 29
+# v30 (этап 3 blueprint 52): бизнес-ревизии документов РКД (document_revisions), неизменяемые решения проверки
+#         (document_reviews), замечания и ответы (document_comments, document_comment_responses),
+#         трансмитталы выдачи (document_transmittals, transmittal_items).
+SCHEMA_VERSION = 30
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1777,6 +1780,98 @@ project_closeouts = sa.Table("project_closeouts", metadata,
                        " AND trim(content_sha256, '0123456789abcdef') = ''",
                        name="ck_project_closeouts_sha256"))
 
+# ------------------------------------------------------------ этап 3 blueprint 52 (схема v30): ревизии РКД
+# Бизнес-ревизия документа: внешний шифр ревизии («REV A», «01») поверх внутренних неизменяемых версий файла
+# (document_versions). Ревизия ссылается на ТОЧНУЮ версию файла (doc_version_id); возврат на доработку не
+# повышает шифр и не переписывает файл — следующая загрузка = следующая ревизия (seq+1). Статусный автомат —
+# контракт workflows (раздел docrev): отправка заказчику только трансмитталом, замечания заказчика — только
+# регистрацией с основанием (письмо), «Согласована заказчиком» — только по документу заказчика (D-56 п. 2).
+document_revisions = sa.Table("document_revisions", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("document_id", ID, sa.ForeignKey("documents.id"), nullable=False, index=True),
+    sa.Column("seq", sa.Integer, nullable=False),           # порядковый номер ревизии в документе (1, 2, …)
+    sa.Column("label", U(40), nullable=False),              # внешний шифр ревизии («REV A», «01»)
+    sa.Column("status", U(24), nullable=False),
+    sa.Column("doc_version_id", BIGID, sa.ForeignKey("document_versions.id"), nullable=False),
+    sa.Column("note", U(2000)),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("document_id", "seq", name="uq_document_revisions_seq"),
+    sa.UniqueConstraint("document_id", "label", name="uq_document_revisions_label"),
+    sa.CheckConstraint("status IN ('in_work','ready_for_rp','returned_to_engineer','ready_to_transmit','sent',"
+                       "'customer_comments','revision_in_work','approved')", name="status"))
+
+# Решение проверки ревизии (РП проекта — D-56 п. 1): неизменяемая запись цикла. Причина обязательна при возврате
+# (проверяет сервер; контракт — reason_required_for), при разрешении отправки причина — необязательная пометка.
+document_reviews = sa.Table("document_reviews", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("revision_id", ID, sa.ForeignKey("document_revisions.id"), nullable=False, index=True),
+    sa.Column("cycle_no", sa.Integer, nullable=False),
+    sa.Column("decision", U(16), nullable=False),
+    sa.Column("reason", U(2000)),
+    sa.Column("decided_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("authority", U(120), nullable=False),
+    sa.Column("at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("revision_id", "cycle_no", name="uq_document_reviews_cycle"),
+    sa.CheckConstraint("decision IN ('accepted','returned')", name="decision"))
+
+# Замечание к ТОЧНОЙ ревизии: внутреннее (в ходе проверки) или заказчика (по отправленной ревизии, с основанием —
+# номером письма). Замечания нельзя молча переносить на новую ревизию: каждое закрывается ответом/доказательством.
+document_comments = sa.Table("document_comments", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("revision_id", ID, sa.ForeignKey("document_revisions.id"), nullable=False, index=True),
+    sa.Column("seq", sa.Integer, nullable=False),
+    sa.Column("source", U(16), nullable=False),             # internal | customer
+    sa.Column("page", U(40)),                               # лист/место — если указано
+    sa.Column("text", U(2000), nullable=False),
+    sa.Column("external_ref", U(200)),                      # основание для замечания заказчика (письмо №…)
+    sa.Column("status", U(16), nullable=False),             # open | closed
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("closed_by", ID), sa.Column("closed_at", UtcDateTime),
+    sa.UniqueConstraint("revision_id", "seq", name="uq_document_comments_seq"),
+    sa.CheckConstraint("source IN ('internal','customer')", name="source"),
+    sa.CheckConstraint("status IN ('open','closed')", name="status"),
+    sa.CheckConstraint("(source = 'customer' AND external_ref IS NOT NULL) OR (source = 'internal')",
+                       name="ck_document_comments_customer_ref"))
+
+# Ответ на замечание (закрывает его): текст и, при необходимости, файл-доказательство. Неизменяем.
+document_comment_responses = sa.Table("document_comment_responses", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("comment_id", ID, sa.ForeignKey("document_comments.id"), nullable=False, index=True),
+    sa.Column("text", U(2000), nullable=False),
+    sa.Column("sha256", sa.String(64), sa.ForeignKey("file_blobs.sha256")),
+    sa.Column("created_by", ID, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False))
+
+# Трансмиттал — неизменяемый пакет выдачи заказчику: адресат, канал, состав (transmittal_items), отправитель,
+# время. Ручная отправка регистрируется тем же трансмитталом; автоотправка (адаптер, этап 8) создаст ту же
+# запись. Подтверждение доставки (external_ref — номер письма/квитанции) вносится один раз отдельной командой.
+document_transmittals = sa.Table("document_transmittals", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("seq", sa.Integer, nullable=False),
+    sa.Column("recipient", U(300), nullable=False),
+    sa.Column("channel", U(16), nullable=False),
+    sa.Column("note", U(2000)),
+    sa.Column("status", U(16), nullable=False),             # sent | delivered
+    sa.Column("external_ref", U(200)),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("delivered_at", UtcDateTime),
+    sa.UniqueConstraint("project_id", "seq", name="uq_document_transmittals_seq"),
+    sa.CheckConstraint("channel IN ('email','edo','platform','hand')", name="channel"),
+    sa.CheckConstraint("status IN ('sent','delivered')", name="status"),
+    sa.CheckConstraint("(status = 'delivered' AND external_ref IS NOT NULL AND delivered_at IS NOT NULL)"
+                       " OR (status = 'sent' AND delivered_at IS NULL)", name="ck_transmittal_delivered"))
+
+transmittal_items = sa.Table("transmittal_items", metadata,
+    sa.Column("transmittal_id", ID, sa.ForeignKey("document_transmittals.id"), nullable=False),
+    sa.Column("revision_id", ID, sa.ForeignKey("document_revisions.id"), nullable=False, index=True),
+    sa.Column("position", sa.Integer, nullable=False),
+    sa.PrimaryKeyConstraint("transmittal_id", "revision_id", name="pk_transmittal_items"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -1873,7 +1968,8 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (passport_exports, 50029), (effectiveness_checks, 50030), (quality_decisions, 50031),
                  (claim_responses, 50032), (daily_report_events, 50033), (daily_report_auto, 50034),
                  (org_events, 50035), (workday_events, 50036), (workday_auto_finishes, 50037), (overtime_events, 50040), (overtime_request_periods, 50041), (overtime_period_closures, 50042),
-                 (project_events, 50043), (project_closeouts, 50044)):
+                 (project_events, 50043), (project_closeouts, 50044), (document_reviews, 50045),
+                 (document_comment_responses, 50046), (transmittal_items, 50047)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

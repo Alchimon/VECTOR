@@ -901,8 +901,7 @@ def test_v28_to_v29_adds_delivery_tables_with_guards(backend, tmp_path, clock, k
     before = counts(eng, mg.tables_of_version(28))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (28, db.SCHEMA_VERSION)
-    assert rep.created_tables == ["sales_opportunities", "project_workstreams", "project_risk_acceptances",
-                                  "project_events", "project_closeouts"]
+    assert rep.created_tables == [t.name for v in range(29, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]]
     after = counts(eng, mg.tables_of_version(28))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
     opp, ws, risk = dict.fromkeys(("id",)), dict.fromkeys(("id",)), dict.fromkeys(("id",))
@@ -972,5 +971,96 @@ def test_v28_to_v29_adds_delivery_tables_with_guards(backend, tmp_path, clock, k
     bad(db.project_closeouts.insert().values(id=new_id(), project_id=pid, snapshot_json="{}",
                                              content_sha256="1" * 64, closed_by=uid, authority="project_role:rp", created_at=now))
     bad(db.project_closeouts.delete())
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
+def test_v29_to_v30_adds_rkd_revision_tables_with_guards(backend, tmp_path, clock, keys):
+    """v29 → v30 (этап 3 blueprint 52, D-56 п. 2): бизнес-ревизии документов, решения проверки, замечания/ответы,
+    трансмитталы; данные v29 не меняются; решения проверки, ответы и состав пакета неизменяемы; шифр ревизии
+    уникален в документе, подтверждение доставки согласовано со статусом — проверяет сама БД."""
+    eng = make_v3(backend, tmp_path, clock, version=29)
+    now = clock.now()
+    uid, pid, tid, cust, kit, doc = new_id(), new_id(), new_id(), new_id(), new_id(), new_id()
+    sha = "a" * 64
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x", must_change_password=False,
+                                           password_changed_at=now, failed_attempts=0, active=True, created_at=now))
+        c.execute(db.customers.insert().values(id=cust, name="Заказчик", version=1, created_by=uid,
+                                               created_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.tenders.insert().values(id=tid, customer_id=cust, title="Т", status="won",
+                                             owner_user_id=uid, version=1, created_by=uid,
+                                             created_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.projects.insert().values(id=pid, code="П-1", title="П", tender_id=tid,
+                                              tender_version_at_start=1, status="rkd_in_progress", version=1,
+                                              created_by=uid, created_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.kits.insert().values(id=kit, project_id=pid, code="АТХ", title="К", version=1,
+                                          created_by=uid, created_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.documents.insert().values(id=doc, project_id=pid, kit_id=kit, code="АТХ-001", title="Схема",
+                                               current_version_no=1, version=1, created_by=uid, created_at=now,
+                                               updated_by=uid, updated_at=now))
+        c.execute(db.file_blobs.insert().values(sha256=sha, size_bytes=4, chunk_count=1, uploaded_by=uid,
+                                                uploaded_at=now))
+        c.execute(db.document_versions.insert().values(document_id=doc, version_no=1, file_name="a.pdf",
+                                                       sha256=sha, size_bytes=4, created_by=uid, created_at=now))
+    with eng.connect() as c:
+        ver_id = c.execute(sa.select(db.document_versions.c.id)).scalar()
+    before = counts(eng, mg.tables_of_version(29))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (29, db.SCHEMA_VERSION)
+    assert rep.created_tables == ["document_revisions", "document_reviews", "document_comments",
+                                  "document_comment_responses", "document_transmittals", "transmittal_items"]
+    after = counts(eng, mg.tables_of_version(29))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    rev, cm = new_id(), new_id()
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    # Ревизия: шифр и номер уникальны в документе; статус — из списка.
+    bad(db.document_revisions.insert().values(id=rev, document_id=doc, seq=1, label="01", status="x",
+                                              doc_version_id=ver_id, version=1, created_by=uid, created_at=now,
+                                              updated_by=uid, updated_at=now))
+    with eng.begin() as c:
+        c.execute(db.document_revisions.insert().values(id=rev, document_id=doc, seq=1, label="01", status="sent",
+                                                        doc_version_id=ver_id, version=1, created_by=uid,
+                                                        created_at=now, updated_by=uid, updated_at=now))
+    bad(db.document_revisions.insert().values(id=new_id(), document_id=doc, seq=2, label="01", status="in_work",
+                                              doc_version_id=ver_id, version=1, created_by=uid, created_at=now,
+                                              updated_by=uid, updated_at=now))     # шифр занят
+    bad(db.document_revisions.insert().values(id=new_id(), document_id=doc, seq=1, label="02", status="in_work",
+                                              doc_version_id=ver_id, version=1, created_by=uid, created_at=now,
+                                              updated_by=uid, updated_at=now))     # номер занят
+    # Решение проверки: одно на цикл, неизменяемо.
+    with eng.begin() as c:
+        c.execute(db.document_reviews.insert().values(revision_id=rev, cycle_no=1, decision="accepted",
+                                                      decided_by=uid, authority="project_role:rp", at=now))
+    bad(db.document_reviews.insert().values(revision_id=rev, cycle_no=1, decision="returned",
+                                            decided_by=uid, authority="project_role:rp", at=now))
+    bad(db.document_reviews.update().values(decision="returned"))
+    # Замечание заказчика — только с основанием; ответ неизменяем.
+    bad(db.document_comments.insert().values(id=cm, revision_id=rev, seq=1, source="customer", text="з",
+                                             external_ref=None, status="open", version=1,
+                                             created_by=uid, created_at=now))
+    with eng.begin() as c:
+        c.execute(db.document_comments.insert().values(id=cm, revision_id=rev, seq=1, source="customer", text="з",
+                                                       external_ref="письмо № 1", status="open", version=1,
+                                                       created_by=uid, created_at=now))
+        c.execute(db.document_comment_responses.insert().values(comment_id=cm, text="исправлено",
+                                                                created_by=uid, created_at=now))
+    bad(db.document_comment_responses.delete())
+    # Трансмиттал: канал из списка, номер уникален в проекте, доставка согласована; состав неизменяем.
+    bad(db.document_transmittals.insert().values(id=new_id(), project_id=pid, seq=1, recipient="З",
+                                                 channel="fax", status="sent", version=1,
+                                                 created_by=uid, created_at=now))
+    bad(db.document_transmittals.insert().values(id=new_id(), project_id=pid, seq=1, recipient="З",
+                                                 channel="email", status="delivered", version=1,
+                                                 created_by=uid, created_at=now))          # delivered без реквизитов
+    tr = new_id()
+    with eng.begin() as c:
+        c.execute(db.document_transmittals.insert().values(id=tr, project_id=pid, seq=1, recipient="З",
+                                                           channel="email", status="sent", version=1,
+                                                           created_by=uid, created_at=now))
+        c.execute(db.transmittal_items.insert().values(transmittal_id=tr, revision_id=rev, position=1))
+    bad(db.transmittal_items.delete())
     assert db.check_schema(eng) == db.SCHEMA_VERSION
     assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []

@@ -31,6 +31,7 @@ from .calc import CalcMixin
 from .config_store import ConfigMixin
 from .delegation import DelegationMixin
 from .delivery import DeliveryMixin
+from .rkd import RkdMixin
 from .notify import NotificationMixin
 from .lifecycle import LifecycleMixin
 from .quality import QualityMixin
@@ -94,7 +95,7 @@ class Ctx:
 
 class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin, NotificationMixin,
               ProductionMixin, LifecycleMixin, QualityMixin, WorktimeMixin, OrgMixin, WorkdayMixin,
-              ScheduleMixin, CalendarMixin, DeliveryMixin):
+              ScheduleMixin, CalendarMixin, DeliveryMixin, RkdMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
     склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py);
     замещение и основания решений — DelegationMixin (delegation.py, D-34/D-35); уведомления — NotificationMixin
@@ -105,7 +106,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
     и маршрут проверки отчётов — OrgMixin (org.py, D-44); таймер рабочего дня и фактическое начало дня —
     WorkdayMixin (workday.py, D-46); графики работы — ScheduleMixin (schedule.py, D-47);
     производственный календарь — CalendarMixin (prodcal.py, D-48). Лиды, потоки проекта, риск-разрешения и архив —
-    DeliveryMixin (delivery.py, D-56).
+    DeliveryMixin (delivery.py, D-56). Ревизии РКД: проверка, замечания, трансмитталы — RkdMixin (rkd.py,
+    этап 3 blueprint 52).
 
     Как устроен обработчик команды (все _xxx_yyy(ctx, p, ev) следуют одной схеме — так их легко проверять):
 
@@ -156,6 +158,11 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "project.transition": self._project_transition,
             "workstream.update": self._workstream_update, "workstream.set_status": self._workstream_set_status,
             "risk.accept": self._risk_accept, "risk.resolve": self._risk_resolve,
+            # Ревизии РКД: проверка, замечания, трансмитталы (rkd.py, этап 3 blueprint 52).
+            "docrev.create": self._docrev_create, "docrev.transition": self._docrev_transition,
+            "comment.add": self._comment_add, "comment.respond": self._comment_respond,
+            "transmittal.create": self._transmittal_create,
+            "transmittal.register_receipt": self._transmittal_register_receipt,
             "kit.create": self._kit_create, "kit.update": self._kit_update,
             "account.change_password": self._account_change_password,
             "admin.create_user": self._admin_create_user, "admin.grant_role": self._admin_grant_role,
@@ -1172,6 +1179,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         out.update(self._pull_work(conn, readable))
         # Лиды, потоки проекта, риск-разрешения, события и снимок архива (D-56).
         out.update(self._pull_delivery(conn, uid, now, readable))
+        # Ревизии РКД: проверка, замечания/ответы, трансмитталы (этап 3 blueprint 52).
+        out.update(self._pull_rkd(conn, readable))
         # Расчёты: черновики и версии — по читаемым проектам; ревизии итога — по отдельному праву.
         out.update(self._pull_calc(conn, uid, now, readable))
         # Склад (остатки, резервы, журнал) — по праву stock.read; потребности — по праву need.read в их проекте.
@@ -1249,7 +1258,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
                   "claim": "quality.read", "change_request": "quality.read", "change_order": "quality.read",
                   "daily_report": "worktime.read_all", "sales_opportunity": "opportunity.read",
                   "project_workstream": "project.read", "project_risk_acceptance": "project.read",
-                  "project_closeout": "project.read"}.get(otype)
+                  "project_closeout": "project.read", "document_revision": "project.read",
+                  "document_comment": "project.read", "document_transmittal": "project.read"}.get(otype)
         if not action or not isinstance(oid, str):
             return {"status": "rejected", "code": "bad_history_request", "message_ru": "Укажите тип и id объекта."}
         pid = oid if otype in ("project", "project_calc") else None
@@ -1263,6 +1273,18 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
                      "project_closeout": db.project_closeouts}[otype]
             w = self._get(conn, table, oid)
             pid = w["project_id"] if w else None
+        if otype == "document_transmittal":
+            w = self._get(conn, db.document_transmittals, oid)
+            pid = w["project_id"] if w else None
+        if otype in ("document_revision", "document_comment"):
+            # Ревизия/замечание живёт в документе проекта: право чтения — по проекту документа.
+            if otype == "document_revision":
+                rev = self._get(conn, db.document_revisions, oid)
+            else:
+                cm = self._get(conn, db.document_comments, oid)
+                rev = self._get(conn, db.document_revisions, cm["revision_id"]) if cm else None
+            doc = self._get(conn, db.documents, rev["document_id"]) if rev else None
+            pid = doc["project_id"] if doc else None
         if otype in ("tech_process", "work_order"):
             t = self._get(conn, db.tech_processes if otype == "tech_process" else db.work_orders, oid)
             pid = t["project_id"] if t else None
