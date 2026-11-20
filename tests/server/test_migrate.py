@@ -1006,8 +1006,7 @@ def test_v29_to_v30_adds_rkd_revision_tables_with_guards(backend, tmp_path, cloc
     before = counts(eng, mg.tables_of_version(29))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (29, db.SCHEMA_VERSION)
-    assert rep.created_tables == ["document_revisions", "document_reviews", "document_comments",
-                                  "document_comment_responses", "document_transmittals", "transmittal_items"]
+    assert rep.created_tables == [t.name for v in range(30, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]]
     after = counts(eng, mg.tables_of_version(29))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
     rev, cm = new_id(), new_id()
@@ -1062,5 +1061,91 @@ def test_v29_to_v30_adds_rkd_revision_tables_with_guards(backend, tmp_path, cloc
                                                            created_by=uid, created_at=now))
         c.execute(db.transmittal_items.insert().values(transmittal_id=tr, revision_id=rev, position=1))
     bad(db.transmittal_items.delete())
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
+def test_v30_to_v31_adds_consolidation_tables_with_guards(backend, tmp_path, clock, keys):
+    """v30 → v31 (этап 4 blueprint 52): группы закупки, пакеты со строками и распределениями, аналоги;
+    данные v30 не меняются; уникальности (код группы, номер пакета, строка потребности в пакете, пара аналогов)
+    и согласованность решения по аналогу — на уровне БД."""
+    eng = make_v3(backend, tmp_path, clock, version=30)
+    now = clock.now()
+    uid, pid, tid, cust, kit, item = new_id(), new_id(), new_id(), new_id(), new_id(), new_id()
+    nid, nl, gid, bid, bl, analog = new_id(), new_id(), new_id(), new_id(), new_id(), new_id()
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x", must_change_password=False,
+                                           password_changed_at=now, failed_attempts=0, active=True, created_at=now))
+        c.execute(db.customers.insert().values(id=cust, name="З", version=1, created_by=uid,
+                                               created_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.tenders.insert().values(id=tid, customer_id=cust, title="Т", status="won",
+                                             owner_user_id=uid, version=1, created_by=uid,
+                                             created_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.projects.insert().values(id=pid, code="П-1", title="П", tender_id=tid,
+                                              tender_version_at_start=1, status="rkd_in_progress", version=1,
+                                              created_by=uid, created_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.kits.insert().values(id=kit, project_id=pid, code="АТХ", title="К", version=1,
+                                          created_by=uid, created_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.stock_items.insert().values(id=item, code="КВВГ-4x1.5", name="Кабель", unit="м", active=True,
+                                                 version=1, created_by=uid, created_at=now, updated_by=uid,
+                                                 updated_at=now))
+        c.execute(db.stock_items.insert().values(id=analog, code="КВВГнг-4x1.5", name="Кабель нг", unit="м",
+                                                 active=True, version=1, created_by=uid, created_at=now,
+                                                 updated_by=uid, updated_at=now))
+        c.execute(db.calc_versions.insert().values(kit_id=kit, project_id=pid, version_no=1, reason="Выпуск",
+                                                   total=Decimal("0"), line_count=1, unknown_price_count=0,
+                                                   content_hash="0" * 64, draft_version=1, frozen_by=uid,
+                                                   frozen_at=now))
+    with eng.connect() as c:
+        cv_id = c.execute(sa.select(db.calc_versions.c.id)).scalar()
+    with eng.begin() as c:
+        c.execute(db.procurement_needs.insert().values(id=nid, project_id=pid, kit_id=kit, calc_version_id=cv_id,
+                                                       calc_version_no=1, calc_content_hash="0" * 64,
+                                                       line_count=1, matched_count=1, status="open", version=1,
+                                                       created_by=uid, created_at=now, updated_by=uid,
+                                                       updated_at=now))
+        c.execute(db.procurement_need_lines.insert().values(need_id=nid, pos=1, line_id=nl, code="КВВГ-4x1.5",
+                                                            name="Кабель", unit="м", qty=Decimal("10"),
+                                                            item_id=item))
+    before = counts(eng, mg.tables_of_version(30))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (30, db.SCHEMA_VERSION)
+    assert rep.created_tables == ["procurement_groups", "procurement_batches", "procurement_batch_lines",
+                                  "procurement_allocations", "item_analogs"]
+    after = counts(eng, mg.tables_of_version(30))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    with eng.begin() as c:
+        c.execute(db.procurement_groups.insert().values(id=gid, code="КАБ", name="Кабель", active=True, version=1,
+                                                        created_by=uid, created_at=now, updated_by=uid,
+                                                        updated_at=now))
+    bad(db.procurement_groups.insert().values(id=new_id(), code="КАБ", name="Дубль", active=True, version=1,
+                                              created_by=uid, created_at=now, updated_by=uid, updated_at=now))
+    with eng.begin() as c:
+        c.execute(db.procurement_batches.insert().values(id=bid, batch_no=1, title="Пакет", status="open",
+                                                         version=1, created_by=uid, created_at=now,
+                                                         updated_by=uid, updated_at=now))
+        c.execute(db.procurement_batch_lines.insert().values(id=bl, batch_id=bid, item_id=item, unit="м"))
+        c.execute(db.procurement_allocations.insert().values(id=new_id(), batch_line_id=bl, need_id=nid,
+                                                             need_line_id=nl, qty=Decimal("5")))
+    bad(db.procurement_batches.insert().values(id=new_id(), batch_no=1, title="X", status="open", version=1,
+                                               created_by=uid, created_at=now, updated_by=uid, updated_at=now))
+    bad(db.procurement_batches.insert().values(id=new_id(), batch_no=2, title="X", status="later", version=1,
+                                               created_by=uid, created_at=now, updated_by=uid, updated_at=now))
+    bad(db.procurement_batch_lines.insert().values(id=new_id(), batch_id=bid, item_id=item, unit="м"))
+    bad(db.procurement_allocations.insert().values(id=new_id(), batch_line_id=bl, need_id=nid,
+                                                   need_line_id=nl, qty=Decimal("1")))
+    bad(db.procurement_allocations.insert().values(id=new_id(), batch_line_id=bl, need_id=nid,
+                                                   need_line_id=new_id(), qty=Decimal("0")))
+    # Аналоги: пара уникальна, позиция не равна аналогу, решение согласовано со статусом.
+    bad(db.item_analogs.insert().values(id=new_id(), item_id=item, analog_item_id=item, status="proposed",
+                                        proposed_by=uid, created_at=now, version=1))
+    bad(db.item_analogs.insert().values(id=new_id(), item_id=item, analog_item_id=analog, status="approved",
+                                        proposed_by=uid, created_at=now, version=1))
+    with eng.begin() as c:
+        c.execute(db.item_analogs.insert().values(id=new_id(), item_id=item, analog_item_id=analog,
+                                                  status="proposed", proposed_by=uid, created_at=now, version=1))
     assert db.check_schema(eng) == db.SCHEMA_VERSION
     assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []

@@ -69,7 +69,9 @@ from vector.core import money
 # v30 (этап 3 blueprint 52): бизнес-ревизии документов РКД (document_revisions), неизменяемые решения проверки
 #         (document_reviews), замечания и ответы (document_comments, document_comment_responses),
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
-SCHEMA_VERSION = 30
+# v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
+#         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
+SCHEMA_VERSION = 31
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1871,6 +1873,73 @@ transmittal_items = sa.Table("transmittal_items", metadata,
     sa.Column("revision_id", ID, sa.ForeignKey("document_revisions.id"), nullable=False, index=True),
     sa.Column("position", sa.Integer, nullable=False),
     sa.PrimaryKeyConstraint("transmittal_id", "revision_id", name="pk_transmittal_items"))
+
+# ------------------------------------------------------------ этап 4 blueprint 52 (схема v31): консолидация закупок
+# Группа закупки — настраиваемая категория (крепёж, кабель, аппараты…), по которой собирают пакет и выбирают
+# поставщика. Консолидация только по ТОЧНОМУ коду позиции и единице; похожее название эквивалентностью не является.
+procurement_groups = sa.Table("procurement_groups", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("code", U(40), nullable=False, unique=True),
+    sa.Column("name", U(200), nullable=False),
+    sa.Column("active", sa.Boolean, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
+
+# Консолидированный закупочный пакет (несколько комплектов/проектов → один пакет закупке). Статусный автомат —
+# контракт workflows (procurement_batch). Отмена освобождает занятое покрытие; «Формируется» можно править,
+# после «Сформирован» состав заморожен (возврат в работу — с причиной).
+procurement_batches = sa.Table("procurement_batches", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("batch_no", sa.Integer, nullable=False, unique=True),
+    sa.Column("title", U(300), nullable=False),
+    sa.Column("group_id", ID, sa.ForeignKey("procurement_groups.id")),
+    sa.Column("planned_on", sa.Date),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("close_reason", U(2000)),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("status IN ('open','consolidated','closed','cancelled')", name="status"))
+
+# Строка пакета — позиция номенклатуры и единица (одна строка на пару item+unit в пакете).
+procurement_batch_lines = sa.Table("procurement_batch_lines", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("batch_id", ID, sa.ForeignKey("procurement_batches.id"), nullable=False, index=True),
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id"), nullable=False),
+    sa.Column("unit", U(20), nullable=False),
+    sa.UniqueConstraint("batch_id", "item_id", "unit", name="uq_procurement_batch_lines_item"))
+
+# Распределение: строка пакета ← строка потребности (а через неё — комплект и зафиксированная версия расчёта).
+# Одна строка потребности не входит в один пакет дважды (уникальный ключ); покрытие сверх потребности
+# отсекает сервер в транзакции команды (с учётом других пакетов и черновиков заказов).
+procurement_allocations = sa.Table("procurement_allocations", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("batch_line_id", ID, sa.ForeignKey("procurement_batch_lines.id"), nullable=False, index=True),
+    sa.Column("need_id", ID, sa.ForeignKey("procurement_needs.id"), nullable=False),
+    sa.Column("need_line_id", ID, nullable=False),
+    sa.Column("qty", Qty, nullable=False),
+    sa.UniqueConstraint("batch_line_id", "need_id", "need_line_id", name="uq_procurement_allocations_line"),
+    sa.CheckConstraint("qty > 0", name="qty_pos"))
+
+# Предложение аналога позиции (blueprint 52, 2.3): система/человек предлагает, ГИП или ведущий инженер решает.
+# Решение одноразовое (proposed → approved/rejected); утверждённый аналог не заменяет позицию сам — замена
+# оформляется новой ревизией потребности из новой редакции расчёта. Пара (позиция, аналог) уникальна.
+item_analogs = sa.Table("item_analogs", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id"), nullable=False, index=True),
+    sa.Column("analog_item_id", ID, sa.ForeignKey("stock_items.id"), nullable=False),
+    sa.Column("note", U(1000)),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("proposed_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("decided_by", ID), sa.Column("decided_at", UtcDateTime),
+    sa.Column("decision_reason", U(2000)),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.UniqueConstraint("item_id", "analog_item_id", name="uq_item_analogs_pair"),
+    sa.CheckConstraint("item_id <> analog_item_id", name="not_self"),
+    sa.CheckConstraint("status IN ('proposed','approved','rejected')", name="status"),
+    sa.CheckConstraint("(status = 'proposed' AND decided_by IS NULL) OR (status <> 'proposed' AND decided_by IS NOT NULL "
+                       "AND decided_at IS NOT NULL)", name="ck_item_analogs_decided"))
 
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),

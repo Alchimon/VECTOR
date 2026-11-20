@@ -1,5 +1,5 @@
 {
- "contract": "permissions-slice1-v30",
+ "contract": "permissions-slice1-v31",
  "notes": [
   "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
   "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -1044,6 +1044,96 @@
    ],
    "assumption": "A-36",
    "note": "Закрывает закупка; недопоставка — с причиной."
+  },
+  "pgroup.read": {
+   "same_as": "stock.read"
+  },
+  "pgroup.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement",
+      "dept_head"
+     ]
+    }
+   ],
+   "note": "Группы закупки ведёт закупка; резерв — руководитель отдела (как D-33/D-36)."
+  },
+  "pgroup.update": {
+   "same_as": "pgroup.create"
+  },
+  "batch.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement",
+      "warehouse",
+      "dept_head"
+     ]
+    },
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    }
+   ],
+   "note": "Пакеты целиком — закупка/склад/руководство; ГИП/РП — пакеты, где есть строки потребности их проектов (как need.read, A-22)."
+  },
+  "batch.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "note": "Консолидацию формирует закупка (матрица 04, A-22/A-34)."
+  },
+  "batch.update": {
+   "same_as": "batch.create"
+  },
+  "batch.transition": {
+   "same_as": "batch.create"
+  },
+  "analog.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse",
+      "procurement",
+      "gip",
+      "lead_engineer",
+      "engineer",
+      "dept_head"
+     ]
+    }
+   ],
+   "note": "Аналоги видят склад, закупка и инженерный состав (предлагают и решают); как stock.read плюс инженеры."
+  },
+  "analog.propose": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement",
+      "gip",
+      "lead_engineer",
+      "engineer"
+     ]
+    }
+   ],
+   "note": "Предложить аналог может закупка и инженерный состав; решение — отдельное действие."
+  },
+  "analog.decide": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "lead_engineer"
+     ]
+    }
+   ],
+   "note": "«Система предлагает, инженер/уполномоченный утверждает» (blueprint 52, 2.3): решение по аналогу — ГИП или ведущий инженер; молчаливой замены нет."
   },
   "po.receive": {
    "any_of": [

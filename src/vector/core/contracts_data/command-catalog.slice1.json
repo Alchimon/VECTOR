@@ -1,5 +1,5 @@
 {
- "contract": "command-catalog-slice1-v30",
+ "contract": "command-catalog-slice1-v31",
  "offline_classes": {
   "offline_full": "Полностью доступно офлайн (чтение локального кэша, локальные черновики без эффекта для других).",
   "queued": "Создаёт локальное изменение в очереди синхронизации. До ответа сервера это НЕ подтверждённое действие; сервер заново проверяет права, состояние и версию.",
@@ -466,6 +466,45 @@
    "label_ru": "Закрыть заказ поставщику",
    "requires_expected_version": true,
    "note": "Больше по заказу не ждём. Если поставлено не всё — причина обязательна."
+  },
+  "pgroup.create": {
+   "offline": "online_required",
+   "object": "procurement_group",
+   "label_ru": "Создать группу закупки"
+  },
+  "pgroup.update": {
+   "offline": "online_required",
+   "object": "procurement_group",
+   "label_ru": "Изменить группу закупки",
+   "requires_expected_version": true
+  },
+  "batch.create": {
+   "offline": "online_required",
+   "object": "procurement_batch",
+   "label_ru": "Сформировать закупочный пакет"
+  },
+  "batch.update": {
+   "offline": "online_required",
+   "object": "procurement_batch",
+   "label_ru": "Изменить закупочный пакет",
+   "requires_expected_version": true
+  },
+  "batch.transition": {
+   "offline": "online_required",
+   "object": "procurement_batch",
+   "label_ru": "Сменить статус закупочного пакета",
+   "requires_expected_version": true
+  },
+  "analog.propose": {
+   "offline": "online_required",
+   "object": "item_analog",
+   "label_ru": "Предложить аналог позиции"
+  },
+  "analog.decide": {
+   "offline": "online_required",
+   "object": "item_analog",
+   "label_ru": "Решить по аналогу позиции",
+   "requires_expected_version": true
   },
   "po.receive": {
    "offline": "online_required",

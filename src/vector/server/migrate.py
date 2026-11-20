@@ -103,6 +103,9 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     # Порядок — по внешним ключам.
     30: [db.document_revisions, db.document_reviews, db.document_comments, db.document_comment_responses,
          db.document_transmittals, db.transmittal_items],
+    # Консолидация закупок: группы, пакеты, строки пакетов, распределения, предложения аналогов (этап 4, 52).
+    31: [db.procurement_groups, db.procurement_batches, db.procurement_batch_lines, db.procurement_allocations,
+         db.item_analogs],
 }
 
 
@@ -286,7 +289,8 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               26: _create_tables(ADDED_IN[27]),
                               27: _create_tables(ADDED_IN[28]),
                               28: _create_tables(ADDED_IN[29]),
-                              29: _create_tables(ADDED_IN[30])}
+                              29: _create_tables(ADDED_IN[30]),
+                              30: _create_tables(ADDED_IN[31])}
 
 
 @dataclass
