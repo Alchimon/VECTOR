@@ -1,0 +1,98 @@
+"""UI-проверки подсказок и расшифровки сокращений (D-37) — настоящий QML, сервер in-process, демо-данные.
+
+Владелец: «аббревиатуры обязательно расшифровывай и делай подсказки для всего». Проверяется:
+* у каждой видимой кнопки, пункта меню и вкладки во всех разделах есть непустая подсказка (для разных ролей);
+* подсказка действительно всплывает при наведении мыши и расшифровывает сокращение;
+* раздел «Сокращения и подсказки» открывается по F1, ищет по сокращению и названию;
+* в списках выбора ролей сокращения расшифрованы; QML без предупреждений.
+"""
+import pytest
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtTest import QTest
+
+from tests.ui.test_purchasing_ui import _v, qml_warnings  # noqa: F401
+
+pytestmark = pytest.mark.ui
+
+PAGES = ["customers", "tenders", "projects", "finance", "stock", "procurement", "production", "sync",
+         "notifications", "delegations", "admin", "help"]
+
+
+def _visible_without_tip(ui):
+    """Видимые кнопки (VButton: свойство kind), пункты меню (NavItem: active) и вкладки (VSegmented) без подсказки."""
+    bad = []
+    for it in ui.items("tipText"):
+        if it.isVisible() and it.property("kind") is not None and not it.property("tipText"):
+            bad.append(("VButton", it.property("text")))
+    for it in ui.items("badgeTone"):
+        if it.isVisible() and not it.property("tip"):
+            bad.append(("NavItem", it.property("text")))
+    for it in ui.items("tipText"):
+        if it.isVisible() and (it.objectName() or "").startswith("seg-") and not it.property("tipText"):
+            bad.append(("VSegmented", it.objectName()))
+    return bad
+
+
+@pytest.mark.parametrize("login", ["a.smirnova", "s.morozov", "t.fedorova", "i.belova", "e.orlova", "admin"])
+def test_every_visible_button_nav_item_and_tab_has_a_tip(ui, qml_warnings, login):  # noqa: F811
+    ui.login(login)
+    bad = set()
+    for p in PAGES:
+        ui.go(p)
+        bad |= set((p, *b) for b in _visible_without_tip(ui))
+    assert not bad, f"Без подсказки: {sorted(bad)}"
+    assert qml_warnings == []
+
+
+def test_tooltip_pops_up_on_hover_and_expands_abbreviation(ui, qml_warnings):  # noqa: F811
+    ui.login("a.smirnova")
+    ui.go("tenders", ui.ids["tender_sub"])
+    btn = next(i for i in ui.items("tipText") if i.isVisible() and i.property("text") == "Новое ТКП")
+    tip = btn.property("tipText")
+    assert "технико-коммерческое предложение" in tip and "без связи" in tip
+    c = btn.mapToScene(QPointF(btn.width() / 2, btn.height() / 2))
+    QTest.mouseMove(ui.win, c.toPoint())
+    ui.pump(0.9)   # задержка показа — 0,5 с
+    shown = [i for i in ui.items("text") if i.isVisible() and i.property("text") == tip and i is not btn]
+    assert shown, "подсказка не появилась при наведении"
+    # Пункт меню с сокращением: пояснение раздела + расшифровка.
+    nav = next(i for i in ui.items("badgeTone") if i.property("text") == "Тендеры и ТКП")
+    assert "ТКП — технико-коммерческое предложение" in nav.property("tip")
+    # Пояснение страницы расшифровывает ТКП прямо в тексте (видно без наведения).
+    assert any((i.property("subtitle") or "").startswith("ТКП — технико-коммерческие предложения")
+               for i in ui.items("subtitle") if i.isVisible())
+    assert qml_warnings == []
+
+
+def test_help_page_by_f1_lists_and_searches_glossary(ui, qml_warnings):  # noqa: F811
+    ui.login("k.pavlov")   # исполнитель: у него нет ни тендеров, ни склада — справка доступна всем
+    ui.win.requestActivate()
+    ui.pump(0.2)
+    QTest.keyClick(ui.win, Qt.Key.Key_F1)
+    ui.wait_idle()
+    assert ui.page() == "help"
+    assert ui.nav()["Сокращения и подсказки"] is True
+    lst = ui.find("glossaryList")
+    total = lst.property("count")
+    assert total == len(_v(ui.backend, "glossary")) and total > 50
+    search = ui.find("glossarySearch")
+    search.setProperty("text", "технологический процесс")
+    ui.pump(0.2)
+    assert 0 < lst.property("count") < total
+    search.setProperty("text", "ТКП")
+    ui.pump(0.2)
+    assert lst.property("count") >= 1
+    search.setProperty("text", "нет-такого-слова")
+    ui.pump(0.2)
+    assert lst.property("count") == 0
+    assert qml_warnings == []
+
+
+def test_role_selects_expand_abbreviations(ui):
+    ui.login("admin")
+    labels = {r["id"]: r["label"] for r in _v(ui.backend, "roleOptions")}
+    assert labels["gip"] == "ГИП (главный инженер проекта)" and labels["rp"] == "РП (руководитель проекта)"
+    assert labels["technologist"] == "Технолог"
+    proj = {r["id"]: r["label"] for r in _v(ui.backend, "projectRoleOptions")}
+    assert proj["gip"] == "ГИП проекта (главный инженер проекта)"
+    assert ui.backend.tip("Сторно").startswith("Исправить ошибочную запись")

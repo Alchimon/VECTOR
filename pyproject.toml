@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=77"]  # 77+: лицензия в формате PEP 639 (без предупреждений сборки)
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vector"
+version = "0.2.0.dev0"
+description = "ВЕКТОР / VECTOR — рабочая среда инженерной компании (desktop-клиент + on-premises сервер)"
+requires-python = ">=3.11"
+license = "LicenseRef-Proprietary"
+# Версии зафиксированы диапазонами; точные версии сборки фиксируются в requirements-lock (этап выпуска).
+dependencies = []
+
+[project.optional-dependencies]
+server = [
+  "SQLAlchemy>=2.0,<2.2",
+  "starlette>=0.40,<2",
+  "uvicorn>=0.30,<1",
+  "argon2-cffi>=23,<26",
+  "cryptography>=42,<51",
+  "psycopg2-binary>=2.9,<3",   # PostgreSQL
+  # MS SQL: pyodbc + Microsoft ODBC Driver 18 устанавливаются на сервере отдельно (см. docs/ops/install.md, § 3.2)
+]
+client = [
+  # 6.12.0 исключён: ошибка счётчика ссылок в Signal.emit/QVariant (True/False/None) роняет процесс
+  # после нескольких тысяч сигналов. Верхнюю границу поднимаем только после прохождения
+  # tests/client/test_qt_binding_refcounts.py на новой версии (см. CHANGELOG, D-21).
+  "PySide6-Essentials>=6.11.3,<6.12",
+  "httpx>=0.27,<1",
+  "cryptography>=42,<51",
+  "keyring>=25,<26",
+]
+dev = ["pytest>=8", "pgserver>=0.1.4", "packaging>=23"]
+
+[project.scripts]
+vector-server = "vector.server.cli:main"
+vector-client = "vector.client.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"vector.client" = ["qml/**/*", "assets/**/*"]
+"vector.core" = ["contracts_data/*.json", "prodcal_data/*.xml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "postgres: Class B runtime на встроенном PostgreSQL (pgserver)",
+  "ui: offscreen Qt Quick (Class A UI)",
+]
