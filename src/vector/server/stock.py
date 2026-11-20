@@ -54,9 +54,10 @@ from vector.core.errors import Conflict, Denied, Rejected
 from .db import (calc_version_lines, calc_versions, item_aliases, kits, procurement_allocation_receipts,
                  procurement_allocations, procurement_batch_lines, procurement_batches,
                  procurement_need_line_match_units, procurement_need_line_matches, procurement_need_lines,
-                 procurement_needs, projects, unit_conversions, signatures, stock_balances, stock_item_packs,
-                 stock_items, stock_movements, stock_reservations, stock_shipment_losses, stock_shipment_terms,
-                 stock_shipments, stock_transfer_acts, stock_transfers, users, warehouses, work_order_issues)
+                 procurement_needs, projects, purchase_order_lines, purchase_orders, unit_conversions, signatures,
+                 stock_balances, stock_item_packs, stock_items, stock_movements, stock_reservations,
+                 stock_shipment_losses, stock_shipment_terms, stock_shipments, stock_transfer_acts,
+                 stock_transfers, users, warehouses, work_order_issues)
 from . import security
 from .validation import canon, iso, only_keys, opt_date, opt_str, req_str, req_uuid
 
@@ -1064,10 +1065,37 @@ class StockMixin:
                 raise Rejected("need_mismatch", "Строка потребности относится к другой позиции номенклатуры.")
             # Покрытие считается в единицах позиции: количество строки × зафиксированный коэффициент (A-27).
             open_qty = stock.convert_qty(ln.qty, factor) - self._need_line_covered(ctx.conn, need["id"], line_id)
+            # Минус уже идущее по закупке (D-60): непоставленные остатки распределений действующих пакетов и
+            # строк заказов по этой строке — иначе склад зарезервировал бы то, что уже заказано (и наоборот,
+            # консолидация не даёт распределить зарезервированное — _coverage в consolidation.py).
+            allocs = [dict(r._mapping) for r in ctx.conn.execute(
+                sa.select(procurement_allocations).select_from(
+                    procurement_allocations
+                    .join(procurement_batch_lines,
+                          procurement_batch_lines.c.id == procurement_allocations.c.batch_line_id)
+                    .join(procurement_batches, procurement_batches.c.id == procurement_batch_lines.c.batch_id))
+                .where(procurement_allocations.c.need_id == need["id"],
+                       procurement_allocations.c.need_line_id == line_id,
+                       procurement_batches.c.status.in_(cs.COVERING_BATCH_STATUSES)))]
+            if allocs:
+                delivered_a = self._delivered_by_allocation(ctx.conn, [a["id"] for a in allocs])
+                outstanding = sum((a["qty"] - delivered_a.get(a["id"], Decimal(0)) for a in allocs), Decimal(0))
+                open_qty -= stock.convert_qty(max(outstanding, Decimal(0)), factor)
+            po_rows = [dict(r._mapping) for r in ctx.conn.execute(
+                sa.select(purchase_order_lines).join(purchase_orders,
+                                                     purchase_orders.c.id == purchase_order_lines.c.order_id)
+                .where(purchase_order_lines.c.need_id == need["id"],
+                       purchase_order_lines.c.need_line_id == line_id,
+                       purchase_orders.c.status.in_(cs.COVERING_ORDER_STATUSES)))]
+            if po_rows:
+                received = self._received_by_line(ctx.conn)
+                open_qty -= sum((max(r["qty"] - received.get((r["order_id"], r["line_id"]), Decimal(0)),
+                                     Decimal(0)) for r in po_rows), Decimal(0))
             if qty > open_qty:
                 # Резерв «про запас» сверх потребности — отдельное решение, а не побочный эффект (A-23).
-                raise Rejected("exceeds_need", f"По строке потребности осталось покрыть {money.to_json(max(open_qty, Decimal(0)))}, "
-                               f"а резервируется {money.to_json(qty)}.",
+                raise Rejected("exceeds_need", f"По строке потребности осталось покрыть "
+                               f"{money.to_json(max(open_qty, Decimal(0)))} с учётом уже идущего по закупке "
+                               f"(пакеты и заказы), а резервируется {money.to_json(qty)}.",
                                {"open": money.to_json(max(open_qty, Decimal(0))), "requested": money.to_json(qty)})
             need_id = need["id"]
         row, b = self._load_balance(ctx.conn, w["id"], it["id"])

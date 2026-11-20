@@ -123,18 +123,28 @@ def test_procurement_generates_need_and_warehouse_reserves_line(ui):
     nv = _v(pp, "nv")
     assert len(nv["needs"]) == 2 and nv["candidates"] == [] and pp.property("selectedId") != ""
     assert btn.property("enabled") is False                     # кандидатов больше нет
-    # Строка ШУ-1 по АТХ: нужно 3, в резерве 2, на складе свободного нет → «Нужна закупка».
+    # Строка ШУ-1 по АТХ: нужно 3, в резерве 2, третий уже заказан (№ 1 размещён) и едет → «Заказана, ждём» (D-60).
     atx = next(n for n in nv["needs"] if n["kit_code"] == "АТХ")
     shu = next(ln for ln in atx["lines"] if ln["code"] == "ШУ-1")
-    assert shu["state_label"] == "Нужна закупка" and shu["open_label"] == "1 шт"
+    assert shu["state_label"] == "Заказана, ждём" and shu["on_order_label"] == "1 шт"
+    assert shu["open_label"] == "1 шт" and shu["reserve_open_label"] == "0 шт"  # весь непокрытый остаток — в пути
     assert any(ln["state_label"] == "Не сопоставлена" and "Нет обозначения" in (ln["match_note"] or "") for ln in atx["lines"])
 
-    # Склад принимает ещё один шкаф и резервирует его под строку — строка становится «Покрыта резервом».
+    # Демо-стенд выдал АРМ № 1 со склада на ПНР — по резерву «Под ПНР» осталось 1 из 2. Снимаем его остаток —
+    # строка АРМ снова открыта, а выданное остаётся выданным (сторно выдачи резерв не восстанавливает, D-33).
+    import sqlalchemy as sa
+    from vector.server.db import stock_reservations
+    with ui.svc.engine.connect() as c:
+        rs = c.execute(sa.select(stock_reservations.c.id, stock_reservations.c.version).where(
+            stock_reservations.c.reason.like("%ПНР%"))).one()
     ui.backend.logout()
     ui.wait_idle()
     ui.login("i.belova")
+    ui.backend.execute("t-rel", "stock.release", {"id": rs.id, "reason": "ПНР завершена одним АРМ, остаток не нужен"},
+                       rs.version)
+    ui.wait_idle()
     rf = _popup(ui, "receiveForm")
-    _call(rf, "openFor", _item(ui, "ШУ-1"))
+    _call(rf, "openFor", _item(ui, "АРМ"))
     ui.wait_idle()
     _popup(ui, "rQty").setProperty("text", "1")
     _popup(ui, "rSrc").setProperty("text", "ТН № 501")
@@ -146,22 +156,22 @@ def test_procurement_generates_need_and_warehouse_reserves_line(ui):
     nv = _v(pp, "nv")
     assert nv["can_reserve"] is True and nv["can_generate"] is False
     atx = next(n for n in nv["needs"] if n["kit_code"] == "АТХ")
-    shu = next(ln for ln in atx["lines"] if ln["code"] == "ШУ-1")
-    assert shu["state_label"] == "Есть на складе"
+    arm = next(ln for ln in atx["lines"] if ln["code"] == "АРМ")
+    assert arm["state_label"] == "Есть на складе"
     pp.setProperty("selectedId", atx["id"])
     ui.wait_idle()
     lr = _popup(ui, "lineReserve")
-    _call(lr, "openFor", shu)
+    _call(lr, "openFor", arm)
     ui.wait_idle()
     assert lr.property("canConfirm") is False                    # основание обязательно
-    _popup(ui, "lrReason").setProperty("text", "Под монтаж ШУ")
+    _popup(ui, "lrReason").setProperty("text", "Под монтаж АРМ")
     ui.wait_idle()
     QMetaObject.invokeMethod(lr, "confirmed")
     ui.wait_idle()
     assert not lr.property("visible") and lr.property("error") == ""
     atx = next(n for n in _v(pp, "nv")["needs"] if n["kit_code"] == "АТХ")
-    shu = next(ln for ln in atx["lines"] if ln["code"] == "ШУ-1")
-    assert shu["state_label"] == "Покрыта резервом" and atx["open_count"] == 0
+    arm = next(ln for ln in atx["lines"] if ln["code"] == "АРМ")
+    assert arm["state_label"] == "Покрыта резервом" and atx["open_count"] == 1   # ШУ-1 открыта, но уже заказана (D-60)
 
 
 def test_gip_sees_need_without_stock_numbers(ui):

@@ -136,10 +136,10 @@ MasterDetail {
         readonly property var stockItem: line ? (sov.items || []).find(i => i.id === line.item_id) || null : null
         readonly property var whAvail: stockItem ? stockItem.by_warehouse.filter(b => Number(b.available) > 0).map(b => ({ id: b.warehouse_id, label: b.warehouse_code + " — доступно " + b.available_label })) : []
         title: line ? "Резерв под строку: " + (line.code || line.name) : ""
-        subtitle: line ? "Не покрыто " + line.open_label + ". Резерв больше непокрытого сервер не примет." : ""
+        subtitle: line ? "Можно зарезервировать до " + (line.reserve_open_label || line.open_label) + " (непокрытое минус уже идущее по закупке, D-60). Больше сервер не примет." : ""
         confirmText: "Зарезервировать"
         canConfirm: lrQty.text.trim() !== "" && lrQty.error === "" && lrReason.text.trim() !== "" && lrWh.currentValue !== ""
-        function openFor(l) { line = l; lrQty.text = backend.normalizeQty(l.coverage.open).replace(/\.?0+$/, ""); lrReason.text = ""; lrWh.currentIndex = 0; open() }
+        function openFor(l) { line = l; lrQty.text = (l.reserve_open_label || "0").split(" ")[0]; lrReason.text = ""; lrWh.currentIndex = 0; open() }
         onConfirmed: cLine.run("stock.reserve", { id: backend.newId(), warehouse_id: lrWh.currentValue, item_id: line.item_id, project_id: page.sel.project_id,
                                                   qty: backend.normalizeQty(lrQty.text), reason: lrReason.text.trim(), need_id: page.sel.id, need_line_id: line.line_id })
         Banner { visible: lineReserve.whAvail.length === 0; tone: "warning"; text: "Свободного количества на складах нет — нужна закупка." }

@@ -28,6 +28,11 @@ def qty_label(value: Optional[str], unit: str = "") -> str:
     return f"{s} {unit}".strip() if s != "—" else "—"
 
 
+def fmt_reserve_open(value: Decimal) -> str:
+    """Непокрытое, доступное к резерву (D-60): не ниже нуля; четыре знака — как везде."""
+    return money.to_json(max(value, ZERO))
+
+
 def as_of_label(last_pull: str) -> str:
     """Время снимка для пометки «на момент …» (UTC — как на сервере; часовой пояс показывается явно)."""
     if not last_pull:
@@ -327,8 +332,15 @@ def needs_view(needs: list, candidates: list, items: list, last_pull: str, onlin
         lines = []
         for ln in n["lines"]:
             cov = ln["coverage"]
+            # «Уже идёт по закупке» — по данным снимка (заказы и пакеты их видны даже без прав склада, D-60):
+            # coverage.open такое покрытие не считает, поэтому резерв под строку сервер бы отклонил (exceeds_need).
+            # in_batches — сумма распределений действующих пакетов; поставленное по пакету становится резервом
+            # склада и уже вычтено из coverage.open (не двойное счисление).
+            inbound = _d(ln.get("on_order")) + _d(ln.get("in_batches"))
             if ln.get("item_id") is None:
                 st, tone = "Не сопоставлена", "neutral"
+            elif inbound > 0:
+                st, tone = "Заказана, ждём", "info"
             elif _d(cov["open"]) == 0:
                 st, tone = "Покрыта резервом", "success"
             elif cov["can_cover"] is True:
@@ -344,6 +356,10 @@ def needs_view(needs: list, candidates: list, items: list, last_pull: str, onlin
             lines.append({**ln, "qty_label": qty_label(ln["qty"], unit), "reserved_label": qty_label(cov["reserved"], cu),
                           "item_qty_label": qty_label(ln.get("item_qty"), cu) if ln.get("factor") else "",
                           "open_label": qty_label(cov["open"], cu),
+                          # Сколько непокрытого можно зарезервировать сейчас: покрытие склада (coverage.open) минус
+                          # уже идущее по закупке (заказы и непоставленные распределения пакетов, D-60) — сервер
+                          # считает то же самое при stock.reserve.
+                          "reserve_open_label": qty_label(fmt_reserve_open(_d(cov["open"]) - inbound), cu),
                           # «Заказано, ждём» — по размещённым заказам поставщикам (D-32); нет данных — пусто.
                           "on_order_label": qty_label(ln.get("on_order"), cu) if _d(ln.get("on_order")) > 0 else "",
                           "available_label": qty_label(cov["available"], cu) if cov["available"] is not None else "неизвестно",

@@ -21,9 +21,10 @@ from vector.core.errors import Rejected
 
 from vector.core import money
 
-from .db import (item_analogs, procurement_allocations, procurement_batch_lines, procurement_batches,
-                 procurement_groups, procurement_need_lines, procurement_needs, purchase_order_batch_lines,
-                 purchase_order_lines, purchase_orders, stock_items)
+from .db import (item_analogs, procurement_allocations, procurement_allocation_receipts, procurement_batch_lines,
+                 procurement_batches, procurement_groups, procurement_need_lines, procurement_needs,
+                 purchase_order_batch_lines, purchase_order_lines, purchase_orders, stock_items,
+                 stock_reservations)
 from .validation import iso, only_keys, opt_date, opt_str, req_str, req_uuid
 
 
@@ -84,10 +85,15 @@ class ConsolidationMixin:
         return row
 
     def _coverage(self, ctx, need_id: str, line_id: str, exclude_batch: Optional[str] = None) -> dict:
-        """Занятое покрытие строки потребности: распределениями действующих пакетов и строками заказов.
+        """Занятое покрытие строки потребности: распределениями действующих пакетов, строками заказов и
+        резервами склада (D-60).
 
         Вызывается в транзакции команды (SERIALIZABLE): конкурирующее распределение либо ждёт, либо повторяется
         и видит уже занятое — двойного покрытия нет.
+
+        Резервы, созданные приходами по распределениям ДЕЙСТВУЮЩИХ пакетов этой строки (D-59), в «reserved»
+        НЕ входят: это исполнение уже посчитанного распределения, а не новое покрытие. Резервы отменённого или
+        закрытого пакета считаются — пакет покрытие освободил, а поставленный материал остался за проектом.
         """
         q = sa.select(sa.func.coalesce(sa.func.sum(procurement_allocations.c.qty), 0)).select_from(
             procurement_allocations.join(procurement_batch_lines,
@@ -103,7 +109,26 @@ class ConsolidationMixin:
                 purchase_order_lines.join(purchase_orders, purchase_orders.c.id == purchase_order_lines.c.order_id))
             .where(purchase_order_lines.c.need_id == need_id, purchase_order_lines.c.need_line_id == line_id,
                    purchase_orders.c.status.in_(cs.COVERING_ORDER_STATUSES))).scalar()))
-        return {"allocated": allocated, "ordered": ordered}
+        reserved = self._need_line_covered(ctx.conn, need_id, line_id)
+        if reserved > 0:
+            # Резервы, приписанные распределениям действующих пакетов этой строки, — не новое покрытие.
+            batch_res = ctx.conn.execute(
+                sa.select(stock_reservations).select_from(
+                    stock_reservations.join(
+                        procurement_allocation_receipts,
+                        procurement_allocation_receipts.c.reservation_id == stock_reservations.c.id)
+                    .join(procurement_allocations,
+                          procurement_allocations.c.id == procurement_allocation_receipts.c.allocation_id)
+                    .join(procurement_batch_lines,
+                          procurement_batch_lines.c.id == procurement_allocations.c.batch_line_id)
+                    .join(procurement_batches, procurement_batches.c.id == procurement_batch_lines.c.batch_id))
+                .where(procurement_allocations.c.need_id == need_id,
+                       procurement_allocations.c.need_line_id == line_id,
+                       procurement_batches.c.status.in_(cs.COVERING_BATCH_STATUSES))).all()
+            for r in batch_res:
+                reserved -= r.consumed + ((r.qty - r.consumed) if r.status == "active" else 0)
+            reserved = max(reserved, Decimal(0))
+        return {"allocated": allocated, "ordered": ordered, "reserved": reserved}
 
     def _apply_allocations(self, ctx, batch_id: str, items: list, exclude_batch: Optional[str] = None) -> None:
         """Проверить и записать распределения пакета: строки пакета по (позиция, единица) + распределения."""
@@ -111,11 +136,12 @@ class ConsolidationMixin:
         for need_id, line_id, qty in items:
             nl = self._need_line(ctx, need_id, line_id)
             cov = self._coverage(ctx, need_id, line_id, exclude_batch=exclude_batch)
-            if qty > cs.remaining(Decimal(str(nl["qty"])), cov["allocated"], cov["ordered"]):
+            rem = cs.remaining(Decimal(str(nl["qty"])), cov["allocated"], cov["ordered"], cov["reserved"])
+            if qty > rem:
                 raise Rejected("coverage_exceeded",
-                               f"Строка «{nl['name']}»: распределить можно не больше "
-                               f"{cs.remaining(Decimal(str(nl['qty'])), cov['allocated'], cov['ordered'])} "
-                               f"(потребность {nl['qty']}, занято пакетами {cov['allocated']}, заказами {cov['ordered']}).",
+                               f"Строка «{nl['name']}»: распределить можно не больше {rem} "
+                               f"(потребность {nl['qty']}, занято пакетами {cov['allocated']}, "
+                               f"заказами {cov['ordered']}, резервами склада {cov['reserved']}).",
                                {"need_id": need_id, "line_id": line_id})
             key = (nl["item_id"], nl["unit"])
             if key not in lines:
@@ -299,11 +325,12 @@ class ConsolidationMixin:
             for a in allocs:
                 nl = self._need_line(ctx, a["need_id"], a["need_line_id"])
                 cov = self._coverage(ctx, a["need_id"], a["need_line_id"], exclude_batch=b["id"])
-                if Decimal(str(a["qty"])) > cs.remaining(Decimal(str(nl["qty"])), cov["allocated"], cov["ordered"]):
+                rem = cs.remaining(Decimal(str(nl["qty"])), cov["allocated"], cov["ordered"], cov["reserved"])
+                if Decimal(str(a["qty"])) > rem:
                     raise Rejected("coverage_exceeded",
                                    f"Строка «{nl['name']}»: покрытие изменилось, пока пакет собирался — "
-                                   f"доступно {cs.remaining(Decimal(str(nl['qty'])), cov['allocated'], cov['ordered'])}, "
-                                   f"в пакете {a['qty']}. Верните пакет в работу и поправьте распределения.",
+                                   f"доступно {rem}, в пакете {a['qty']} (в том числе резервами склада "
+                                   f"{cov['reserved']}). Верните пакет в работу и поправьте распределения.",
                                    {"need_id": a["need_id"], "line_id": a["need_line_id"]})
         n = self._update_versioned(ctx, procurement_batches, b,
                                    {"status": to, "close_reason": reason if to in ("cancelled", "closed") else None,

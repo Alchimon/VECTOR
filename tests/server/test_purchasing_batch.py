@@ -204,27 +204,31 @@ def test_receipt_partial_then_rest_keeps_allocation(world, st):  # noqa: F811
     assert [x for x in pull(st.pr)["procurement_batches"] if x["id"] == b["id"]][0]["status"] == "closed"
 
 
-def test_receipt_when_need_already_covered_from_stock_goes_to_surplus(world, st):  # noqa: F811
+def test_receipt_after_rematch_stays_free_but_counts_delivered(world, st):  # noqa: F811
+    """Строку пересопоставили с другой позицией, пока заказ по пакету ехал: приход старой позиции НЕ
+    резервируется за проектом (потребности под неё больше нет), но «поставлено по распределению» учитывается —
+    дублей и потерянного покрытия нет. (Ручной резерв действующего пакета невозможен — D-60.)"""
     need = make_need(st, "10")
     b, bl = consolidated_batch(st, need, "10")
     sup = supplier(st.pr)
     o = placed(st, sup, [line(st.item, "10", batch_line_id=bl["id"])])
     ln = pulled_order(st.pr, o["id"])["lines"][0]
-    # Пока заказ едет, склад вручную зарезервировал 10 под эту строку из свободного остатка.
-    st.wh.ok("stock.receive", {"id": new_id(), "warehouse_id": st.w, "item_id": st.item, "qty": "10",
-                               "source_doc": "ИНВ-1"})
-    nl = need["lines"][0]
-    st.wh.ok("stock.reserve", {"id": new_id(), "warehouse_id": st.w, "item_id": st.item, "project_id": st.proj.pid,
-                               "qty": "10", "reason": "Из остатка", "need_id": need["id"],
-                               "need_line_id": nl["line_id"]})
-    # Приход по заказу: потребность уже покрыта — вся поставка уходит в свободный остаток, дублей нет.
+    # Пока заказ едет, закупка пересопоставила строку на другое исполнение кабеля (ручное решение, A-25).
+    other = new_id()
+    st.wh.ok("item.create", {"id": other, "code": "КВВГнг-4x1.5", "name": "Кабель КВВГнг 4×1,5", "unit": "м"})
+    nv = pull(st.pr)["needs"]
+    ver = [x for x in nv if x["id"] == need["id"]][0]["version"]
+    st.pr.ok("need.match_line", {"id": new_id(), "need_id": need["id"], "line_id": need["lines"][0]["line_id"],
+                                 "item_id": other, "reason": "По паспорту нужен не распространяющий горение"},
+             expected_version=ver)
+    # Приход по заказу: резервировать старую позицию за строкой нельзя — поставка уходит в свободный остаток.
     r = receive(st, o, ln, "10")
     assert r["status"] == "accepted"
     assert r["result"]["distribution"][0]["reserved"] == "0.0000"
     assert r["result"]["surplus"] == "0.0000"  # отнесено на распределение (поставлено), но не зарезервировано
     data = pull(st.wh)
     bal = [x for x in data["stock_balances"] if x["warehouse_id"] == st.w and x["item_id"] == st.item][0]
-    assert (bal["on_hand"], bal["reserved"]) == ("20.0000", "10.0000")
+    assert (bal["on_hand"], bal["reserved"]) == ("10.0000", "0.0000")
     a = [x for x in pull(st.pr)["procurement_allocations"] if x["batch_line_id"] == bl["id"]][0]
     assert a["delivered"] == "10.0000"
 
@@ -323,3 +327,113 @@ def test_item_pack_qty_crud(world, st):  # noqa: F811
     pack(st, "100")
     got = {x["id"]: x for x in pull(st.wh)["stock_items"]}
     assert got[st.item]["pack_qty"] == "100.0000" and got[it["id"]]["pack_qty"] is None
+
+
+# ====================================================================== покрытие резервами (D-60)
+def test_reserve_counts_as_coverage_for_batches(world, st):  # noqa: F811
+    """Ручной резерв склада занимает покрытие строки потребности: распределить зарезервированное в пакет нельзя
+    (двойное покрытие); снятие резерва освобождает."""
+    need = make_need(st, "10")
+    nl = need["lines"][0]
+    st.wh.ok("stock.receive", {"id": new_id(), "warehouse_id": st.w, "item_id": st.item, "qty": "10",
+                               "source_doc": "ИНВ-1"})
+    st.wh.ok("stock.reserve", {"id": new_id(), "warehouse_id": st.w, "item_id": st.item, "project_id": st.proj.pid,
+                               "qty": "4", "reason": "Из остатка", "need_id": need["id"],
+                               "need_line_id": nl["line_id"]})
+    # 4 зарезервировано: распределить можно не больше 6.
+    r = make_batch(st, [alloc(need, 0, "7")])
+    assert r["code"] == "coverage_exceeded" and "резервами склада 4" in r["message_ru"]
+    assert make_batch(st, [alloc(need, 0, "6")])["status"] == "accepted"
+    # Снятие резерва освобождает покрытие: оставшиеся 4 — в пакет.
+    resv = [x for x in pull(st.wh)["stock_reservations"] if x["need_id"] == need["id"]][0]
+    st.wh.ok("stock.release", {"id": resv["id"], "reason": "не нужно"}, expected_version=resv["version"])
+    assert make_batch(st, [alloc(need, 0, "4")])["status"] == "accepted"
+
+
+def test_batches_and_orders_block_stock_reserve(world, st):  # noqa: F811
+    """И обратно: распределённое в действующие пакеты и заказанное по строке нельзя зарезервировать со склада."""
+    need = make_need(st, "10")
+    nl = need["lines"][0]
+    st.wh.ok("stock.receive", {"id": new_id(), "warehouse_id": st.w, "item_id": st.item, "qty": "30",
+                               "source_doc": "ИНВ-1"})
+    b = make_batch(st, [alloc(need, 0, "6")])["result"]["batch"]
+    # 6 ушло в пакет: зарезервировать больше 4 нельзя.
+    r = st.wh.cmd("stock.reserve", {"id": new_id(), "warehouse_id": st.w, "item_id": st.item,
+                                    "project_id": st.proj.pid, "qty": "5", "reason": "Под монтаж",
+                                    "need_id": need["id"], "need_line_id": nl["line_id"]})
+    assert r["code"] == "exceeds_need"
+    st.wh.ok("stock.reserve", {"id": new_id(), "warehouse_id": st.w, "item_id": st.item, "project_id": st.proj.pid,
+                               "qty": "4", "reason": "Под монтаж", "need_id": need["id"],
+                               "need_line_id": nl["line_id"]})
+    # Отмена пакета освобождает покрытие — но 4 уже занято резервом: больше 6 нельзя.
+    bv = [x for x in pull(st.pr)["procurement_batches"] if x["id"] == b["id"]][0]
+    st.pr.ok("batch.transition", {"id": b["id"], "to": "cancelled", "reason": "не требуется"},
+             expected_version=bv["version"])
+    r = st.wh.cmd("stock.reserve", {"id": new_id(), "warehouse_id": st.w, "item_id": st.item,
+                                    "project_id": st.proj.pid, "qty": "7", "reason": "Ещё",
+                                    "need_id": need["id"], "need_line_id": nl["line_id"]})
+    assert r["code"] == "exceeds_need"
+    # Строка черновика заказа по потребности тоже занимает покрытие.
+    need2 = make_need(st, "5")
+    sup = supplier(st.pr)
+    draft(st, sup, [line(st.item, "5", need_id=need2["id"], need_line_id=need2["lines"][0]["line_id"])])
+    r = st.wh.cmd("stock.reserve", {"id": new_id(), "warehouse_id": st.w, "item_id": st.item,
+                                    "project_id": st.proj.pid, "qty": "1", "reason": "Под монтаж",
+                                    "need_id": need2["id"], "need_line_id": need2["lines"][0]["line_id"]})
+    assert r["code"] == "exceeds_need"
+
+
+def test_batch_receipt_reserve_not_double_counted(world, st):  # noqa: F811
+    """Резерв, созданный приходом по распределению действующего пакета, — исполнение распределения, а не новое
+    покрытие: остаток строки распределяется."""
+    need = make_need(st, "12")
+    b, bl = consolidated_batch(st, need, "10")
+    sup = supplier(st.pr)
+    o = placed(st, sup, [line(st.item, "10", batch_line_id=bl["id"])])
+    ln = pulled_order(st.pr, o["id"])["lines"][0]
+    assert receive(st, o, ln, "10")["status"] == "accepted"     # резерв 10 создан приходом пакета
+    # Пакет действует: занято 10 распределением (резерв прихода не считается дважды) — свободны 2.
+    assert make_batch(st, [alloc(need, 0, "2")])["status"] == "accepted"
+    assert make_batch(st, [alloc(need, 0, "1")])["code"] == "coverage_exceeded"
+
+
+def test_closed_batch_delivered_reserve_counts(world, st):  # noqa: F811
+    """Закрытый пакет освобождает распределения, но поставленные по нему резервы остаются покрытием."""
+    need = make_need(st, "12")
+    b, bl = consolidated_batch(st, need, "10")
+    sup = supplier(st.pr)
+    o = placed(st, sup, [line(st.item, "10", batch_line_id=bl["id"])])
+    ln = pulled_order(st.pr, o["id"])["lines"][0]
+    receive(st, o, ln, "10")
+    po = pulled_order(st.pr, o["id"])
+    st.pr.ok("po.close", {"id": po["id"]}, expected_version=po["version"])      # поставлено всё — без причины
+    bv = [x for x in pull(st.pr)["procurement_batches"] if x["id"] == b["id"]][0]
+    st.pr.ok("batch.transition", {"id": b["id"], "to": "closed"}, expected_version=bv["version"])
+    # Распределения закрытого пакета не занимают покрытие, но его резервы считаются: свободны ровно 2.
+    assert make_batch(st, [alloc(need, 0, "3")])["code"] == "coverage_exceeded"
+    assert make_batch(st, [alloc(need, 0, "2")])["status"] == "accepted"
+
+
+def test_storno_frees_coverage_only_via_batch_cancel(world, st):  # noqa: F811
+    """Сторно прихода снимает резерв пакета, но действующий пакет ждёт поставку заново: строка остаётся занятой;
+    освобождается только отменой заказа и пакета."""
+    need = make_need(st, "10")
+    b, bl = consolidated_batch(st, need, "10")
+    sup = supplier(st.pr)
+    o = placed(st, sup, [line(st.item, "10", batch_line_id=bl["id"])])
+    ln = pulled_order(st.pr, o["id"])["lines"][0]
+    r = receive(st, o, ln, "10")
+    st.wh.ok("stock.reverse", {"id": new_id(), "movement_id": r["result"]["movement"]["id"],
+                               "reason": "Ошибка приёмки"})
+    # Пакет действует: распределение ждёт поставку — строка занята целиком.
+    assert make_batch(st, [alloc(need, 0, "1")])["code"] == "coverage_exceeded"
+    # Отмена заказа (поставки сторнированы) и пакета освобождает покрытие полностью.
+    po = pulled_order(st.pr, o["id"])
+    st.pr.ok("po.cancel", {"id": po["id"], "reason": "сорвалось"}, expected_version=po["version"])
+    bv = [x for x in pull(st.pr)["procurement_batches"] if x["id"] == b["id"]][0]
+    st.pr.ok("batch.transition", {"id": b["id"], "to": "open", "reason": "расформировать"},
+             expected_version=bv["version"])
+    bv = [x for x in pull(st.pr)["procurement_batches"] if x["id"] == b["id"]][0]
+    st.pr.ok("batch.transition", {"id": b["id"], "to": "cancelled", "reason": "расформировать"},
+             expected_version=bv["version"])
+    assert make_batch(st, [alloc(need, 0, "10")])["status"] == "accepted"

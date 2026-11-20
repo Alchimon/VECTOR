@@ -163,6 +163,24 @@ def test_need_line_states_and_counts():
     assert nv["title"] == "П-1 · АТХ v1"
 
 
+def test_need_line_inbound_shows_ordered_and_caps_reserve():
+    """D-60: «уже идёт по закупке» (заказы + непоставленные пакеты) видно в состоянии строки, а форма резерва
+    предлагает только непокрытое минус идущее — больше сервер не примет (exceeds_need)."""
+    n = _need([_line("a", "i1", "3.0000", "2.0000", "1.0000", "0.0000", False)])
+    v = sv.needs_view([n], [], ITEMS, PULL, True, ["warehouse"])
+    ln = v["needs"][0]["lines"][0]
+    assert (ln["state_label"], ln["reserve_open_label"]) == ("Нужна закупка", "1 шт")   # без снимка закупки — как раньше
+    ln_in = {**_line("a", "i1", "3.0000", "2.0000", "1.0000", "0.0000", False), "on_order": "1.0000"}
+    ln = sv.needs_view([_need([ln_in])], [], ITEMS, PULL, True, ["warehouse"])["needs"][0]["lines"][0]
+    assert (ln["state_label"], ln["reserve_open_label"]) == ("Заказана, ждём", "0 шт")
+    ln_b = {**_line("a", "i1", "3.0000", "2.0000", "1.0000", "5.0000", True), "in_batches": "1.5000"}
+    ln = sv.needs_view([_need([ln_b])], [], ITEMS, PULL, True, ["warehouse"])["needs"][0]["lines"][0]
+    assert (ln["state_label"], ln["reserve_open_label"]) == ("Заказана, ждём", "0 шт")   # 1 непокрыто − 1,5 идёт
+    ln_b2 = {**_line("a", "i1", "3.0000", "2.0000", "1.0000", "5.0000", True), "in_batches": "0.2500"}
+    ln = sv.needs_view([_need([ln_b2])], [], ITEMS, PULL, True, ["warehouse"])["needs"][0]["lines"][0]
+    assert (ln["state_label"], ln["reserve_open_label"]) == ("Заказана, ждём", "0,75 шт")
+
+
 def test_need_hints_by_role_and_connection():
     assert sv.needs_view([], [], [], PULL, True, ["procurement"])["can_generate"] is True
     assert sv.needs_view([], [], [], PULL, False, ["procurement"])["can_generate"] is False

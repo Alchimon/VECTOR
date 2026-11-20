@@ -66,9 +66,10 @@ def parse_allocations(items: Any) -> Optional[list[tuple[str, str, Decimal]]]:
     return out
 
 
-def remaining(need_qty: Decimal, allocated: Decimal, ordered: Decimal) -> Decimal:
-    """Сколько ещё можно распределить по строке потребности: потребность минус занятое пакетами и заказами."""
-    return need_qty - allocated - ordered
+def remaining(need_qty: Decimal, allocated: Decimal, ordered: Decimal, reserved: Decimal = Decimal(0)) -> Decimal:
+    """Сколько ещё можно распределить по строке потребности: потребность минус занятое пакетами, заказами
+    и резервами склада (D-60: резерв склада — тоже покрытие, иначе строку заказали бы дважды)."""
+    return need_qty - allocated - ordered - reserved
 
 
 # ---------------------------------------------------------------- закупка из пакета (D-59)
