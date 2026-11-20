@@ -1108,11 +1108,7 @@ def test_v30_to_v31_adds_consolidation_tables_with_guards(backend, tmp_path, clo
     before = counts(eng, mg.tables_of_version(30))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (30, db.SCHEMA_VERSION)
-    assert rep.created_tables == ["procurement_groups", "procurement_batches", "procurement_batch_lines",
-                                  "procurement_allocations", "item_analogs",
-                                  # + v32 (D-59): кратность заказа, связи заказ↔пакет, распределения приходов
-                                  "stock_item_packs", "purchase_order_batch_lines",
-                                  "procurement_allocation_receipts"]
+    assert rep.created_tables == [t.name for v in range(31, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]]
     after = counts(eng, mg.tables_of_version(30))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
 
@@ -1207,7 +1203,7 @@ def test_v31_to_v32_adds_purchasing_links_with_guards(backend, tmp_path, clock, 
     before = counts(eng, mg.tables_of_version(31))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (31, db.SCHEMA_VERSION)
-    assert rep.created_tables == ["stock_item_packs", "purchase_order_batch_lines", "procurement_allocation_receipts"]
+    assert rep.created_tables == [t.name for v in range(32, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]]
     after = counts(eng, mg.tables_of_version(31))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
 
@@ -1238,5 +1234,61 @@ def test_v31_to_v32_adds_purchasing_links_with_guards(backend, tmp_path, clock, 
                                                                      qty=Decimal("4")))
     bad(db.procurement_allocation_receipts.insert().values(id=new_id(), allocation_id=aid, movement_id=mv,
                                                            reservation_id=None, qty=Decimal("1")))
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
+
+
+def test_v32_to_v33_adds_assembly_readiness(backend, tmp_path, clock, keys):
+    """v32 → v33 (D-61, этап 5 blueprint 52): снимок готовности сборки — неизменяемый (триггеры), один на наряд
+    (первичный ключ — наряд), контрольная сумма — ровно 64 шестнадцатеричных знака. Данные v32 не меняются."""
+    eng = make_v3(backend, tmp_path, clock, version=32)
+    now = clock.now()
+    uid, pid, tid, cust, kit, tp, wo = new_id(), new_id(), new_id(), new_id(), new_id(), new_id(), new_id()
+    stamp = dict(version=1, created_by=uid, created_at=now, updated_by=uid, updated_at=now)
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x",
+                                           must_change_password=False, password_changed_at=now, failed_attempts=0,
+                                           active=True, created_at=now))
+        c.execute(db.customers.insert().values(id=cust, name="З", **stamp))
+        c.execute(db.tenders.insert().values(id=tid, customer_id=cust, title="Т", status="won",
+                                             owner_user_id=uid, **stamp))
+        c.execute(db.projects.insert().values(id=pid, code="П-1", title="П", tender_id=tid,
+                                              tender_version_at_start=1, status="rkd_in_progress", **stamp))
+        c.execute(db.kits.insert().values(id=kit, project_id=pid, code="АТХ", title="К", **stamp))
+        c.execute(db.tech_processes.insert().values(id=tp, project_id=pid, kit_id=kit, revision_no=1, title="ТП",
+                                                    spec_version_id=None, note=None, status="approved",
+                                                    content_hash="1" * 64, **stamp))
+        c.execute(db.work_orders.insert().values(id=wo, doc_no=1, project_id=pid, kit_id=kit, tp_id=tp, qty=1,
+                                                 title="Наряд", note=None, status="released",
+                                                 snapshot_hash="2" * 64, cancel_reason=None, released_by=uid,
+                                                 released_at=now, closed_by=None, closed_at=None,
+                                                 updated_by=uid, updated_at=now, version=1))
+    before = counts(eng, mg.tables_of_version(32))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (32, db.SCHEMA_VERSION)
+    assert rep.created_tables == ["assembly_readiness_snapshots"]
+    after = counts(eng, mg.tables_of_version(32))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+
+    good_hash = "a" * 64
+    with eng.begin() as c:
+        c.execute(db.assembly_readiness_snapshots.insert().values(
+            work_order_id=wo, project_id=pid, kit_id=kit, content_json="{}", content_hash=good_hash,
+            created_by=uid, created_at=now))
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    # Контрольная сумма — ровно 64 шестнадцатеричных знака (кросс-диалектный CHECK, как у project_closeouts).
+    bad(db.assembly_readiness_snapshots.insert().values(work_order_id=new_id(), project_id=pid, kit_id=kit,
+                                                        content_json="{}", content_hash="XYZ", created_by=uid,
+                                                        created_at=now))
+    # Один снимок на наряд; запись неизменяема.
+    bad(db.assembly_readiness_snapshots.insert().values(work_order_id=wo, project_id=pid, kit_id=kit,
+                                                        content_json="{}", content_hash=good_hash,
+                                                        created_by=uid, created_at=now))
+    bad(db.assembly_readiness_snapshots.update().values(content_json="{}"))
+    bad(db.assembly_readiness_snapshots.delete())
     assert db.check_schema(eng) == db.SCHEMA_VERSION
     assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []

@@ -51,6 +51,7 @@ def pd(world, st):  # noqa: F811
     st.proj.eng.ok("calc.save_draft", {"id": st.proj.kit, "lines": [cable, work], "currency": "RUB"}, expected_version=0)
     v = st.proj.gip.ok("calc.freeze", {"id": st.proj.kit, "reason": "К производству"}, expected_version=1)["calc_version"]
     world.clock.advance(seconds=61)
+    approve_rkd_stream(st.proj.rp, st.proj.pid)     # D-61: без согласованной заказчиком РКД наряд не выпускается
     return Pd(st, world.login("tech1"), world.login("tech2"), world.login("prod1"), world.login("prod2"),
               world.login("head1"), v["id"], cable["line_id"], work["line_id"])
 
@@ -71,6 +72,16 @@ def approved_tp(pd) -> dict:
     """Утверждённый ТП (создал tech1, утвердил tech2)."""
     t = tp_draft(pd)["result"]["tech_process"]
     return pd.tech2.ok("tp.approve", {"id": t["id"]}, expected_version=t["version"])["tech_process"]
+
+
+def approve_rkd_stream(s, pid):
+    """Провести поток РКД проекта до «Согласована заказчиком» (с основанием — номером письма; D-56/D-61)."""
+    ws = {w["kind"]: w for w in pull(s)["workstreams"] if w["project_id"] == pid}["rkd"]
+    for to in ("in_design", "internal_review", "customer_review"):
+        ws = s.ok("workstream.set_status", {"id": ws["id"], "to": to}, expected_version=ws["version"])["workstream"]
+    return s.ok("workstream.set_status", {"id": ws["id"], "to": "approved_for_use",
+                                          "reason": "Письмо заказчика № 77 от 10.11.2026"},
+                expected_version=ws["version"])["workstream"]
 
 
 def release(pd, tp, qty=2, assignees=None, s=None):

@@ -36,7 +36,7 @@ import uuid
 
 import sqlalchemy as sa
 
-from .db import calc_versions, customers, tasks, users, work_orders
+from .db import calc_versions, customers, project_workstreams, tasks, users, work_orders
 
 DEVICE = "demo-seed"
 
@@ -415,6 +415,17 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     pdeleg = cmd(gip, "delegation.create", {"to_user_id": people["m.lebedev"], "role": "gip", "project_id": pid,
                                             "valid_until": (today + timedelta(days=6)).isoformat(),
                                             "reason": "Командировка на объект (приказ № 118-к)"})["delegation"]
+    # D-61: наряды выпускаются только по согласованной заказчиком РКД (или по риск-разрешению) — поток «РКД»
+    # демо-проекта доведён до «Согласована заказчиком» с основанием (протокол), до выпуска нарядов.
+    with svc.engine.connect() as c:
+        rkd_ws = c.execute(sa.select(project_workstreams).where(
+            project_workstreams.c.project_id == pid, project_workstreams.c.kind == "rkd")).one()._mapping
+    for to, reason in (("in_design", None), ("internal_review", None), ("customer_review", None),
+                       ("approved_for_use", "Протокол согласования заказчика № 7 от 12.11.2026")):
+        rkd_ws = cmd(rp, "workstream.set_status", {"id": rkd_ws["id"], "to": to,
+                                                   **({"reason": reason} if reason else {})},
+                     rkd_ws["version"])["workstream"]
+
     prod = _seed_production(cmd, login, people, svc, kits, atx_v1)
     prod.update(_seed_lifecycle(cmd, login, people, svc, prod["tech_processes"][0], items, whs, docs))
     prod.update(_seed_quality(cmd, login, people, svc, prod["product_instances"][0], kits, prod["lifecycle_work_order"]))

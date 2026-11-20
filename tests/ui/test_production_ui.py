@@ -109,6 +109,13 @@ def test_master_sees_work_order_snapshot_materials_and_cannot_close(ui, qml_warn
     assert mats["ШУ-1"] == "short" and mats["АРМ"] == "short" and mats["ШУ-0"] == "not_stock"
     assert sel["can_close"] is False and "Не все операции выполнены." in sel["close_problems"]
     assert ui.find("woSnapshotChip").property("text") == "Снимок цел"
+    # D-61: снимок готовности — РКД была согласована заказчиком, но материалы на момент выпуска обеспечены
+    # не полностью (ШУ-1 зарезервировано 2 из 3) → «Готово с отклонениями», отклонение видно в наряде.
+    assert sel["readiness"]["verdict"] == "ready_with_deviations" and sel["readiness"]["rkd"]["ok"] is True
+    assert sel["readiness_rkd_label"] == "Согласована заказчиком"
+    assert ui.find("woReadinessChip").property("text") == "Готово с отклонениями"
+    assert ui.find("woReadinessBanner").property("visible") is True
+    assert "Материалы обеспечены не полностью" in ui.find("woReadinessBanner").property("text")
     assert ui.find("btnCloseWo").property("enabled") is False
     assert ui.find("btnCancelWo").property("enabled") is True
     # Проблема исполнителя — уведомлением РП, «Открыть» ведёт в «Производство».
@@ -149,6 +156,9 @@ def test_master_releases_second_work_order_from_form(ui, qml_warnings):  # noqa:
     assert not form.property("visible"), form.property("error")
     sel = _v(pane, "sel")
     assert sel["doc_no"] == 3 and sel["qty"] == 2 and sel["status"] == "released"
+    # D-61: снимок готовности создан при выпуске; РКД согласована (без риск-разрешений).
+    assert sel["readiness"]["rkd"]["status"] == "approved_for_use" and sel["readiness"]["risks"] == []
+    assert sel["readiness"]["readiness_ok"] is True
     shu = next(ln for ln in sel["spec"] if ln["code"] == "ШУ-1")
     assert shu["qty_label"] == "6 шт"                                      # 3 на изделие × 2
     assert next(o for o in sel["operations"] if o["op_no"] == 10)["norm_label"] == "8 ч 00 мин"

@@ -110,6 +110,8 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     # Закупка из пакета: кратность заказа позиции, связь строки заказа со строкой пакета, распределение прихода
     # по распределениям пакета (складская часть этапа 4, D-59). Порядок — по внешним ключам.
     32: [db.stock_item_packs, db.purchase_order_batch_lines, db.procurement_allocation_receipts],
+    # Снимок готовности сборки при выпуске наряда (этап 5 blueprint 52, D-61).
+    33: [db.assembly_readiness_snapshots],
 }
 
 
@@ -295,7 +297,8 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               28: _create_tables(ADDED_IN[29]),
                               29: _create_tables(ADDED_IN[30]),
                               30: _create_tables(ADDED_IN[31]),
-                              31: _create_tables(ADDED_IN[32])}
+                              31: _create_tables(ADDED_IN[32]),
+                              32: _create_tables(ADDED_IN[33])}
 
 
 @dataclass

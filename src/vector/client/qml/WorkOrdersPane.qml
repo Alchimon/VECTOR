@@ -61,7 +61,13 @@ MasterDetail {
         VChip { text: sel ? sel.status_label : ""; tone: sel ? sel.status_tone : "neutral" }
         VChip { objectName: "woSnapshotChip"; text: sel && sel.snapshot_ok ? "Снимок цел" : "Снимок повреждён"; tone: sel && sel.snapshot_ok ? "success" : "danger"
                 iconName: sel && sel.snapshot_ok ? "shield-check" : "triangle-alert" }
+        VChip { objectName: "woReadinessChip"; visible: sel !== null && sel.readiness !== null
+                text: sel && sel.readiness ? sel.readiness_label : ""; tone: sel ? sel.readiness_tone : "neutral"; iconName: "factory" }
     }
+    Banner { objectName: "woReadinessBanner"; visible: sel !== null && sel.readiness !== null && sel.readiness_deviations.length > 0
+             tone: "warning"; text: sel ? "Готовность при выпуске — с отклонениями: " + sel.readiness_deviations.join(" · ") : "" }
+    Banner { visible: sel !== null && sel.readiness !== null && sel.readiness_ok === false; tone: "danger"
+             text: "Снимок готовности сборки не совпадает с контрольной суммой (SHA-256) — данные изменены в обход программы. Сообщите администратору." }
     Banner { visible: sel !== null && !sel.snapshot_ok; tone: "danger"
              text: "Снимок наряда не совпадает с контрольной суммой (SHA-256) — данные изменены в обход программы. Работать по нему нельзя: сообщите администратору." }
     Banner { visible: sel !== null && sel.cancel_reason !== ""; tone: "danger"; text: sel ? "Наряд отменён: " + sel.cancel_reason : "" }
@@ -88,6 +94,8 @@ MasterDetail {
     KeyValue { k: "Выпустил"; v: sel ? sel.released_label : "" }
     KeyValue { visible: sel !== null && sel.closed_label !== ""; k: "Закрыл"; v: sel ? sel.closed_label : "" }
     KeyValue { k: "Выполнение"; v: sel ? sel.progress_label + " · факт " + sel.fact_label : "" }
+    KeyValue { objectName: "woReadinessRkd"; visible: sel !== null && sel.readiness !== null
+               k: "РКД при выпуске"; v: sel ? sel.readiness_rkd_label : "" }
     KeyValue { k: "SHA-256 снимка"; v: sel ? sel.snapshot_hash : ""; muted: true }
 
     SectionTitle { text: "Операции"; iconName: "list-checks" }

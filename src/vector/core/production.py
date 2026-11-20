@@ -353,3 +353,76 @@ def materials(lines: list[dict], items_by_code: dict[str, dict], issued_by_item:
 MATERIAL_STATE_LABELS_RU = {"ok": "Выдано", "short": "Не выдано полностью", "unit_mismatch": "Единица не совпадает со складом",
                             "not_stock": "Не складская позиция"}
 BLOCKING_MATERIAL_STATES = ("short", "unit_mismatch")
+
+
+# ---------------------------------------------------------------- готовность сборки (D-61, этап 5 blueprint 52)
+# Снимок готовности при выпуске наряда: основания (ревизии), обеспеченность материалами, риск-разрешения.
+READINESS_VERDICT_LABELS_RU = {"ready": "Готово к сборке", "ready_with_deviations": "Готово с отклонениями"}
+
+# Обеспеченность строки состава на момент выпуска: covered — «у проекта» не меньше требуемого; short — меньше;
+# unit_mismatch — единица в составе не совпадает со складской; not_stock — позиции нет в номенклатуре (работа,
+# покупное «под заказ»): обеспечивать со склада нечего, но строка показывается, чтобы это было видно.
+COVERAGE_STATE_LABELS_RU = {"covered": "Обеспечено", "short": "Не обеспечено",
+                            "unit_mismatch": "Единица не совпадает со складом", "not_stock": "Не складская позиция"}
+# Состояния, при которых материал считается обеспеченным для вердикта «Готово к сборке».
+COVERED_STATES = ("covered", "not_stock")
+
+
+def coverage_materials(lines: list[dict], items_by_code: dict[str, dict], secured_by_item: dict[str, Decimal]) -> list[dict]:
+    """Обеспеченность материалами на момент выпуска наряда (D-61) по строкам снимка состава (уже × кол-во наряда).
+
+    items_by_code — номенклатура склада по коду {code: {id, unit}}; secured_by_item — нетто «у проекта» по id
+    позиции: выдано проекту (минус сторно) плюс неизрасходованный остаток действующих резервов проекта. Свободный
+    остаток склада НЕ считается обеспечением — он ещё никому не принадлежит. Нехватка выпуск не блокирует
+    (материалы могут подойти позже; факт контролируют выдача со склада и закрытие наряда), но честно записывается
+    в снимок готовности и видна в наряде.
+    """
+    out = []
+    for ln in lines:
+        it = items_by_code.get(ln.get("code") or "")
+        req = money.parse_decimal(ln["qty"])
+        row = {"line_id": ln["line_id"], "code": ln.get("code"), "name": ln["name"], "unit": ln["unit"],
+               "required": money.to_json(req), "secured": None, "state": "not_stock"}
+        if it is not None:
+            got = secured_by_item.get(it["id"], Decimal(0))
+            row["secured"] = money.to_json(got)
+            if (it["unit"] or "").strip().lower() != (ln["unit"] or "").strip().lower():
+                row.update(state="unit_mismatch", stock_unit=it["unit"])
+            else:
+                row["state"] = "covered" if got >= req else "short"
+        out.append(row)
+    return out
+
+
+def readiness_content(*, work_order: dict, tp: dict, spec: dict, needs: list[dict], rkd: dict,
+                      risks: list[dict], materials: list[dict]) -> dict:
+    """Содержимое снимка готовности сборки (перед записью в assembly_readiness_snapshots, D-61).
+
+    * work_order — {id, doc_no, qty}; tp — {id, revision_no, content_hash}; spec — {calc_version_id, version_no,
+      content_hash}: точные основания выпуска;
+    * needs — потребности по версии расчёта [{id, status, line_count, matched_count}];
+    * rkd — {status, label_ru, ok}: статус потока РКД проекта на момент выпуска и прошёл ли шлюз без исключений;
+    * risks — действующие риск-разрешения, под которыми выпущен наряд [{id, kind, label_ru, reason, due_on,
+      kit_ids}]; пусто, если РКД согласована;
+    * materials — обеспеченность (coverage_materials).
+
+    Вердикт «Готово к сборке» — только когда РКД согласована заказчиком, риск-разрешений не потребовалось и все
+    складские позиции обеспечены; иначе «Готово с отклонениями» (выпуск по риск-разрешению и/или нехватка).
+    """
+    rkd_ok = bool(rkd["ok"]) and not risks
+    materials_covered = all(m["state"] in COVERED_STATES for m in materials)
+    verdict = "ready" if (rkd_ok and materials_covered) else "ready_with_deviations"
+    return {"format": 1, "verdict": verdict,
+            "work_order": {"id": work_order["id"], "doc_no": work_order["doc_no"], "qty": work_order["qty"]},
+            "tp": {"id": tp["id"], "revision_no": tp["revision_no"], "content_hash": tp["content_hash"]},
+            "spec": {"calc_version_id": spec["calc_version_id"], "version_no": spec["version_no"],
+                     "content_hash": spec["content_hash"]},
+            "needs": sorted(needs, key=lambda n: n["id"]),
+            "rkd": {"status": rkd["status"], "label_ru": rkd["label_ru"], "ok": bool(rkd["ok"])},
+            "risks": sorted(risks, key=lambda r: r["id"]),
+            "materials": materials, "materials_covered": materials_covered}
+
+
+def readiness_hash(content: dict) -> str:
+    """SHA-256 канонического содержимого снимка готовности — хранится рядом и проверяется при показе."""
+    return canon_hash(content)

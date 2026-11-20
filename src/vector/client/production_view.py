@@ -188,6 +188,12 @@ def _wo_row(wo: dict, ops: list[dict], manage: bool, substitute: bool, online: b
             for s in wo.get("substitutions") or []]
     open_ = st in prod.WO_OPEN
     done_ops = sum(1 for o in ops if o["state"] == "done")
+    # Снимок готовности сборки (D-61): вердикт, риск-разрешения и нехватка материалов на момент выпуска.
+    # Снимка нет (наряд выпущен до v33) — честное «нет данных», а не «готово».
+    rd = wo.get("readiness")
+    rd_risks = [f"{r['label_ru']} — до {_date_ru(r['due_on'])}: {r['reason']}" for r in (rd or {}).get("risks") or []]
+    rd_short = [m for m in (rd or {}).get("materials") or [] if m["state"] == "short"]
+    rd_deviations = rd_risks + ([f"Материалы обеспечены не полностью ({len(rd_short)} поз.)"] if rd_short else [])
     close_problems = []
     if st != "completed":
         close_problems.append("Не все операции выполнены.")
@@ -199,6 +205,11 @@ def _wo_row(wo: dict, ops: list[dict], manage: bool, substitute: bool, online: b
         "qty": wo.get("qty"), "qty_label": f"{wo.get('qty')} шт.", "tp_label": f"ТП ред. {wo.get('tp_revision_no')}",
         "status": st, "status_label": prod.WO_STATUS_LABELS_RU.get(st, st), "status_tone": WO_TONES.get(st, "neutral"),
         "snapshot_ok": wo.get("snapshot_ok") is not False, "snapshot_hash": wo.get("snapshot_hash") or "",
+        "readiness": rd, "readiness_label": (rd or {}).get("verdict_label") or "нет данных",
+        "readiness_tone": {"ready": "success", "ready_with_deviations": "warning"}.get((rd or {}).get("verdict"), "neutral"),
+        "readiness_ok": (rd or {}).get("readiness_ok") is not False,
+        "readiness_rkd_label": ((rd or {}).get("rkd") or {}).get("label_ru") or "",
+        "readiness_deviations": rd_deviations,
         "spec_label": f"Версия расчёта № {(snap.get('spec') or {}).get('version_no')}" if snap.get("spec") else "",
         "spec": [{**ln, "qty_label": qty_label(ln.get("qty"), ln.get("unit") or ""), "code": ln.get("code") or ""} for ln in wo.get("spec") or []],
         "spec_hash": wo.get("spec_hash") or "", "substitutions": subs, "materials": mats,

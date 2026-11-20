@@ -71,7 +71,7 @@ from vector.core import money
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
 # v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
 #         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1975,6 +1975,24 @@ procurement_allocation_receipts = sa.Table("procurement_allocation_receipts", me
     sa.UniqueConstraint("allocation_id", "movement_id", name="uq_alloc_receipt"),
     sa.CheckConstraint("qty > 0", name="qty_pos"))
 
+# ------------------------------------------------------------ этап 5 blueprint 52 (схема v33): снимок готовности сборки
+# Готовность сборки при выпуске наряда (D-61): точные основания (ревизия ТП, версия расчёта, статус РКД проекта,
+# потребности по версии расчёта), обеспеченность материалами и действующие риск-разрешения, под которыми выпущен
+# наряд. Записи НЕИЗМЕНЯЕМЫ: позднейшие согласования/резервы не переписывают основание выпуска (приёмка этапа 5).
+# Контрольная сумма SHA-256 — снимок проверяем без обращения к коду. Один снимок на наряд (первичный ключ —
+# work_order_id): наряд выпускается один раз, перевыпуска нет (исправление — отмена и новый наряд).
+assembly_readiness_snapshots = sa.Table("assembly_readiness_snapshots", metadata,
+    sa.Column("work_order_id", ID, sa.ForeignKey("work_orders.id"), primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False),
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id"), nullable=False),
+    sa.Column("content_json", T, nullable=False),
+    sa.Column("content_hash", sa.String(64), nullable=False),
+    sa.Column("created_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("length(content_hash) = 64 AND content_hash = lower(content_hash)"
+                       " AND trim(content_hash, '0123456789abcdef') = ''",
+                       name="ck_assembly_readiness_sha256"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -2072,7 +2090,8 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (claim_responses, 50032), (daily_report_events, 50033), (daily_report_auto, 50034),
                  (org_events, 50035), (workday_events, 50036), (workday_auto_finishes, 50037), (overtime_events, 50040), (overtime_request_periods, 50041), (overtime_period_closures, 50042),
                  (project_events, 50043), (project_closeouts, 50044), (document_reviews, 50045),
-                 (document_comment_responses, 50046), (transmittal_items, 50047)):
+                 (document_comment_responses, 50046), (transmittal_items, 50047),
+                 (assembly_readiness_snapshots, 50048)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

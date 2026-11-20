@@ -32,6 +32,12 @@ def plant(world, mk):
         world.admin.ok("project.assign", {"project_id": pid, "user_id": world.users[who], "project_role": role, "reason": "Приказ"})
     rp.ok("project.assign", {"project_id": pid, "user_id": world.users["eng1"], "project_role": "participant", "reason": "Работы"})
     rp.ok("kit.create", {"id": kit, "project_id": pid, "code": "АТХ", "title": "Автоматизация"})
+    # D-61: наряд выпускается только после согласования РКД заказчиком (или по риск-разрешению).
+    ws = {w["kind"]: w for w in rp.query("pull")["result"]["workstreams"] if w["project_id"] == pid}["rkd"]
+    for to in ("in_design", "internal_review", "customer_review"):
+        ws = rp.ok("workstream.set_status", {"id": ws["id"], "to": to}, expected_version=ws["version"])["workstream"]
+    rp.ok("workstream.set_status", {"id": ws["id"], "to": "approved_for_use",
+                                    "reason": "Письмо заказчика № 77"}, expected_version=ws["version"])
     eng, gip = world.login("eng1"), world.login("gip1")
     line = {"line_id": str(uuid.uuid4()), "code": None, "name": "Шкаф ШУ", "unit": "шт", "qty": "2", "unit_price": "100"}
     eng.ok("calc.save_draft", {"id": kit, "lines": [line], "currency": "RUB"}, expected_version=0)

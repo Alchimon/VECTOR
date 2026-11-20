@@ -35,14 +35,16 @@ from typing import Any, Optional
 
 import sqlalchemy as sa
 
+from vector.core import delivery as dl
 from vector.core import money
 from vector.core import production as prod
 from vector.core.errors import Conflict, Rejected
 
 from .authz import active_delegated_project, effective_roles
-from .db import (calc_version_lines, calc_versions, kits, project_assignments, projects, stock_items, stock_movements,
-                 tech_process_approvals, tech_process_ops, tech_processes, users, wo_operations, wo_substitutions,
-                 wo_timer_events, work_order_issues, work_order_snapshots, work_orders)
+from .db import (assembly_readiness_snapshots, calc_version_lines, calc_versions, kits, procurement_needs,
+                 project_assignments, project_risk_acceptances, projects, stock_items, stock_movements,
+                 stock_reservations, tech_process_approvals, tech_process_ops, tech_processes, users, wo_operations,
+                 wo_substitutions, wo_timer_events, work_order_issues, work_order_snapshots, work_orders)
 from .validation import canon, iso, only_keys, opt_str, req_str, req_uuid
 
 # Статусы проекта, в которых возможны технология и производство. Сейчас реализован только «Разработка РКД»;
@@ -251,6 +253,7 @@ class ProductionMixin:
                 "fact_seconds": sum(x["fact_seconds"] for x in ops),
                 "assignees": sorted({x["assignee_id"] for x in ops if x["assignee_id"]}),
                 "cancel_reason": o["cancel_reason"], "version": o["version"],
+                "readiness": self._readiness_view(conn, o["id"]),
                 "released_by": o["released_by"], "released_at": iso(o["released_at"]),
                 "closed_by": o["closed_by"], "closed_at": iso(o["closed_at"]),
                 "updated_by": o["updated_by"], "updated_at": iso(o["updated_at"])}
@@ -366,12 +369,77 @@ class ProductionMixin:
         return {"tech_process": view(n)}
 
     # ------------------------------------------------------------ наряд
+    # ------------------------------------------------------------ готовность сборки (D-61)
+    def _readiness_gate(self, ctx, pr: dict, kit: dict) -> tuple[Optional[str], str, bool, list[dict]]:
+        """Шлюз РКД при выпуске наряда (этап 5 blueprint 52): повторная проверка в той же транзакции.
+
+        РКД согласована заказчиком (поток «РКД» = approved_for_use) — шлюз пройден. Иначе нужно ДЕЙСТВУЮЩЕЕ
+        риск-разрешение «Сборка по неутверждённой РКД», действующее на этот комплект (или на весь проект);
+        истёкшее не открывает шлюз (dl.risk_state). Возвращает (статус РКД, подпись, ok, разрешения, под которыми
+        выпускаем) — для снимка готовности.
+        """
+        rkd = self._stream(ctx, pr["id"], "rkd")
+        rkd_status = rkd["status"] if rkd else None
+        labels = self.wf["workstream_rkd"]["labels_ru"]
+        rkd_label = labels.get(rkd_status, "—") if rkd_status else "Поток не заведён"
+        rkd_ok = rkd_status == "approved_for_use"
+        risks = []
+        for r in ctx.conn.execute(sa.select(project_risk_acceptances).where(
+                project_risk_acceptances.c.project_id == pr["id"],
+                project_risk_acceptances.c.kind == "production_before_rkd_approval",
+                project_risk_acceptances.c.status == "active")):
+            rm = dict(r._mapping)
+            if dl.risk_state(rm, ctx.now.date()) != "active":
+                continue
+            scope = json.loads(rm["scope_json"]) if rm["scope_json"] else None
+            if scope is not None and kit["id"] not in scope:
+                continue
+            risks.append({"id": rm["id"], "kind": rm["kind"],
+                          "label_ru": self.wf["risk_acceptance"]["kinds"][rm["kind"]],
+                          "reason": rm["reason"], "due_on": rm["due_on"].isoformat(), "kit_ids": scope})
+        if not rkd_ok and not risks:
+            raise Rejected("gate_requires_rkd_approval",
+                           "Выпуск наряда возможен после согласования РКД заказчиком (поток «РКД» → «Согласована "
+                           "заказчиком») либо при действующем риск-разрешении РП «Сборка по неутверждённой РКД» "
+                           "(D-61). Сейчас поток «РКД» — «" + rkd_label + "».",
+                           {"stream": "production", "rkd_status": rkd_status})
+        return rkd_status, rkd_label, rkd_ok, risks
+
+    def _secured_by_item(self, conn, project_id: str) -> dict:
+        """Нетто «у проекта» по позиции номенклатуры: выдано проекту (минус сторно) плюс неизрасходованный остаток
+        действующих резервов проекта. Свободный остаток склада сюда не входит — он никому не принадлежит."""
+        out = defaultdict(Decimal)
+        for r in conn.execute(sa.select(stock_movements.c.item_id, stock_movements.c.kind, stock_movements.c.qty)
+                              .where(stock_movements.c.project_id == project_id)):
+            out[r.item_id] += r.qty if r.kind == "issue" else -r.qty
+        for r in conn.execute(sa.select(stock_reservations.c.item_id, stock_reservations.c.qty,
+                                        stock_reservations.c.consumed)
+                              .where(stock_reservations.c.project_id == project_id,
+                                     stock_reservations.c.status == "active")):
+            out[r.item_id] += r.qty - r.consumed
+        return out
+
+    def _readiness_view(self, conn, wo_id: str) -> Optional[dict]:
+        """Снимок готовности наряда для клиента (D-61) с проверкой SHA-256. None — наряд выпущен до появления
+        снимков (миграция со старой версии): честное «нет данных», а не зелёная галочка."""
+        r = self._get(conn, assembly_readiness_snapshots, wo_id, "work_order_id")
+        if r is None:
+            return None
+        content = json.loads(r["content_json"])
+        mats = [{**m, "state_label": prod.COVERAGE_STATE_LABELS_RU[m["state"]]} for m in content["materials"]]
+        return {**content, "materials": mats,
+                "verdict_label": prod.READINESS_VERDICT_LABELS_RU[content["verdict"]],
+                "content_hash": r["content_hash"],
+                "readiness_ok": prod.readiness_hash(content) == r["content_hash"],
+                "created_by": r["created_by"], "created_at": iso(r["created_at"])}
+
     def _wo_release(self, ctx, p, ev):
         """wo.release {id, tp_id, qty, title?, note?, assignees?} — выпустить наряд по утверждённому ТП.
 
-        В той же транзакции: наряд «Выпущен», неизменяемый снимок (состав из версии расчёта без цен × qty, операции
-        ТП с нормой на наряд, SHA-256), операции наряда «Ожидает» с исполнителями (assignees — {"№ операции": id}).
-        Назначенные исполнители получают уведомление.
+        В той же транзакции: шлюз готовности РКД (D-61), наряд «Выпущен», неизменяемый снимок (состав из версии
+        расчёта без цен × qty, операции ТП с нормой на наряд, SHA-256), неизменяемый снимок готовности сборки
+        (основания, обеспеченность материалами, риск-разрешения, SHA-256), операции наряда «Ожидает» с
+        исполнителями (assignees — {"№ операции": id}). Назначенные исполнители получают уведомление.
         """
         only_keys(p, {"id", "tp_id", "qty", "title", "note", "assignees"})
         wid = req_uuid(p, "id")
@@ -386,6 +454,8 @@ class ProductionMixin:
         if appr is None or appr["content_hash"] != tp["content_hash"]:
             raise Rejected("tp_integrity", "Содержимое ТП не совпадает с утверждённым. Обратитесь к администратору.")
         kit = self._get(ctx.conn, kits, tp["kit_id"])
+        # Шлюз готовности РКД (D-61): до любой записи; риск-разрешения возвращаются для снимка.
+        rkd_status, rkd_label, rkd_ok, risks = self._readiness_gate(ctx, pr, kit)
         spec = self._spec_of_version(ctx.conn, tp["spec_version_id"])
         ops = self._tp_ops(ctx.conn, tp["id"])
         qty = p.get("qty")
@@ -417,13 +487,39 @@ class ProductionMixin:
                 id=str(uuid.uuid4()), work_order_id=wid, op_no=o["op_no"], name=o["name"], work_center=o["work_center"],
                 norm_min=money.parse_decimal(o["norm_min"]), assignee_id=asg.get(o["op_no"]), state="pending",
                 fact_seconds=0, problem_count=0, version=1, updated_by=ctx.user_id, updated_at=ctx.now))
+        # Снимок готовности сборки (D-61): неизменяемый, с SHA-256; позднейшие согласования его не переписывают.
+        snap_lines = snap["spec"]["lines"]
+        codes = sorted({ln["code"] for ln in snap_lines if ln.get("code")})
+        items_by_code = {r.code: {"id": r.id, "unit": r.unit} for r in ctx.conn.execute(
+            sa.select(stock_items.c.id, stock_items.c.code, stock_items.c.unit)
+            .where(stock_items.c.code.in_(codes)))} if codes else {}
+        mats = prod.coverage_materials(snap_lines, items_by_code, self._secured_by_item(ctx.conn, pr["id"]))
+        needs = [{"id": r.id, "status": r.status, "line_count": r.line_count, "matched_count": r.matched_count}
+                 for r in ctx.conn.execute(sa.select(procurement_needs)
+                                           .where(procurement_needs.c.calc_version_id == spec["calc_version_id"])
+                                           .order_by(procurement_needs.c.created_at))]
+        readiness = prod.readiness_content(work_order={"id": wid, "doc_no": no, "qty": qty}, tp=tp, spec=spec,
+                                           needs=needs,
+                                           rkd={"status": rkd_status, "label_ru": rkd_label, "ok": rkd_ok},
+                                           risks=risks, materials=mats)
+        rh = prod.readiness_hash(readiness)
+        ctx.conn.execute(assembly_readiness_snapshots.insert().values(
+            work_order_id=wid, project_id=pr["id"], kit_id=kit["id"], content_json=canon(readiness),
+            content_hash=rh, created_by=ctx.user_id, created_at=ctx.now))
         wo = self._get(ctx.conn, work_orders, wid)
         ctx.log("work_order", wid, auth, None, 1,
                 {"doc_no": no, "project_id": pr["id"], "kit_code": kit["code"], "tp_revision_no": tp["revision_no"],
                  "qty": qty, "snapshot_hash": h, "spec_version_no": spec["version_no"],
+                 "readiness_verdict": readiness["verdict"], "readiness_hash": rh,
+                 "readiness_risks": [r["id"] for r in risks],
                  "assignees": {str(k): v for k, v in sorted(asg.items())}})
         self._notify(ctx, [u for u in asg.values() if u], "wo_assigned", f"Наряд № {no}: вам назначены операции",
                      f"{title}. Выпустил: {self._actor_label(ctx, auth)}.", "work_order", wid)
+        if risks:
+            self._notify(ctx, self._project_rps(ctx, pr["id"]), "wo_released_risk",
+                         f"Наряд № {no} выпущен по риск-разрешению",
+                         f"{title}. РКД заказчиком не согласована («{rkd_label}»); основание — риск-разрешение "
+                         f"«{risks[0]['label_ru']}» до {risks[0]['due_on']}.", "work_order", wid)
         return {"work_order": self.v_work_order(ctx.conn, wo), "wo_operations": self._wo_ops_view(ctx.conn, wo)}
 
     def _wo_ops_view(self, conn, wo: dict) -> list[dict]:
