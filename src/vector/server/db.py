@@ -71,7 +71,7 @@ from vector.core import money
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
 # v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
 #         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1940,6 +1940,40 @@ item_analogs = sa.Table("item_analogs", metadata,
     sa.CheckConstraint("status IN ('proposed','approved','rejected')", name="status"),
     sa.CheckConstraint("(status = 'proposed' AND decided_by IS NULL) OR (status <> 'proposed' AND decided_by IS NOT NULL "
                        "AND decided_at IS NOT NULL)", name="ck_item_analogs_decided"))
+
+# ---------------------------------------------------------------- v32: закупка из пакета — складская часть этапа 4
+# Миграции добавляют только новые таблицы (migrate.py, принцип 3), поэтому связь строки заказа со строкой пакета,
+# распределение прихода по распределениям пакета и кратность заказа — отдельные таблицы, а не новые столбцы.
+
+# Кратность заказа позиции (барабан 100 м, упаковка 20 шт): NULL-строки нет — кратности нет. Излишек заказа
+# допустим только как округление до кратности (D-59): «заказано 100 при потребности 95», а не «про запас».
+stock_item_packs = sa.Table("stock_item_packs", metadata,
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id"), primary_key=True),
+    sa.Column("pack_qty", Qty, nullable=False),
+    sa.CheckConstraint("pack_qty > 0", name="pack_qty_pos"))
+
+# Строка заказа, созданная из строки закупочного пакета (одна строка заказа — не более одной строки пакета;
+# одна строка пакета может попасть в несколько заказов — несколько поставщиков). batch_id денормализован
+# (как need_id в procurement_allocations): консистентность с batch_line_id гарантирует сервер.
+purchase_order_batch_lines = sa.Table("purchase_order_batch_lines", metadata,
+    sa.Column("order_id", ID, sa.ForeignKey("purchase_orders.id"), nullable=False),
+    sa.Column("line_id", ID, nullable=False),
+    sa.Column("batch_id", ID, sa.ForeignKey("procurement_batches.id"), nullable=False, index=True),
+    sa.Column("batch_line_id", ID, sa.ForeignKey("procurement_batch_lines.id"), nullable=False, index=True),
+    sa.PrimaryKeyConstraint("order_id", "line_id"))
+
+# Распределение прихода по строке заказа из пакета: сколько из движения-прихода отнесено на распределение
+# (проектную потребность) и какой резерв создан (NULL — отнесённое ушло в свободный остаток: потребность к
+# моменту прихода уже была покрыта со склада). Доставлено по распределению = сумма qty по НЕ сторнированным
+# приходам (как «поставлено» в purchase_receipts, D-32).
+procurement_allocation_receipts = sa.Table("procurement_allocation_receipts", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("allocation_id", ID, sa.ForeignKey("procurement_allocations.id"), nullable=False, index=True),
+    sa.Column("movement_id", ID, sa.ForeignKey("stock_movements.id"), nullable=False, index=True),
+    sa.Column("reservation_id", ID, sa.ForeignKey("stock_reservations.id")),
+    sa.Column("qty", Qty, nullable=False),
+    sa.UniqueConstraint("allocation_id", "movement_id", name="uq_alloc_receipt"),
+    sa.CheckConstraint("qty > 0", name="qty_pos"))
 
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),

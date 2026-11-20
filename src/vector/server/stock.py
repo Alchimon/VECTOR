@@ -47,14 +47,16 @@ from typing import Any, Optional
 
 import sqlalchemy as sa
 
+from vector.core import consolidation as cs
 from vector.core import money, stock
 from vector.core.errors import Conflict, Denied, Rejected
 
-from .db import (calc_version_lines, calc_versions, item_aliases, kits, procurement_need_line_match_units,
-                 procurement_need_line_matches, procurement_need_lines, procurement_needs, projects, unit_conversions,
-                 signatures, stock_balances, stock_items, stock_movements, stock_reservations, stock_shipment_losses,
-                 stock_shipment_terms, stock_shipments, stock_transfer_acts, stock_transfers, users, warehouses,
-                 work_order_issues)
+from .db import (calc_version_lines, calc_versions, item_aliases, kits, procurement_allocation_receipts,
+                 procurement_allocations, procurement_batch_lines, procurement_batches,
+                 procurement_need_line_match_units, procurement_need_line_matches, procurement_need_lines,
+                 procurement_needs, projects, unit_conversions, signatures, stock_balances, stock_item_packs,
+                 stock_items, stock_movements, stock_reservations, stock_shipment_losses, stock_shipment_terms,
+                 stock_shipments, stock_transfer_acts, stock_transfers, users, warehouses, work_order_issues)
 from . import security
 from .validation import canon, iso, only_keys, opt_date, opt_str, req_str, req_uuid
 
@@ -154,9 +156,11 @@ class StockMixin:
                 "version": o["version"], "updated_at": iso(o["updated_at"])}
 
     @staticmethod
-    def v_item(o: dict) -> dict:
-        """Позиция номенклатуры для клиента: код, название, единица, примечание, действует ли, версия."""
+    def v_item(o: dict, pack_qty: Optional[Decimal] = None) -> dict:
+        """Позиция номенклатуры для клиента: код, название, единица, примечание, кратность заказа (D-59),
+        действует ли, версия."""
         return {"id": o["id"], "code": o["code"], "name": o["name"], "unit": o["unit"], "note": o["note"],
+                "pack_qty": money.to_json(pack_qty),
                 "active": bool(o["active"]), "version": o["version"], "updated_at": iso(o["updated_at"])}
 
     @staticmethod
@@ -393,21 +397,43 @@ class StockMixin:
         return {"warehouse": self.v_warehouse(n)}
 
     def _item_create(self, ctx, p, ev):
-        """item.create {id, code, name, unit, note?} — новая позиция номенклатуры (склад или закупка, A-20). Можно
-        офлайн.
+        """item.create {id, code, name, unit, note?, pack_qty?} — новая позиция номенклатуры (склад или закупка,
+        A-20). Можно офлайн. pack_qty — кратность заказа (барабан/упаковка; D-59): необязательна, > 0.
         """
-        only_keys(p, {"id", "code", "name", "unit", "note"})
+        only_keys(p, {"id", "code", "name", "unit", "note", "pack_qty"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "item.create", ctx.now)
         iid, code = req_uuid(p, "id"), _code(p)
         self._ensure_new(ctx.conn, stock_items, iid)
         if self._get(ctx.conn, stock_items, code, "code"):
             raise Rejected("code_exists", f"Позиция номенклатуры с кодом «{code}» уже есть.", {"field": "code"})
+        pack = self._pack_qty_of(p)
         row = {"id": iid, "code": code, "name": req_str(p, "name", 300), "unit": req_str(p, "unit", 20),
                "note": opt_str(p, "note", 1000), "active": True, "version": 1, "created_by": ctx.user_id,
                "created_at": ctx.now, "updated_by": ctx.user_id, "updated_at": ctx.now}
         ctx.conn.execute(stock_items.insert().values(**row))
-        ctx.log("stock_item", iid, auth, None, 1, {"code": code, "name": row["name"], "unit": row["unit"]})
-        return {"stock_item": self.v_item(self._get(ctx.conn, stock_items, iid))}
+        if pack is not None:
+            ctx.conn.execute(stock_item_packs.insert().values(item_id=iid, pack_qty=pack))
+        ctx.log("stock_item", iid, auth, None, 1, {"code": code, "name": row["name"], "unit": row["unit"],
+                                                   "pack_qty": money.to_json(pack)})
+        return {"stock_item": self.v_item(self._get(ctx.conn, stock_items, iid), pack)}
+
+    def _pack_qty_of(self, p: dict):
+        """Кратность заказа из запроса: None — не задана; иначе положительное количество (ошибка — отказ)."""
+        v = p.get("pack_qty")
+        if v in (None, ""):
+            return None
+        try:
+            q = money.parse_decimal(v)
+        except money.MoneyError as e:
+            raise Rejected(e.code, f"«Кратность заказа»: {e.message_ru}", {"field": "pack_qty"})
+        if q <= 0:
+            raise Rejected("qty_not_positive", "Кратность заказа должна быть больше нуля.", {"field": "pack_qty"})
+        return q
+
+    def _pack_of(self, conn, iid: str) -> Optional[Decimal]:
+        """Кратность заказа позиции (None — не задана)."""
+        r = self._get(conn, stock_item_packs, iid, "item_id")
+        return r["pack_qty"] if r else None
 
     def _item_update(self, ctx, p, ev):
         """item.update {id, name?, unit?, note?, active?} + версия — изменить позицию.
@@ -415,10 +441,10 @@ class StockMixin:
         Единицу измерения нельзя менять, если по позиции уже были остатки или движения: прошлые количества молча
         поменяли бы смысл. Поля, совпадающие с текущими значениями, не считаются изменением.
         """
-        only_keys(p, {"id", "name", "unit", "note", "active"})
+        only_keys(p, {"id", "name", "unit", "note", "active", "pack_qty"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "item.update", ctx.now)
         o = self._require(ctx.conn, stock_items, req_uuid(p, "id"), "Номенклатура")
-        self._check_version(o, ev, self.v_item)
+        self._check_version(o, ev, lambda x: self.v_item(x, self._pack_of(ctx.conn, x["id"])))
         ch: dict[str, Any] = {}
         if "name" in p:
             ch["name"] = req_str(p, "name", 300)
@@ -429,7 +455,11 @@ class StockMixin:
         if "active" in p:
             ch["active"] = _bool(p, "active")
         ch = {k: v for k, v in ch.items() if v != (bool(o[k]) if k == "active" else o[k])}
-        if not ch:
+        # Кратность заказа (D-59) — таблица-расширение: null/"" снимает кратность, значение — ставит.
+        pack_old = self._pack_of(ctx.conn, o["id"])
+        pack_new = self._pack_qty_of(p) if "pack_qty" in p else pack_old
+        pack_changed = pack_new != pack_old
+        if not ch and not pack_changed:
             raise Rejected("no_changes", "Нет изменений.")
         if "unit" in ch:
             used = ctx.conn.execute(sa.select(sa.func.count()).select_from(stock_balances)
@@ -440,8 +470,14 @@ class StockMixin:
                                "Заведите новую позицию номенклатуры.", {"field": "unit"})
         before = {k: (bool(o[k]) if k == "active" else o[k]) for k in ch}
         n = self._update_versioned(ctx, stock_items, o, {**ch, "updated_by": ctx.user_id, "updated_at": ctx.now})
+        if pack_changed:
+            ctx.conn.execute(stock_item_packs.delete().where(stock_item_packs.c.item_id == o["id"]))
+            if pack_new is not None:
+                ctx.conn.execute(stock_item_packs.insert().values(item_id=o["id"], pack_qty=pack_new))
+        if pack_changed:
+            before["pack_qty"], ch["pack_qty"] = money.to_json(pack_old), money.to_json(pack_new)
         ctx.log("stock_item", o["id"], auth, o["version"], n["version"], {"before": before, "after": ch})
-        return {"stock_item": self.v_item(n)}
+        return {"stock_item": self.v_item(n, pack_new)}
 
     # ------------------------------------------------------------ справочник аналогов и пересчёта (D-25, A-27)
     def _alias_text(self, ctx, p, exclude_id: Optional[str] = None) -> str:
@@ -736,6 +772,25 @@ class StockMixin:
         done = ctx.conn.execute(sa.select(stock_movements.c.id).where(stock_movements.c.reverses_id == orig["id"])).first()
         if done:
             raise Rejected("already_reversed", f"Движение №{orig['doc_no']} уже сторнировано.", {"reversed_by": done.id})
+        if orig["kind"] == "receipt":
+            # Приход по строке заказа из закупочного пакета распределён по распределениям (D-59): сторно снимает
+            # созданные резервы (их остаток возвращается в доступное, и приход можно сторнировать). Если по
+            # резерву уже была выдача — сторнировать приход нельзя: сначала сторнируйте выдачу.
+            dists = [dict(r._mapping) for r in ctx.conn.execute(
+                sa.select(procurement_allocation_receipts)
+                .where(procurement_allocation_receipts.c.movement_id == orig["id"]))]
+            ress = {d["reservation_id"]: self._get(ctx.conn, stock_reservations, d["reservation_id"])
+                    for d in dists if d["reservation_id"]}
+            for res in ress.values():
+                if res is not None and (res["consumed"] > 0 or res["status"] == "consumed"):
+                    raise Rejected("receipt_consumed",
+                                   f"Приход №{orig['doc_no']} распределён в резервы, по которым уже есть выдача — "
+                                   "сторнировать его нельзя. Сначала сторнируйте выдачу, затем приход.",
+                                   {"movement_id": orig["id"], "reservation_id": res["id"]})
+            for res in ress.values():
+                if res is not None and res["status"] == "active":
+                    self._release_reservation(ctx, res, f"Сторно прихода № {orig['doc_no']}", auth,
+                                              {"reverses_movement_id": orig["id"]})
         w = self._get(ctx.conn, warehouses, orig["warehouse_id"])
         it = self._get(ctx.conn, stock_items, orig["item_id"])
         row, b = self._load_balance(ctx.conn, w["id"], it["id"])
@@ -1283,6 +1338,21 @@ class StockMixin:
             out.append({"id": r["id"], "released": money.to_json(r["qty"] - r["consumed"])})
         return out
 
+    def _in_batches_by_need_line(self, conn) -> dict:
+        """«В закупочных пакетах» по строкам потребности: (need_id, line_id) → сумма распределений действующих
+        пакетов (Формируется/Сформирован; отменённые и закрытые не занимают покрытие, D-58/D-59)."""
+        out: dict[tuple[str, str], Decimal] = defaultdict(Decimal)
+        q = (sa.select(procurement_allocations.c.need_id, procurement_allocations.c.need_line_id,
+                       procurement_allocations.c.qty)
+             .select_from(procurement_allocations
+                          .join(procurement_batch_lines,
+                                procurement_batch_lines.c.id == procurement_allocations.c.batch_line_id)
+                          .join(procurement_batches, procurement_batches.c.id == procurement_batch_lines.c.batch_id))
+             .where(procurement_batches.c.status.in_(cs.COVERING_BATCH_STATUSES)))
+        for r in conn.execute(q):
+            out[(r.need_id, r.need_line_id)] += r.qty
+        return out
+
     def v_need(self, conn, o: dict, with_stock: bool, available: Optional[dict] = None) -> dict:
         """Потребность со строками и покрытием. with_stock=False — «доступно» неизвестно (нет права stock.read)."""
         if with_stock and available is None:
@@ -1291,6 +1361,9 @@ class StockMixin:
         matches = self._line_matches(conn, o["id"])
         # «Заказано, ждём» по строкам — из размещённых заказов поставщикам (purchasing.py, D-32); без цен.
         on_order = self._ordered_open_by_need_line(conn)
+        # «В пакетах закупки» по строкам — распределения действующих пакетов (D-59); обеспеченность по
+        # происхождению: резерв + в пакетах + заказано (blueprint 52, 2.3).
+        in_batches = self._in_batches_by_need_line(conn)
         for r in conn.execute(sa.select(procurement_need_lines).where(procurement_need_lines.c.need_id == o["id"])
                               .order_by(procurement_need_lines.c.pos)):
             # Действующая позиция: ручное решение закупки (A-25) важнее автоматического из снимка.
@@ -1313,7 +1386,8 @@ class StockMixin:
                           "factor": money.to_json(factor) if (m and m["line_unit"]) else None,
                           "item_unit": m["item_unit"] if (m and m["line_unit"]) else r.unit,
                           "item_qty": money.to_json(item_qty), "coverage": cov,
-                          "on_order": money.to_json(on_order.get((o["id"], r.line_id), Decimal(0)))})
+                          "on_order": money.to_json(on_order.get((o["id"], r.line_id), Decimal(0))),
+                          "in_batches": money.to_json(in_batches.get((o["id"], r.line_id), Decimal(0)))})
         last = self._latest_version(conn, o["kit_id"])
         kit, pr = self._get(conn, kits, o["kit_id"]), self._get(conn, projects, o["project_id"])
         return {"id": o["id"], "project_id": o["project_id"], "project_code": pr["code"], "project_title": pr["title"],
@@ -1347,7 +1421,9 @@ class StockMixin:
         can_stock = self.policy.can(conn, uid, "stock.read", now)
         if can_stock:
             out["warehouses"] = [self.v_warehouse(dict(r._mapping)) for r in conn.execute(sa.select(warehouses).order_by(warehouses.c.code))]
-            out["stock_items"] = [self.v_item(dict(r._mapping)) for r in conn.execute(sa.select(stock_items).order_by(stock_items.c.code))]
+            packs = {r.item_id: r.pack_qty for r in conn.execute(sa.select(stock_item_packs))}
+            out["stock_items"] = [self.v_item(dict(r._mapping), packs.get(r.id))
+                                  for r in conn.execute(sa.select(stock_items).order_by(stock_items.c.code))]
             # Справочник аналогов и пересчёта единиц (D-25, A-27) — тем же, кто видит номенклатуру.
             out["item_aliases"] = [self.v_alias(dict(r._mapping)) for r in conn.execute(sa.select(item_aliases).order_by(item_aliases.c.alias))]
             out["unit_conversions"] = [self.v_conversion(dict(r._mapping)) for r in conn.execute(

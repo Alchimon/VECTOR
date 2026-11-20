@@ -1109,7 +1109,10 @@ def test_v30_to_v31_adds_consolidation_tables_with_guards(backend, tmp_path, clo
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (30, db.SCHEMA_VERSION)
     assert rep.created_tables == ["procurement_groups", "procurement_batches", "procurement_batch_lines",
-                                  "procurement_allocations", "item_analogs"]
+                                  "procurement_allocations", "item_analogs",
+                                  # + v32 (D-59): кратность заказа, связи заказ↔пакет, распределения приходов
+                                  "stock_item_packs", "purchase_order_batch_lines",
+                                  "procurement_allocation_receipts"]
     after = counts(eng, mg.tables_of_version(30))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
 
@@ -1147,5 +1150,93 @@ def test_v30_to_v31_adds_consolidation_tables_with_guards(backend, tmp_path, clo
     with eng.begin() as c:
         c.execute(db.item_analogs.insert().values(id=new_id(), item_id=item, analog_item_id=analog,
                                                   status="proposed", proposed_by=uid, created_at=now, version=1))
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
+
+
+def test_v31_to_v32_adds_purchasing_links_with_guards(backend, tmp_path, clock, keys):
+    """v31 → v32 (D-59, закупка из пакета): кратность заказа позиции, неизменяемые связи строки заказа со строкой
+    пакета и распределения прихода по распределениям. Данные v31 не меняются; связь заказ↔пакет уникальна по строке
+    заказа; распределение прихода — по паре (распределение, приход), количество > 0, свободный остаток — с
+    reservation_id NULL."""
+    eng = make_v3(backend, tmp_path, clock, version=31)
+    now = clock.now()
+    uid, pid, tid, cust, kit, item = new_id(), new_id(), new_id(), new_id(), new_id(), new_id()
+    nid, nl, bid, bl, aid = new_id(), new_id(), new_id(), new_id(), new_id()
+    sid, oid, ol, wh, mv = new_id(), new_id(), new_id(), new_id(), new_id()
+    stamp = dict(version=1, created_by=uid, created_at=now, updated_by=uid, updated_at=now)
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x",
+                                           must_change_password=False, password_changed_at=now, failed_attempts=0,
+                                           active=True, created_at=now))
+        c.execute(db.customers.insert().values(id=cust, name="З", **stamp))
+        c.execute(db.tenders.insert().values(id=tid, customer_id=cust, title="Т", status="won",
+                                             owner_user_id=uid, **stamp))
+        c.execute(db.projects.insert().values(id=pid, code="П-1", title="П", tender_id=tid,
+                                              tender_version_at_start=1, status="rkd_in_progress", **stamp))
+        c.execute(db.kits.insert().values(id=kit, project_id=pid, code="АТХ", title="К", **stamp))
+        c.execute(db.stock_items.insert().values(id=item, code="КВВГ-4x1.5", name="Кабель", unit="м", active=True,
+                                                 **stamp))
+        c.execute(db.suppliers.insert().values(id=sid, code="П-1", name="ООО Поставщик", active=True, **stamp))
+        c.execute(db.purchase_orders.insert().values(id=oid, order_no=1, supplier_id=sid, status="draft", **stamp))
+        c.execute(db.purchase_order_lines.insert().values(order_id=oid, line_id=ol, pos=1, item_id=item,
+                                                          qty=Decimal("10")))
+        c.execute(db.warehouses.insert().values(id=wh, code="ОСН", name="Основной", active=True, **stamp))
+        c.execute(db.calc_versions.insert().values(kit_id=kit, project_id=pid, version_no=1, reason="Выпуск",
+                                                   total=Decimal("0"), line_count=1, unknown_price_count=0,
+                                                   content_hash="0" * 64, draft_version=1, frozen_by=uid,
+                                                   frozen_at=now))
+    with eng.connect() as c:
+        cv_id = c.execute(sa.select(db.calc_versions.c.id)).scalar()
+    with eng.begin() as c:
+        c.execute(db.procurement_needs.insert().values(id=nid, project_id=pid, kit_id=kit, calc_version_id=cv_id,
+                                                       calc_version_no=1, calc_content_hash="0" * 64,
+                                                       line_count=1, matched_count=1, status="open", **stamp))
+        c.execute(db.procurement_need_lines.insert().values(need_id=nid, pos=1, line_id=nl, code="КВВГ-4x1.5",
+                                                            name="Кабель", unit="м", qty=Decimal("10"),
+                                                            item_id=item))
+        c.execute(db.procurement_batches.insert().values(id=bid, batch_no=1, title="Пакет", status="consolidated",
+                                                         **stamp))
+        c.execute(db.procurement_batch_lines.insert().values(id=bl, batch_id=bid, item_id=item, unit="м"))
+        c.execute(db.procurement_allocations.insert().values(id=aid, batch_line_id=bl, need_id=nid,
+                                                             need_line_id=nl, qty=Decimal("10")))
+        c.execute(db.stock_movements.insert().values(id=mv, doc_no=1, kind="receipt", warehouse_id=wh, item_id=item,
+                                                     qty=Decimal("10"), project_id=None, reservation_id=None,
+                                                     reverses_id=None, source_doc="ТН-1", reason="Приход",
+                                                     posted_by=uid, posted_at=now))
+    before = counts(eng, mg.tables_of_version(31))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (31, db.SCHEMA_VERSION)
+    assert rep.created_tables == ["stock_item_packs", "purchase_order_batch_lines", "procurement_allocation_receipts"]
+    after = counts(eng, mg.tables_of_version(31))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    # Кратность заказа: > 0 и одна на позицию.
+    bad(db.stock_item_packs.insert().values(item_id=item, pack_qty=Decimal("0")))
+    with eng.begin() as c:
+        c.execute(db.stock_item_packs.insert().values(item_id=item, pack_qty=Decimal("100")))
+    bad(db.stock_item_packs.insert().values(item_id=item, pack_qty=Decimal("50")))
+    # Связь заказ↔пакет: одна на строку заказа; нельзя сослаться на чужой пакет.
+    with eng.begin() as c:
+        c.execute(db.purchase_order_batch_lines.insert().values(order_id=oid, line_id=ol, batch_id=bid,
+                                                                batch_line_id=bl))
+    bad(db.purchase_order_batch_lines.insert().values(order_id=oid, line_id=ol, batch_id=bid, batch_line_id=bl))
+    bad(db.purchase_order_batch_lines.insert().values(order_id=oid, line_id=new_id(), batch_id=bid,
+                                                      batch_line_id=new_id()))
+    # Распределения прихода: qty > 0; пара (распределение, приход) уникальна; резерв существует, если указан.
+    bad(db.procurement_allocation_receipts.insert().values(id=new_id(), allocation_id=aid, movement_id=mv,
+                                                           reservation_id=None, qty=Decimal("0")))
+    bad(db.procurement_allocation_receipts.insert().values(id=new_id(), allocation_id=aid, movement_id=mv,
+                                                           reservation_id=new_id(), qty=Decimal("1")))
+    with eng.begin() as c:
+        c.execute(db.procurement_allocation_receipts.insert().values(id=new_id(), allocation_id=aid,
+                                                                     movement_id=mv, reservation_id=None,
+                                                                     qty=Decimal("4")))
+    bad(db.procurement_allocation_receipts.insert().values(id=new_id(), allocation_id=aid, movement_id=mv,
+                                                           reservation_id=None, qty=Decimal("1")))
     assert db.check_schema(eng) == db.SCHEMA_VERSION
     assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []

@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import uuid
+from collections import defaultdict
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -18,9 +19,11 @@ import sqlalchemy as sa
 from vector.core import consolidation as cs
 from vector.core.errors import Rejected
 
+from vector.core import money
+
 from .db import (item_analogs, procurement_allocations, procurement_batch_lines, procurement_batches,
-                 procurement_groups, procurement_need_lines, procurement_needs, purchase_order_lines,
-                 purchase_orders, stock_items)
+                 procurement_groups, procurement_need_lines, procurement_needs, purchase_order_batch_lines,
+                 purchase_order_lines, purchase_orders, stock_items)
 from .validation import iso, only_keys, opt_date, opt_str, req_str, req_uuid
 
 
@@ -42,13 +45,19 @@ class ConsolidationMixin:
                 "updated_at": iso(o["updated_at"])}
 
     @staticmethod
-    def v_batch_line(o: dict) -> dict:
-        return {"id": o["id"], "batch_id": o["batch_id"], "item_id": o["item_id"], "unit": o["unit"]}
+    def v_batch_line(o: dict, allocated: Optional[Decimal] = None, ordered: Optional[Decimal] = None,
+                     delivered: Optional[Decimal] = None) -> dict:
+        """Строка пакета: позиция и единица + обеспеченность по происхождению (D-59): распределено по
+        потребностям, заказано (размещённые заказы) и поставлено (приходы без сторно)."""
+        return {"id": o["id"], "batch_id": o["batch_id"], "item_id": o["item_id"], "unit": o["unit"],
+                "allocated": money.to_json(allocated), "ordered": money.to_json(ordered),
+                "delivered": money.to_json(delivered)}
 
     @staticmethod
-    def v_allocation(o: dict) -> dict:
+    def v_allocation(o: dict, delivered: Optional[Decimal] = None) -> dict:
+        """Распределение строки пакета на строку потребности + поставлено по нему (приходы без сторно)."""
         return {"id": o["id"], "batch_line_id": o["batch_line_id"], "need_id": o["need_id"],
-                "need_line_id": o["need_line_id"], "qty": str(o["qty"])}
+                "need_line_id": o["need_line_id"], "qty": str(o["qty"]), "delivered": money.to_json(delivered)}
 
     @staticmethod
     def v_analog(o: dict) -> dict:
@@ -248,6 +257,37 @@ class ConsolidationMixin:
         reason = opt_str(p, "reason", 2000)
         if cs.needs_reason(self.wf, b["status"], to) and not reason:
             raise Rejected("reason_required", "Укажите причину.", {"field": "reason"})
+        if to in ("open", "cancelled") and b["status"] == "consolidated":
+            # По пакету уже размещают заказы: вернуть в работу или отменить его молча нельзя — сначала отмените
+            # или закройте связанные заказы (поставки по ним уже могли пойти в резервы проектов).
+            linked = ctx.conn.execute(sa.select(sa.func.count()).select_from(
+                purchase_order_batch_lines.join(purchase_orders,
+                                                purchase_orders.c.id == purchase_order_batch_lines.c.order_id))
+                .where(purchase_order_batch_lines.c.batch_id == b["id"],
+                       purchase_orders.c.status.in_(("draft", "placed")))).scalar()
+            if linked:
+                raise Rejected("batch_has_orders",
+                               f"По пакету № {b['batch_no']} есть черновики или размещённые заказы ({linked} строк) — "
+                               "сначала отмените или закройте их, затем меняйте пакет.",
+                               {"linked_order_lines": linked})
+        if to == "closed":
+            # Закрытие — только когда каждое распределение поставлено полностью: «закрыт» значит «закуплено»,
+            # а не «перестали ждать» (перестали ждать — отмена остатка с причиной через возврат в работу).
+            allocs = [dict(r._mapping) for r in ctx.conn.execute(
+                sa.select(procurement_allocations).join(
+                    procurement_batch_lines,
+                    procurement_batch_lines.c.id == procurement_allocations.c.batch_line_id)
+                .where(procurement_batch_lines.c.batch_id == b["id"]))]
+            delivered = self._delivered_by_allocation(ctx.conn, [a["id"] for a in allocs])
+            open_left = [(a, Decimal(str(a["qty"])) - delivered.get(a["id"], Decimal(0))) for a in allocs]
+            open_left = [(a, left) for a, left in open_left if left > 0]
+            if open_left:
+                a, left = open_left[0]
+                raise Rejected("allocations_open",
+                               f"По пакету № {b['batch_no']} поставлено не всё: осталось {money.to_json(left)} "
+                               f"(всего незакрытых распределений: {len(open_left)}). Дождитесь поставки или "
+                               "верните пакет в работу и отмените остаток с причиной.",
+                               {"open_allocations": len(open_left)})
         if to == "consolidated":
             allocs = [dict(r._mapping) for r in ctx.conn.execute(
                 sa.select(procurement_allocations).join(
@@ -377,9 +417,33 @@ class ConsolidationMixin:
         allocs = [dict(r._mapping) for r in conn.execute(
             sa.select(procurement_allocations)
             .where(procurement_allocations.c.batch_line_id.in_(line_ids)))] if line_ids else []
+        # Обеспеченность по происхождению (D-59): распределено / заказано (размещённые) / поставлено (без сторно).
+        allocated: dict[str, Decimal] = defaultdict(Decimal)
+        for a in allocs:
+            allocated[a["batch_line_id"]] += Decimal(str(a["qty"]))
+        ordered: dict[str, Decimal] = defaultdict(Decimal)
+        if line_ids:
+            q = (sa.select(purchase_order_batch_lines.c.batch_line_id, purchase_order_lines.c.qty)
+                 .select_from(purchase_order_batch_lines
+                              .join(purchase_order_lines,
+                                    sa.and_(purchase_order_lines.c.order_id == purchase_order_batch_lines.c.order_id,
+                                            purchase_order_lines.c.line_id == purchase_order_batch_lines.c.line_id))
+                              .join(purchase_orders, purchase_orders.c.id == purchase_order_batch_lines.c.order_id))
+                 .where(purchase_order_batch_lines.c.batch_line_id.in_(line_ids),
+                        purchase_orders.c.status.in_(("placed", "closed"))))
+            for r in conn.execute(q):
+                ordered[r.batch_line_id] += r.qty
+        delivered_alloc = self._delivered_by_allocation(conn, [a["id"] for a in allocs])
+        delivered_line: dict[str, Decimal] = defaultdict(Decimal)
+        for a in allocs:
+            delivered_line[a["batch_line_id"]] += delivered_alloc.get(a["id"], Decimal(0))
         out["procurement_batches"] = [self.v_batch(b) for b in batches]
-        out["procurement_batch_lines"] = [self.v_batch_line(ln) for ln in lines]
-        out["procurement_allocations"] = [self.v_allocation(a) for a in allocs]
+        out["procurement_batch_lines"] = [self.v_batch_line(ln, allocated.get(ln["id"], Decimal(0)),
+                                                            ordered.get(ln["id"], Decimal(0)),
+                                                            delivered_line.get(ln["id"], Decimal(0)))
+                                          for ln in lines]
+        out["procurement_allocations"] = [self.v_allocation(a, delivered_alloc.get(a["id"], Decimal(0)))
+                                          for a in allocs]
         return out
 
     def _is_global(self, conn, uid: str, action: str, now) -> bool:

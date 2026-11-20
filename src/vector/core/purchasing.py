@@ -60,9 +60,11 @@ _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f
 _CUR_RE = re.compile(r"^[A-Z]{3}$")
 ZERO = Decimal(0)
 
-LINE_KEYS = {"line_id", "item_id", "qty", "unit_price", "need_id", "need_line_id", "note", "vat_rate"}
+LINE_KEYS = {"line_id", "item_id", "qty", "unit_price", "need_id", "need_line_id", "batch_line_id", "note",
+             "vat_rate"}
 FIELD_LABELS_RU = {"line_id": "Идентификатор строки", "item_id": "Позиция", "qty": "Количество", "unit_price": "Цена",
-                   "need_id": "Потребность", "need_line_id": "Строка потребности", "note": "Примечание",
+                   "need_id": "Потребность", "need_line_id": "Строка потребности",
+                   "batch_line_id": "Строка закупочного пакета", "note": "Примечание",
                    "currency": "Валюта", "lines": "Строки", "amount": "Сумма", "inn": "ИНН", "vat_rate": "Ставка НДС",
                    "vat_mode": "Цены с НДС / без НДС", "kpp": "КПП", "ogrn": "ОГРН", "bik": "БИК",
                    "bank_account": "Расчётный счёт", "corr_account": "Корр. счёт",
@@ -102,7 +104,12 @@ class PurchaseError(ValueError):
 
 @dataclass(frozen=True)
 class Line:
-    """Проверенная строка заказа. amount — None, если цена неизвестна."""
+    """Проверенная строка заказа. amount — None, если цена неизвестна.
+
+    batch_line_id — строка закупочного пакета, из которой создана строка (D-59); взаимоисключает прямую
+    ссылку на строку потребности (пакет уже занял её покрытие своими распределениями — иначе было бы
+    двойное вычитание).
+    """
     line_id: str
     item_id: str
     qty: Decimal
@@ -112,12 +119,14 @@ class Line:
     need_line_id: Optional[str]
     note: Optional[str]
     vat_rate: Optional[str] = None       # код из VAT_RATES; None — ставка не указана (D-33)
+    batch_line_id: Optional[str] = None
 
     def to_json(self) -> dict:
         """Каноническая форма для JSON: количества и деньги — строки с 4 знаками."""
         return {"line_id": self.line_id, "item_id": self.item_id, "qty": money.to_json(self.qty),
                 "unit_price": money.to_json(self.unit_price), "amount": money.to_json(self.amount),
-                "need_id": self.need_id, "need_line_id": self.need_line_id, "note": self.note, "vat_rate": self.vat_rate}
+                "need_id": self.need_id, "need_line_id": self.need_line_id, "batch_line_id": self.batch_line_id,
+                "note": self.note, "vat_rate": self.vat_rate}
 
 
 def _problem(line: Optional[int], field: str, code: str, message_ru: str) -> dict:
@@ -182,6 +191,11 @@ def parse_lines(raw_lines: Any, currency: Any, require_lines: bool = False) -> t
         need, need_line = _uuid(raw, "need_id", n, problems, False), _uuid(raw, "need_line_id", n, problems, False)
         if (raw.get("need_id") in (None, "")) != (raw.get("need_line_id") in (None, "")):
             problems.append(_problem(n, "need_line_id", "need_pair", "Ссылка на потребность — потребность и её строка вместе."))
+        batch_line = _uuid(raw, "batch_line_id", n, problems, False)
+        if batch_line and need:
+            problems.append(_problem(n, "batch_line_id", "line_link_ambiguous",
+                                     "Строка заказа — либо из пакета (batch_line_id), либо напрямую из строки "
+                                     "потребности (need_id), не вместе: покрытие строки уже занято пакетом."))
         qty = price = amount = None
         try:
             qty = money.parse_decimal(raw.get("qty")) if raw.get("qty") not in (None, "") else None
@@ -216,7 +230,8 @@ def parse_lines(raw_lines: Any, currency: Any, require_lines: bool = False) -> t
                                      "Ставка НДС — одна из: " + ", ".join(VAT_RATE_LABELS_RU.values()) + "."))
             vat = None
         if lid and item and qty is not None:
-            out.append(Line(lid, item, qty, price, amount, need, need_line, (note or "").strip() or None, vat))
+            out.append(Line(lid, item, qty, price, amount, need, need_line, (note or "").strip() or None, vat,
+                            batch_line))
     if any(ln.unit_price is not None for ln in out) and cur is None and not any(p["field"] == "currency" for p in problems):
         problems.append(_problem(None, "currency", "currency_required",
                                  "Указаны цены — укажите валюту заказа (по умолчанию она не подставляется)."))

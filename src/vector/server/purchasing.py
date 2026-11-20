@@ -45,19 +45,23 @@
 """
 from __future__ import annotations
 
+import uuid
 from collections import defaultdict
 from decimal import Decimal
 from typing import Any, Optional
 
 import sqlalchemy as sa
 
+from vector.core import consolidation as cs
 from vector.core import money, purchasing as pu, stock
 from vector.core.errors import Rejected
 
-from .db import (approval_bases, procurement_need_lines, procurement_needs, purchase_order_approvals,
-                 purchase_order_invoice_checks, purchase_order_invoices, purchase_order_line_taxes,
-                 purchase_order_lines, purchase_order_terms, purchase_orders, purchase_receipts, stock_items,
-                 stock_movements, supplier_contracts, supplier_requisites, suppliers, warehouses)
+from .db import (approval_bases, procurement_allocation_receipts, procurement_allocations, procurement_batch_lines,
+                 procurement_batches, procurement_need_lines, procurement_needs, purchase_order_approvals,
+                 purchase_order_batch_lines, purchase_order_invoice_checks, purchase_order_invoices,
+                 purchase_order_line_taxes, purchase_order_lines, purchase_order_terms, purchase_orders,
+                 purchase_receipts, stock_item_packs, stock_items, stock_movements, stock_reservations,
+                 supplier_contracts, supplier_requisites, suppliers, warehouses)
 from .stock import _code, _qty, _stock_rejected
 from .validation import iso, only_keys, opt_date, opt_str, req_str, req_uuid
 
@@ -201,23 +205,34 @@ class PurchasingMixin:
     def _raw_lines(self, conn, oid: str) -> list[dict]:
         """Строки заказа из БД в форме запроса (без суммы) — чтобы перепроверить их теми же правилами ядра."""
         return [{k: v for k, v in ln.to_json().items() if k != "amount"}
-                for ln in self._core_lines(self._order_lines(conn, oid), self._line_taxes(conn, oid))]
+                for ln in self._core_lines(self._order_lines(conn, oid), self._line_taxes(conn, oid),
+                                           self._batch_links(conn, oid))]
 
     @staticmethod
-    def _core_lines(rows: list[dict], taxes: Optional[dict] = None) -> list[pu.Line]:
-        """Строки из БД (+ ставки НДС) → проверенные строки ядра (для итога, НДС и контрольной суммы)."""
+    def _core_lines(rows: list[dict], taxes: Optional[dict] = None, links: Optional[dict] = None) -> list[pu.Line]:
+        """Строки из БД (+ ставки НДС и связи со строками пакетов) → проверенные строки ядра (для итога, НДС
+        и контрольной суммы). Связь с пакетом входит в согласуемое и замораживаемое содержание (D-59)."""
         taxes = taxes or {}
+        links = links or {}
         out = []
         for r in rows:
             amount = pu.exact_amount(r["qty"], r["unit_price"]) if r["unit_price"] is not None else None
+            link = links.get(r["line_id"])
             out.append(pu.Line(r["line_id"], r["item_id"], r["qty"], r["unit_price"], amount, r["need_id"],
-                               r["need_line_id"], r["note"], taxes.get(r["line_id"])))
+                               r["need_line_id"], r["note"], taxes.get(r["line_id"]),
+                               link["batch_line_id"] if link else None))
         return out
+
+    def _batch_links(self, conn, oid: str) -> dict:
+        """Связи строк заказа со строками пакетов: line_id → строка purchase_order_batch_lines (D-59)."""
+        return {r.line_id: dict(r._mapping) for r in conn.execute(
+            sa.select(purchase_order_batch_lines).where(purchase_order_batch_lines.c.order_id == oid))}
 
     def _order_hash(self, conn, o: dict) -> str:
         """SHA-256 содержания заказа сейчас — для сверки с согласованным и замороженным (placed_hash)."""
         return self._hash(o["supplier_id"], o["currency"],
-                          self._core_lines(self._order_lines(conn, o["id"]), self._line_taxes(conn, o["id"])),
+                          self._core_lines(self._order_lines(conn, o["id"]), self._line_taxes(conn, o["id"]),
+                                           self._batch_links(conn, o["id"])),
                           self._terms(conn, o["id"]))
 
     def v_order(self, conn, o: dict, with_prices: bool, pre: Optional[dict] = None) -> dict:
@@ -241,16 +256,26 @@ class PurchasingMixin:
         terms = pre["terms"].get(o["id"], NO_TERMS) if "terms" in pre else self._terms(conn, o["id"])
         taxes = pre["taxes"].get(o["id"], {}) if "taxes" in pre else self._line_taxes(conn, o["id"])
         events = pre["approvals"].get(o["id"], []) if "approvals" in pre else self._approvals(conn, o["id"])
+        if "links" in pre:
+            links = pre["links"].get(o["id"], {})
+        else:
+            links = self._batch_links(conn, o["id"])
+        bnos = pre.get("batch_nos", {})
+        missing = {l["batch_id"] for l in links.values()} - set(bnos)
+        if missing:
+            bnos = {**bnos, **{r.id: r.batch_no for r in conn.execute(
+                sa.select(procurement_batches).where(procurement_batches.c.id.in_(missing)))}}
         cid = terms["contract_id"]
         contract = ((pre["contracts"].get(cid) if "contracts" in pre else self._get(conn, supplier_contracts, cid))
                     if cid else None)
         mode = terms["vat_mode"]
-        core = self._core_lines(rows, taxes)
+        core = self._core_lines(rows, taxes, links)
         lines, pairs = [], []
         for r, c in zip(rows, core):
             got = received.get((o["id"], r["line_id"]), Decimal(0))
             pairs.append((r["qty"], got))
             it = items.get(r["item_id"], {})
+            link = links.get(r["line_id"])
             v = pu.line_vat(c.amount, c.vat_rate, mode) if with_prices else None
             lines.append({"line_id": r["line_id"], "pos": r["pos"], "item_id": r["item_id"], "item_code": it.get("code"),
                           "item_name": it.get("name"), "unit": it.get("unit"), "qty": money.to_json(r["qty"]),
@@ -259,7 +284,10 @@ class PurchasingMixin:
                           "vat_rate": c.vat_rate,
                           "net": money.to_json(v[0]) if v else None, "vat": money.to_json(v[1]) if v else None,
                           "gross": money.to_json(v[2]) if v else None,
-                          "need_id": r["need_id"], "need_line_id": r["need_line_id"], "note": r["note"],
+                          "need_id": r["need_id"], "need_line_id": r["need_line_id"],
+                          "batch_id": link["batch_id"] if link else None,
+                          "batch_no": bnos.get(link["batch_id"]) if link else None,
+                          "batch_line_id": link["batch_line_id"] if link else None, "note": r["note"],
                           "received": money.to_json(got), "remaining": money.to_json(pu.remaining(r["qty"], got))})
         delivery = pu.delivery_state(pairs) if o["status"] in ("placed", "closed") else None
         t = pu.totals(core)
@@ -483,7 +511,7 @@ class PurchasingMixin:
         return c
 
     # ------------------------------------------------------------ черновик заказа
-    def _check_order_lines(self, ctx, lines: list[pu.Line], for_place: bool) -> None:
+    def _check_order_lines(self, ctx, lines: list[pu.Line], for_place: bool, order_id: Optional[str] = None) -> None:
         """Проверить ссылки строк по БД: позиции существуют (при согласовании/размещении — действующие); строка
         потребности существует и для неё выбрана та же позиция номенклатуры.
         """
@@ -509,15 +537,115 @@ class PurchasingMixin:
                     raise Rejected("need_item_mismatch", f"Строка {n}: для строки потребности выбрана другая позиция "
                                    "номенклатуры. Сначала сопоставьте строку потребности (закупка), затем заказывайте.",
                                    {"line": n, "field": "item_id"})
+        self._check_batch_links(ctx, lines, for_place, order_id)
+
+    def _check_batch_links(self, ctx, lines: list[pu.Line], for_place: bool,
+                           order_id: Optional[str] = None) -> None:
+        """Проверить связи строк со строками закупочных пакетов (D-59).
+
+        Черновик и согласование (for_place=False): строка пакета существует и её позиция совпадает с позицией
+        строки заказа. Размещение (онлайн): пакет сформирован; количество кратно упаковке позиции (если задана);
+        а по каждой строке пакета «заказано всего» (размещённые заказы, КРОМЕ этого заказа, + поставленное +
+        этот черновик) не выше распределённого количества, округлённого вверх до кратности, — излишек возможен
+        только из кратности. Свой заказ исключён: повторная отправка на согласование после возврата не считается
+        новым заказом.
+        """
+        linked = [(n, ln) for n, ln in enumerate(lines, start=1) if ln.batch_line_id]
+        if not linked:
+            return
+        rows = {r.id: dict(r._mapping) for r in ctx.conn.execute(
+            sa.select(procurement_batch_lines)
+            .where(procurement_batch_lines.c.id.in_({ln.batch_line_id for _, ln in linked})))}
+        batches = {r.id: dict(r._mapping) for r in ctx.conn.execute(
+            sa.select(procurement_batches)
+            .where(procurement_batches.c.id.in_({bl["batch_id"] for bl in rows.values()})))} if rows else {}
+        packs = {r.item_id: r.pack_qty for r in ctx.conn.execute(sa.select(stock_item_packs))}
+        for n, ln in linked:
+            bl = rows.get(ln.batch_line_id)
+            if bl is None:
+                raise Rejected("not_found", f"Строка {n}: строка закупочного пакета не найдена.",
+                               {"line": n, "field": "batch_line_id"})
+            if bl["item_id"] != ln.item_id:
+                raise Rejected("batch_item_mismatch", f"Строка {n}: позиция не совпадает с позицией строки пакета. "
+                               "Строку пакета заказывают той позицией, что распределена в неё.",
+                               {"line": n, "field": "item_id"})
+            b = batches[bl["batch_id"]]
+            if for_place and b["status"] != "consolidated":
+                raise Rejected("batch_not_consolidated", f"Строка {n}: пакет № {b['batch_no']} — "
+                               f"«{cs.batch_workflow(self.wf)['labels_ru'][b['status']]}». Заказывать из пакета можно, "
+                               "когда он сформирован.", {"line": n, "field": "batch_line_id"})
+            if for_place:
+                pack = packs.get(ln.item_id)
+                if not cs.is_pack_multiple(ln.qty, pack):
+                    raise Rejected("pack_multiple", f"Строка {n}: позиция заказывается кратно "
+                                   f"{money.to_json(pack)} — количество {money.to_json(ln.qty)} не подходит. "
+                                   "Излишек от округления распределится по приходе: потребности — в резервы, "
+                                   "остаток — в свободный складской остаток.",
+                                   {"line": n, "field": "qty", "pack_qty": money.to_json(pack)})
+        if not for_place:
+            return
+        mine: dict[str, Decimal] = defaultdict(Decimal)
+        for _, ln in linked:
+            mine[ln.batch_line_id] += ln.qty
+        # Уже занято по строке пакета: строки РАЗМЕЩЁННЫХ заказов (кроме этого заказа — он пересогласовывается)
+        # + поставленное.
+        others: dict[str, Decimal] = defaultdict(Decimal)
+        q = (sa.select(purchase_order_batch_lines.c.batch_line_id, purchase_order_lines.c.qty)
+             .select_from(purchase_order_batch_lines
+                          .join(purchase_order_lines,
+                                sa.and_(purchase_order_lines.c.order_id == purchase_order_batch_lines.c.order_id,
+                                        purchase_order_lines.c.line_id == purchase_order_batch_lines.c.line_id))
+                          .join(purchase_orders, purchase_orders.c.id == purchase_order_batch_lines.c.order_id))
+             .where(purchase_order_batch_lines.c.batch_line_id.in_(mine), purchase_orders.c.status == "placed",
+                    purchase_orders.c.id != order_id))
+        for r in ctx.conn.execute(q):
+            others[r.batch_line_id] += r.qty
+        for bl_id, want in mine.items():
+            bl = rows[bl_id]
+            pack = packs.get(bl["item_id"])
+            allocated = ctx.conn.execute(sa.select(sa.func.coalesce(sa.func.sum(procurement_allocations.c.qty), 0))
+                                         .where(procurement_allocations.c.batch_line_id == bl_id)).scalar()
+            limit = cs.order_limit(Decimal(str(allocated)), pack)
+            b = batches[bl["batch_id"]]
+            delivered = self._batch_line_delivered(ctx.conn, bl_id)
+            taken = others[bl_id] + delivered
+            if want > limit - taken:
+                raise Rejected("batch_order_exceeded",
+                               f"Строка пакета № {b['batch_no']}: распределено {money.to_json(Decimal(str(allocated)))}, "
+                               f"с учётом кратности заказать можно {money.to_json(limit)}; уже заказано и поставлено "
+                               f"{money.to_json(taken)}, запрошено {money.to_json(want)}. Осталось заказать не больше "
+                               f"{money.to_json(max(limit - taken, Decimal(0)))}.",
+                               {"batch_line_id": bl_id, "limit": money.to_json(limit),
+                                "taken": money.to_json(taken), "requested": money.to_json(want)})
+
+    def _batch_line_delivered(self, conn, batch_line_id: str) -> Decimal:
+        """Поставлено по строке пакета: сумма распределений приходов по её распределениям (без сторнированных)."""
+        rev = stock_movements.alias("rev")
+        return Decimal(str(conn.execute(
+            sa.select(sa.func.coalesce(sa.func.sum(procurement_allocation_receipts.c.qty), 0))
+            .select_from(procurement_allocation_receipts
+                         .join(procurement_allocations,
+                               procurement_allocations.c.id == procurement_allocation_receipts.c.allocation_id)
+                         .outerjoin(rev, rev.c.reverses_id == procurement_allocation_receipts.c.movement_id))
+            .where(procurement_allocations.c.batch_line_id == batch_line_id, rev.c.id.is_(None))).scalar()))
 
     def _write_lines(self, ctx, oid: str, lines: list[pu.Line]) -> None:
-        """Заменить строки черновика целиком (порядок = порядок в запросе) вместе со ставками НДС."""
+        """Заменить строки черновика целиком (порядок = порядок в запросе) вместе со ставками НДС и связями
+        со строками закупочных пакетов (D-59)."""
         ctx.conn.execute(purchase_order_line_taxes.delete().where(purchase_order_line_taxes.c.order_id == oid))
+        ctx.conn.execute(purchase_order_batch_lines.delete().where(purchase_order_batch_lines.c.order_id == oid))
         ctx.conn.execute(purchase_order_lines.delete().where(purchase_order_lines.c.order_id == oid))
+        bl_ids = {ln.batch_line_id for ln in lines if ln.batch_line_id}
+        bl_batch = {r.id: r.batch_id for r in ctx.conn.execute(
+            sa.select(procurement_batch_lines).where(procurement_batch_lines.c.id.in_(bl_ids)))} if bl_ids else {}
         for pos, ln in enumerate(lines, start=1):
             ctx.conn.execute(purchase_order_lines.insert().values(
                 order_id=oid, pos=pos, line_id=ln.line_id, item_id=ln.item_id, qty=ln.qty, unit_price=ln.unit_price,
                 need_id=ln.need_id, need_line_id=ln.need_line_id, note=ln.note))
+            if ln.batch_line_id:
+                ctx.conn.execute(purchase_order_batch_lines.insert().values(
+                    order_id=oid, line_id=ln.line_id, batch_id=bl_batch[ln.batch_line_id],
+                    batch_line_id=ln.batch_line_id))
             if ln.vat_rate is not None:
                 ctx.conn.execute(purchase_order_line_taxes.insert().values(order_id=oid, line_id=ln.line_id, vat_rate=ln.vat_rate))
 
@@ -662,11 +790,13 @@ class PurchasingMixin:
         return {"purchase_order": self._order_view(ctx, o["id"])}
 
     # ------------------------------------------------------------ согласование (D-33)
-    def _check_ready(self, ctx, o: dict) -> tuple[list[pu.Line], dict, dict, str]:
+    def _check_ready(self, ctx, o: dict, for_place: bool = False) -> tuple[list[pu.Line], dict, dict, str]:
         """Полная проверка черновика перед согласованием и размещением: поставщик действующий, строки (хотя бы одна,
         позиции действующие, ссылки на потребность), валюта, режим цен и ставки НДС, договор действует сегодня.
 
-        Возвращает (строки, поставщик, условия, SHA-256 содержания). Все замечания ядра — одним отказом (problems).
+        for_place=True (размещение): дополнительно проверяются связи с закупочными пакетами (пакет сформирован,
+        кратность, лимит «заказано всего» по строке пакета, D-59). Возвращает (строки, поставщик, условия,
+        SHA-256 содержания). Все замечания ядра — одним отказом (problems).
         """
         sup = self._supplier_ref(ctx, o["supplier_id"], must_be_active=True)
         try:
@@ -677,7 +807,7 @@ class PurchasingMixin:
         probs = pu.ready_problems(lines, cur, terms["vat_mode"])
         if probs:
             raise _purchase_rejected(pu.PurchaseError(probs))
-        self._check_order_lines(ctx, lines, for_place=True)
+        self._check_order_lines(ctx, lines, for_place=for_place, order_id=o["id"])
         self._contract_ref(ctx, terms["contract_id"], o["supplier_id"], for_use=True)
         return lines, sup, terms, self._hash(o["supplier_id"], cur, lines, terms)
 
@@ -855,7 +985,7 @@ class PurchasingMixin:
             raise Rejected("approval_required", f"Заказ № {o['order_no']} не согласован "
                            f"({pu.APPROVAL_LABELS_RU[self._approval_state(events)].lower()}). Разместить можно только "
                            "согласованный заказ — отправьте его на согласование.")
-        lines, sup, terms, h = self._check_ready(ctx, o)
+        lines, sup, terms, h = self._check_ready(ctx, o, for_place=True)
         if h != events[-1]["content_hash"]:
             raise Rejected("approval_stale", f"Содержание заказа № {o['order_no']} отличается от согласованного — "
                            "разместить нельзя. Отправьте заказ на согласование заново.")
@@ -913,6 +1043,103 @@ class PurchasingMixin:
         return {"purchase_order": self._order_view(ctx, o["id"])}
 
     # ------------------------------------------------------------ факт поставки
+    def _plan_receipt_distribution(self, ctx, link: dict, it: dict, qty: Decimal,
+                                   nb: stock.Balance) -> tuple[stock.Balance, list[dict], Decimal]:
+        """Спланировать распределение прихода по строке заказа из пакета (D-59), ничего не записывая:
+        потребная часть — в резервы проектов по распределениям строки пакета (в порядке строк потребностей),
+        излишек (от кратности) остаётся свободным складским остатком. Возвращает (остаток после резервов,
+        строки распределения, излишек).
+
+        Если строка потребности к моменту прихода уже покрыта со склада (ручной резерв) или переведена на
+        другую позицию, её часть прихода в резерв не идёт — остаётся свободной (излишек без дублей); поставлено
+        по распределению учитывается в любом случае.
+        """
+        allocs = [dict(r._mapping) for r in ctx.conn.execute(
+            sa.select(procurement_allocations)
+            .where(procurement_allocations.c.batch_line_id == link["batch_line_id"]))]
+        # Порядок распределения детерминирован: по позиции строки в потребности, затем по id распределения.
+        pos = {(r.need_id, r.line_id): r.pos for r in ctx.conn.execute(
+            sa.select(procurement_need_lines)
+            .where(procurement_need_lines.c.need_id.in_({a["need_id"] for a in allocs})))} if allocs else {}
+        delivered = self._delivered_by_allocation(ctx.conn, [a["id"] for a in allocs])
+        allocs.sort(key=lambda a: (pos.get((a["need_id"], a["need_line_id"]), 0), a["id"]))
+        plan, surplus = cs.distribute(qty, [(a["id"], a["qty"] - delivered.get(a["id"], Decimal(0))) for a in allocs])
+        by_id = {a["id"]: a for a in allocs}
+        dist: list[dict] = []
+        for aid, attributed in plan:
+            a = by_id[aid]
+            need = self._get(ctx.conn, procurement_needs, a["need_id"])
+            nl = self._get(ctx.conn, procurement_need_lines, a["need_line_id"], "line_id")
+            # Действующая позиция строки (ручное решение) и её коэффициент — как в stock.reserve (A-25/A-27).
+            m = self._line_matches(ctx.conn, a["need_id"]).get(a["need_line_id"])
+            chosen = (m["item_id"] if m else nl["item_id"])
+            factor = m["factor"] if m else Decimal(1)
+            reserve_qty = Decimal(0)
+            if chosen == it["id"]:
+                open_qty = stock.convert_qty(nl["qty"], factor) - self._need_line_covered(
+                    ctx.conn, a["need_id"], a["need_line_id"])
+                reserve_qty = min(attributed, max(open_qty, Decimal(0)))
+            if reserve_qty > 0:
+                try:
+                    nb = stock.reserve(nb, reserve_qty)
+                except stock.StockError as e:
+                    raise _stock_rejected(e)
+            dist.append({"allocation_id": aid, "need_id": a["need_id"], "need_line_id": a["need_line_id"],
+                         "project_id": need["project_id"], "qty": money.to_json(attributed),
+                         "reserved": money.to_json(reserve_qty),
+                         "reservation_id": str(uuid.uuid4()) if reserve_qty > 0 else None})
+        return nb, dist, surplus
+
+    def _apply_receipt_distribution(self, ctx, dist: list[dict], batch_id: str, mid: str, o: dict, w: dict,
+                                    it: dict, auth) -> None:
+        """Записать распланированное распределение прихода: резервы проектов и неизменяемые связи
+        распределение↔приход; уведомить руководство затронутых проектов."""
+        if not dist:
+            return
+        b = self._get(ctx.conn, procurement_batches, batch_id)
+        projects: set[str] = set()
+        for d in dist:
+            reserved = Decimal(d["reserved"])
+            if reserved > 0:
+                ctx.conn.execute(stock_reservations.insert().values(
+                    id=d["reservation_id"], warehouse_id=w["id"], item_id=it["id"], project_id=d["project_id"],
+                    need_id=d["need_id"], need_line_id=d["need_line_id"], qty=reserved, consumed=Decimal(0),
+                    status="active", reason=f"Приход по заказу № {o['order_no']} (пакет № {b['batch_no']})",
+                    close_reason=None, version=1, created_by=ctx.user_id, created_at=ctx.now,
+                    updated_by=ctx.user_id, updated_at=ctx.now))
+                ctx.log("stock_reservation", d["reservation_id"], auth, None, 1,
+                        {"warehouse_code": w["code"], "item_code": it["code"], "qty": d["reserved"],
+                         "need_id": d["need_id"], "need_line_id": d["need_line_id"], "movement_id": mid,
+                         "reason": f"приход по заказу № {o['order_no']} (пакет № {b['batch_no']})"})
+                projects.add(d["project_id"])
+            ctx.conn.execute(procurement_allocation_receipts.insert().values(
+                id=str(uuid.uuid4()), allocation_id=d["allocation_id"], movement_id=mid,
+                reservation_id=d["reservation_id"], qty=Decimal(d["qty"])))
+        users: list[str] = []
+        for pid in projects:
+            users += self._project_rps(ctx, pid)
+        reserved_total = sum((Decimal(d["reserved"]) for d in dist), Decimal(0))
+        self._notify(ctx, list(dict.fromkeys(users)), "batch_received",
+                     f"Поставка по закупочному пакету № {b['batch_no']}",
+                     f"{it['name']}: {money.to_json(reserved_total)} {it['unit']} зарезервировано за проектом "
+                     f"(заказ № {o['order_no']}).",
+                     object_type="procurement_batch", object_id=b["id"])
+
+    def _delivered_by_allocation(self, conn, alloc_ids) -> dict[str, Decimal]:
+        """Поставлено по распределениям: allocation_id → сумма приходов, которые НЕ сторнированы (как
+        «поставлено» заказа, D-32)."""
+        if not alloc_ids:
+            return {}
+        rev = stock_movements.alias("rev")
+        out: dict[str, Decimal] = defaultdict(Decimal)
+        q = (sa.select(procurement_allocation_receipts.c.allocation_id, procurement_allocation_receipts.c.qty)
+             .select_from(procurement_allocation_receipts
+                          .outerjoin(rev, rev.c.reverses_id == procurement_allocation_receipts.c.movement_id))
+             .where(procurement_allocation_receipts.c.allocation_id.in_(alloc_ids), rev.c.id.is_(None)))
+        for r in conn.execute(q):
+            out[r.allocation_id] += r.qty
+        return out
+
     def _po_receive(self, ctx, p, ev):
         """po.receive {id, order_id, line_id, warehouse_id, qty, source_doc, reason?} — приход на склад по строке
         размещённого заказа (факт поставки). Только склад, только онлайн.
@@ -952,17 +1179,32 @@ class PurchasingMixin:
             nb = stock.receive(b, qty)
         except stock.StockError as e:
             raise _stock_rejected(e)
-        self._save_balance(ctx, w["id"], it["id"], row, nb)
+        # Строка из закупочного пакета (D-59): приход распределяется по распределениям пакета — потребная часть
+        # в резервы проектов, излишек (от кратности) остаётся свободным складским остатком. Всё — в этой
+        # транзакции: либо распределилось всё, либо ничего.
+        link = ctx.conn.execute(sa.select(purchase_order_batch_lines).where(
+            purchase_order_batch_lines.c.order_id == o["id"],
+            purchase_order_batch_lines.c.line_id == lid)).first()
+        dist: list[dict] = []
+        surplus = Decimal(0)
+        if link is not None:
+            nb, dist, surplus = self._plan_receipt_distribution(ctx, dict(link._mapping), it, qty, nb)
         mv = self._post(ctx, auth, mid=mid, kind="receipt", w=w, it=it, qty=qty, source_doc=src,
                         reason=opt_str(p, "reason", 2000),
                         details={"purchase_order_no": o["order_no"], "order_id": o["id"], "line_id": lid,
                                  "balance_after": nb.to_json()})
         ctx.conn.execute(purchase_receipts.insert().values(movement_id=mid, order_id=o["id"], line_id=lid, qty=qty))
+        if link is not None:
+            self._apply_receipt_distribution(ctx, dist, link.batch_id, mid, o, w, it, auth)
+        self._save_balance(ctx, w["id"], it["id"], row, nb)
         n = self._update_versioned(ctx, purchase_orders, o, {"updated_by": ctx.user_id, "updated_at": ctx.now})
         ctx.log("purchase_order", o["id"], auth, o["version"], n["version"],
                 {"order_no": o["order_no"], "received": money.to_json(qty), "line_id": lid, "movement_id": mid,
-                 "warehouse_code": w["code"], "item_code": it["code"], "unit": it["unit"], "source_doc": src})
+                 "warehouse_code": w["code"], "item_code": it["code"], "unit": it["unit"], "source_doc": src,
+                 "distributed": money.to_json(qty - surplus) if link is not None else None,
+                 "surplus": money.to_json(surplus) if link is not None else None})
         return {"movement": mv, "balance": {"warehouse_id": w["id"], "item_id": it["id"], **nb.to_json()},
+                "distribution": dist or None, "surplus": money.to_json(surplus) if link is not None else None,
                 "purchase_order": self._order_view(ctx, o["id"])}
 
     # ------------------------------------------------------------ для потребности и pull
@@ -1019,8 +1261,16 @@ class PurchasingMixin:
                  for r in conn.execute(sa.select(purchase_order_terms))}
         for r in conn.execute(sa.select(purchase_order_invoices)):
             terms.setdefault(r.order_id, dict(NO_TERMS)).update(invoice_gross=r.invoice_gross, invoice_vat=r.invoice_vat)
+        links: dict[str, dict] = defaultdict(dict)
+        batch_ids: set[str] = set()
+        for r in conn.execute(sa.select(purchase_order_batch_lines)):
+            links[r.order_id][r.line_id] = dict(r._mapping)
+            batch_ids.add(r.batch_id)
         pre = {"received": self._received_by_line(conn),
                "items": {r.id: dict(r._mapping) for r in conn.execute(sa.select(stock_items))},
-               "sups": sups, "contracts": contracts, "taxes": taxes, "approvals": approvals, "terms": terms}
+               "sups": sups, "contracts": contracts, "taxes": taxes, "approvals": approvals, "terms": terms,
+               "links": links,
+               "batch_nos": {r.id: r.batch_no for r in conn.execute(
+                   sa.select(procurement_batches).where(procurement_batches.c.id.in_(batch_ids)))} if batch_ids else {}}
         out["purchase_orders"] = [self.v_order(conn, o, prices, pre) for o in rows]
         return out
