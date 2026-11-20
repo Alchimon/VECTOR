@@ -882,3 +882,95 @@ def test_v24_to_v25_adds_production_calendar(backend, tmp_path, clock, keys):
     bad(db.work_schedule_calendar.insert().values(schedule_id=sid, use_calendar=True, updated_at=now))
     assert db.check_schema(eng) == db.SCHEMA_VERSION
     assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
+def test_v28_to_v29_adds_delivery_tables_with_guards(backend, tmp_path, clock, keys):
+    """v28 → v29 (D-56, blueprint 52): лиды, потоки проекта, риск-разрешения, журнал событий проекта и снимок
+    закрытия; данные v28 не меняются; журнал и снимок неизменяемы; проверки целостности — в БД."""
+    eng = make_v3(backend, tmp_path, clock, version=28)
+    now, uid, pid, tid, cust = clock.now(), new_id(), new_id(), new_id(), new_id()
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x", must_change_password=False,
+                                           password_changed_at=now, failed_attempts=0, active=True, created_at=now))
+        c.execute(db.customers.insert().values(id=cust, name="Заказчик", version=1, created_by=uid,
+                                               created_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.tenders.insert().values(id=tid, customer_id=cust, title="Т", status="won",
+                                             owner_user_id=uid, version=1, created_by=uid,
+                                             created_at=now, updated_by=uid, updated_at=now))
+        c.execute(db.projects.insert().values(id=pid, code="П-1", title="П", tender_id=tid,
+                                              tender_version_at_start=1, status="rkd_in_progress", version=1,
+                                              created_by=uid, created_at=now, updated_by=uid, updated_at=now))
+    before = counts(eng, mg.tables_of_version(28))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (28, db.SCHEMA_VERSION)
+    assert rep.created_tables == ["sales_opportunities", "project_workstreams", "project_risk_acceptances",
+                                  "project_events", "project_closeouts"]
+    after = counts(eng, mg.tables_of_version(28))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    opp, ws, risk = dict.fromkeys(("id",)), dict.fromkeys(("id",)), dict.fromkeys(("id",))
+    base_ws = dict(project_id=pid, kind="rkd", status="planned", version=1,
+                   created_by=uid, created_at=now, updated_by=uid, updated_at=now)
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    # Лид: заказчик — из справочника ИЛИ текстом, не оба и не ни одного; конвертация — один раз, тендер известен.
+    bad(db.sales_opportunities.insert().values(id=new_id(), title="Л", source="platform", status="new",
+                                               owner_user_id=uid, version=1, created_by=uid, created_at=now,
+                                               updated_by=uid, updated_at=now))                    # нет заказчика
+    oid = new_id()
+    with eng.begin() as c:
+        c.execute(db.sales_opportunities.insert().values(id=oid, title="Л", source="manager", customer_name="Заказчик",
+                                                         status="qualified", owner_user_id=uid, version=2,
+                                                         created_by=uid, created_at=now, updated_by=uid, updated_at=now))
+    with eng.begin() as c:
+        c.execute(db.sales_opportunities.update().where(db.sales_opportunities.c.id == oid)
+                  .values(status="tendered", converted_tender_id=tid))
+    bad(db.sales_opportunities.insert().values(id=new_id(), title="Л2", source="inbound", customer_name="З",
+                                               status="tendered", converted_tender_id=tid,
+                                               owner_user_id=uid, version=1, created_by=uid, created_at=now,
+                                               updated_by=uid, updated_at=now))                    # тендер занят
+    bad(db.sales_opportunities.insert().values(id=new_id(), title="Л3", source="x", customer_name="З",
+                                               status="new", owner_user_id=uid, version=1,
+                                               created_by=uid, created_at=now, updated_by=uid, updated_at=now))  # источник не из списка
+    # Потоки: один вид — один поток в проекте; срок не раньше старта.
+    with eng.begin() as c:
+        c.execute(db.project_workstreams.insert().values(id=new_id(), **base_ws))
+    bad(db.project_workstreams.insert().values(id=new_id(), **base_ws))                            # дубликат вида
+    bad(db.project_workstreams.insert().values(id=new_id(), **{**base_ws, "kind": "x"}))           # вид не из списка
+    bad(db.project_workstreams.insert().values(id=new_id(), **{**base_ws, "kind": "contract",
+                                               "planned_start": date(2026, 11, 20),
+                                               "planned_due": date(2026, 11, 10)}))                # срок раньше старта
+    # Риск-разрешение: причина и срок обязательны; снятие — с причиной и согласованными полями.
+    bad(db.project_risk_acceptances.insert().values(id=new_id(), project_id=pid,
+                                                    kind="other_kind", reason="сроки",
+                                                    due_on=date(2026, 11, 20), status="active",
+                                                    accepted_by=uid, created_at=now, authority="project_role:rp",
+                                                    version=1))                                        # вид не из списка
+    rid = new_id()
+    with eng.begin() as c:
+        c.execute(db.project_risk_acceptances.insert().values(id=rid, project_id=pid,
+                                                              kind="procurement_before_rkd_approval",
+                                                              reason="сроки", due_on=date(2026, 11, 20), status="active",
+                                                              accepted_by=uid, created_at=now, authority="project_role:rp", version=1))
+    bad(db.project_risk_acceptances.update().where(db.project_risk_acceptances.c.id == rid)
+        .values(status="resolved", resolved_at=now, resolved_by=uid))                              # снятие без причины
+    bad(db.project_risk_acceptances.update().where(db.project_risk_acceptances.c.id == rid)
+        .values(status="lost"))                                                                    # статус не из списка
+    # События проекта: порядковый номер уникален в проекте, строки неизменяемы.
+    with eng.begin() as c:
+        c.execute(db.project_events.insert().values(project_id=pid, seq=1, kind="project_created", summary="создан",
+                                                    details_json="{}", actor_id=uid, at=now))
+    bad(db.project_events.insert().values(project_id=pid, seq=1, kind="workstream_status", summary="x",
+                                          details_json="{}", actor_id=uid, at=now))        # seq занят
+    bad(db.project_events.update().where(db.project_events.c.project_id == pid).values(summary="подмена"))
+    # Снимок закрытия: один на проект, контрольная сумма ровно 64 шестнадцатеричных знака, неизменяем.
+    bad(db.project_closeouts.insert().values(id=new_id(), project_id=pid, snapshot_json="{}",
+                                             content_sha256="короткая", closed_by=uid, authority="project_role:rp", created_at=now))
+    with eng.begin() as c:
+        c.execute(db.project_closeouts.insert().values(id=new_id(), project_id=pid, snapshot_json="{}",
+                                                       content_sha256="0" * 64, closed_by=uid, authority="project_role:rp", created_at=now))
+    bad(db.project_closeouts.insert().values(id=new_id(), project_id=pid, snapshot_json="{}",
+                                             content_sha256="1" * 64, closed_by=uid, authority="project_role:rp", created_at=now))
+    bad(db.project_closeouts.delete())
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []

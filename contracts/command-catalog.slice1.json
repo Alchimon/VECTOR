@@ -1,5 +1,5 @@
 {
-  "contract": "command-catalog-slice1-v28",
+  "contract": "command-catalog-slice1-v29",
   "offline_classes": {
     "offline_full": "Полностью доступно офлайн (чтение локального кэша, локальные черновики без эффекта для других).",
     "queued": "Создаёт локальное изменение в очереди синхронизации. До ответа сервера это НЕ подтверждённое действие; сервер заново проверяет права, состояние и версию.",
@@ -77,6 +77,58 @@
       "offline": "online_required",
       "object": "assignment",
       "label_ru": "Отозвать назначение"
+    },
+    "opportunity.create": {
+      "offline": "queued",
+      "object": "sales_opportunity",
+      "label_ru": "Создать лид (возможность продажи)"
+    },
+    "opportunity.update": {
+      "offline": "queued",
+      "object": "sales_opportunity",
+      "label_ru": "Изменить лид",
+      "requires_expected_version": true
+    },
+    "opportunity.transition": {
+      "offline": "online_required",
+      "object": "sales_opportunity",
+      "label_ru": "Сменить статус лида",
+      "requires_expected_version": true
+    },
+    "opportunity.convert_to_tender": {
+      "offline": "online_required",
+      "object": "sales_opportunity",
+      "label_ru": "Перевести лид в тендер",
+      "requires_expected_version": true
+    },
+    "project.transition": {
+      "offline": "online_required",
+      "object": "project",
+      "label_ru": "Сменить статус проекта",
+      "requires_expected_version": true
+    },
+    "workstream.update": {
+      "offline": "online_required",
+      "object": "project_workstream",
+      "label_ru": "Изменить план потока проекта",
+      "requires_expected_version": true
+    },
+    "workstream.set_status": {
+      "offline": "online_required",
+      "object": "project_workstream",
+      "label_ru": "Сменить статус потока проекта",
+      "requires_expected_version": true
+    },
+    "risk.accept": {
+      "offline": "online_required",
+      "object": "project_risk_acceptance",
+      "label_ru": "Принять риск-разрешение"
+    },
+    "risk.resolve": {
+      "offline": "online_required",
+      "object": "project_risk_acceptance",
+      "label_ru": "Снять риск-разрешение",
+      "requires_expected_version": true
     },
     "kit.create": {
       "offline": "queued",

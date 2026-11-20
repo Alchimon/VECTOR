@@ -95,6 +95,9 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     26: [db.overtime_requests, db.overtime_events],
     27: [db.overtime_period_config, db.overtime_request_periods],
     28: [db.overtime_period_closures],
+    # Сквозные процессы проекта: лиды, потоки, риск-разрешения, события, снимок архива (D-56). Порядок — по внешним ключам.
+    29: [db.sales_opportunities, db.project_workstreams, db.project_risk_acceptances, db.project_events,
+         db.project_closeouts],
 }
 
 
@@ -276,7 +279,8 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               24: _create_tables(ADDED_IN[25]),
                               25: _create_tables(ADDED_IN[26]),
                               26: _create_tables(ADDED_IN[27]),
-                              27: _create_tables(ADDED_IN[28])}
+                              27: _create_tables(ADDED_IN[28]),
+                              28: _create_tables(ADDED_IN[29])}
 
 
 @dataclass

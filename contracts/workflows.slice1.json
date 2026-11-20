@@ -1,6 +1,6 @@
 {
-  "contract": "workflows-slice1-v9",
-  "notes": "Переходы и условия — временные предположения A-02/A-05 (Decision Log). Статус меняется только явной командой.",
+  "contract": "workflows-slice1-v10",
+  "notes": "Переходы и условия — временные предположения A-02/A-05 (Decision Log). Статус меняется только явной командой. D-56 (2026-11-16): потоки проекта, риск-разрешения, лиды — по ответам владельца (см. docs/blueprint/52-project-delivery-workflows.md).",
   "tender": {
     "initial": "draft",
     "terminal": [
@@ -59,9 +59,31 @@
     ],
     "one_project_per_tender": true,
     "initial": "rkd_in_progress",
+    "terminal": [
+      "archived",
+      "cancelled"
+    ],
+    "transitions": {
+      "rkd_in_progress": [
+        "closing",
+        "cancelled"
+      ],
+      "closing": [
+        "archived",
+        "cancelled",
+        "rkd_in_progress"
+      ]
+    },
+    "reason_required_for": [
+      "cancelled"
+    ],
     "labels_ru": {
-      "rkd_in_progress": "Разработка РКД"
-    }
+      "rkd_in_progress": "Разработка РКД",
+      "closing": "Завершается",
+      "archived": "Архив",
+      "cancelled": "Отменён"
+    },
+    "note": "D-56: детальные этапы живут в потоках проекта (workstream_*), projects.status — грубая рамка: «Разработка РКД» = проект в работе (прежний статус, переименование подписи — при обновлении интерфейса), «Завершается» — подготовка к архиву, «Архив» — только чтение (снимок project_closeouts). Возврат «Завершается» → «Разработка РКД» требует причины (проверяется в обработчике)."
   },
   "task": {
     "initial": "open",
@@ -257,6 +279,289 @@
     },
     "note": "released — wo.release (снимок фиксируется); in_progress — автоматически при первом старте операции; completed — автоматически, когда выполнены все операции; closed — wo.close (проверка операций и выдачи материалов); cancelled — wo.cancel с причиной. draft зарезервирован (blueprint 03 §4): в D-36 наряд выпускается сразу из утверждённого ТП.",
     "assumption": "A-42"
+  },
+  "sales_opportunity": {
+    "initial": "new",
+    "terminal": [
+      "tendered",
+      "declined"
+    ],
+    "transitions": {
+      "new": [
+        "qualified",
+        "declined"
+      ],
+      "qualified": [
+        "tendered",
+        "declined"
+      ]
+    },
+    "reason_required_for": [
+      "declined"
+    ],
+    "labels_ru": {
+      "new": "Новый",
+      "qualified": "Квалифицирован",
+      "tendered": "Переведён в тендер",
+      "declined": "Отклонён"
+    },
+    "note": "Лид — возможность продажи от тендерного отдела (с площадки) или менеджера (личный канал), D-56 п. 5. В статус «tendered» переводит только команда opportunity.convert_to_tender — она же создаёт тендер и хранит связь с лидом.",
+    "decision": "D-56"
+  },
+  "workstream_contract": {
+    "initial": "planned",
+    "terminal": [
+      "completed",
+      "terminated"
+    ],
+    "transitions": {
+      "planned": [
+        "in_progress",
+        "terminated"
+      ],
+      "in_progress": [
+        "signed",
+        "terminated"
+      ],
+      "signed": [
+        "active",
+        "terminated"
+      ],
+      "active": [
+        "completed",
+        "terminated"
+      ]
+    },
+    "reason_required_for": [
+      "terminated"
+    ],
+    "labels_ru": {
+      "planned": "Запланирован",
+      "in_progress": "Согласование договора",
+      "signed": "Подписан",
+      "active": "Действует",
+      "completed": "Исполнен",
+      "terminated": "Расторгнут"
+    },
+    "note": "Поток «Договор» проекта (D-56). Реквизиты и файлы договора — следующий этап (blueprint 52 § 2.1); поток уже фиксирует вехи."
+  },
+  "workstream_rkd": {
+    "initial": "planned",
+    "terminal": [
+      "approved_for_use"
+    ],
+    "transitions": {
+      "planned": [
+        "in_design"
+      ],
+      "in_design": [
+        "internal_review"
+      ],
+      "internal_review": [
+        "customer_review",
+        "revision_required"
+      ],
+      "customer_review": [
+        "approved_for_use",
+        "revision_required"
+      ],
+      "revision_required": [
+        "in_design"
+      ]
+    },
+    "reason_required_for": [
+      "approved_for_use",
+      "revision_required"
+    ],
+    "labels_ru": {
+      "planned": "Запланирована",
+      "in_design": "Разработка",
+      "internal_review": "Внутренняя проверка",
+      "customer_review": "На согласовании у заказчика",
+      "revision_required": "Требуется доработка",
+      "approved_for_use": "Согласована заказчиком"
+    },
+    "note": "Поток «РКД». «Согласована» — только по подтверждению заказчика (решение владельца, D-56 п. 2): переход в approved_for_use требует основания (в причине — номер письма или протокола заказчика). Внутреннее утверждение — отдельный переход (internal_review → customer_review)."
+  },
+  "workstream_procurement": {
+    "initial": "not_started",
+    "terminal": [
+      "supplied"
+    ],
+    "transitions": {
+      "not_started": [
+        "needs_ready"
+      ],
+      "needs_ready": [
+        "consolidating"
+      ],
+      "consolidating": [
+        "ordered"
+      ],
+      "ordered": [
+        "partially_received",
+        "supplied"
+      ],
+      "partially_received": [
+        "supplied",
+        "ordered"
+      ]
+    },
+    "labels_ru": {
+      "not_started": "Не начата",
+      "needs_ready": "Потребность готова",
+      "consolidating": "Сводная заявка",
+      "ordered": "Заказано",
+      "partially_received": "Поставлено частично",
+      "supplied": "Обеспечено полностью"
+    },
+    "gate": {
+      "ordered": {
+        "requires_rkd": "approved_for_use",
+        "risk_kind": "procurement_before_rkd_approval"
+      }
+    },
+    "note": "Поток «Закупка» (D-56). Заказ до согласования РКД заказчиком — только при действующем риск-разрешении РП «Закупка до согласования РКД» (blueprint 52 § 3)."
+  },
+  "workstream_production": {
+    "initial": "blocked",
+    "terminal": [
+      "shipped"
+    ],
+    "transitions": {
+      "blocked": [
+        "ready"
+      ],
+      "ready": [
+        "released"
+      ],
+      "released": [
+        "assembling"
+      ],
+      "assembling": [
+        "internal_commissioning"
+      ],
+      "internal_commissioning": [
+        "pre_fat"
+      ],
+      "pre_fat": [
+        "final_fat",
+        "assembling"
+      ],
+      "final_fat": [
+        "packed",
+        "assembling"
+      ],
+      "packed": [
+        "shipped"
+      ]
+    },
+    "reason_required_for": [
+      "assembling"
+    ],
+    "labels_ru": {
+      "blocked": "Не готова",
+      "ready": "Готова к запуску",
+      "released": "Запущена",
+      "assembling": "Сборка",
+      "internal_commissioning": "Внутренняя наладка",
+      "pre_fat": "Предварительные испытания",
+      "final_fat": "Приёмочные испытания",
+      "packed": "Упаковано",
+      "shipped": "Отгружено"
+    },
+    "gate": {
+      "released": {
+        "requires_rkd": "approved_for_use",
+        "risk_kind": "production_before_rkd_approval"
+      }
+    },
+    "note": "Поток «Производство» (D-56). Запуск («released») без РКД, согласованной заказчиком, — только при действующем риск-разрешении РП «Сборка по неутверждённой РКД». Возврат в «assembling» (доработка после испытаний) требует причины. Проверка снимка готовности (readiness) — этап 5 blueprint 52."
+  },
+  "workstream_shipping": {
+    "initial": "planned",
+    "terminal": [
+      "delivered"
+    ],
+    "transitions": {
+      "planned": [
+        "ready"
+      ],
+      "ready": [
+        "shipped"
+      ],
+      "shipped": [
+        "delivered"
+      ]
+    },
+    "labels_ru": {
+      "planned": "Запланирована",
+      "ready": "Готова к отгрузке",
+      "shipped": "Отгружена",
+      "delivered": "Доставлена заказчику"
+    },
+    "note": "Поток «Отгрузка» (D-56): упаковка и доставка заказчику. Упаковочные листы и транспортные документы — этап 6 blueprint 52."
+  },
+  "workstream_site": {
+    "initial": "planned",
+    "terminal": [
+      "accepted",
+      "not_required"
+    ],
+    "transitions": {
+      "planned": [
+        "scheduled",
+        "not_required"
+      ],
+      "not_required": [
+        "planned"
+      ],
+      "scheduled": [
+        "in_progress"
+      ],
+      "in_progress": [
+        "accepted"
+      ]
+    },
+    "reason_required_for": [
+      "not_required"
+    ],
+    "labels_ru": {
+      "planned": "Запланированы",
+      "scheduled": "Назначена дата",
+      "in_progress": "Выполняются",
+      "accepted": "Приняты заказчиком",
+      "not_required": "Не требуются по договору"
+    },
+    "note": "Поток «ПНР и ШМР на площадке» (D-56). «Не требуются по договору» — только с причиной (ссылкой на договор); обратный переход — тоже с записью в журнале проекта."
+  },
+  "risk_acceptance": {
+    "initial": "active",
+    "terminal": [
+      "resolved",
+      "withdrawn"
+    ],
+    "transitions": {
+      "active": [
+        "resolved",
+        "withdrawn"
+      ]
+    },
+    "reason_required_for": [
+      "resolved",
+      "withdrawn"
+    ],
+    "labels_ru": {
+      "active": "Действует",
+      "resolved": "Снято (условие выполнено)",
+      "withdrawn": "Отозвано",
+      "expired": "Истёк срок — требуется решение"
+    },
+    "kinds": {
+      "procurement_before_rkd_approval": "Закупка до согласования РКД",
+      "production_before_rkd_approval": "Сборка по неутверждённой РКД"
+    },
+    "note": "Риск-разрешение (исключение) принимает РП проекта (решение владельца, D-56 п. 1); резерв — руководитель отдела. Обязательны причина и срок действия; истёкшее разрешение переход не открывает и требует явного снятия (resolved/withdrawn). Разрешение не меняет статус документа и не является его утверждением."
   },
   "wo_operation": {
     "initial": "pending",

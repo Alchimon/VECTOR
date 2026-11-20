@@ -62,7 +62,11 @@ from vector.core import money
 #         Ставки и суммы отсутствуют; таблицы overtime_requests и overtime_events.
 #   v27 — выбор компанией календарного периода и неизменяемый снимок периода у каждой заявки.
 #   v28 — неизменяемые закрытия агрегата утверждённых заявок, каждая коррекция — новая связанная ревизия.
-SCHEMA_VERSION = 28
+#   v29 — сквозные процессы проекта (D-56, ответы владельца 2026-11-16): лиды тендерного отдела и менеджеров
+#         (sales_opportunities), параллельные потоки проекта (project_workstreams), риск-разрешения РП
+#         (project_risk_acceptances), журнал событий проекта для карточки (project_events), неизменяемый снимок
+#         закрытия в архив (project_closeouts).
+SCHEMA_VERSION = 29
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1669,6 +1673,110 @@ work_schedule_calendar = sa.Table("work_schedule_calendar", metadata,
     sa.Column("use_calendar", sa.Boolean, nullable=False),
     sa.Column("updated_at", UtcDateTime, nullable=False))
 
+# ------------------------------------------------------------ D-56 (схема v29): лиды, потоки проекта, риски, архив
+# Лид (возможность продажи): заказ от тендерного отдела (с площадки) или от менеджера (личный канал) ДО тендера
+# (решение владельца 2026-11-16, п. 5 — отдельная сущность, а не расширение tenders). Заказчик — из справочника
+# (customer_id) или свободным текстом (customer_name), если его ещё нет в справочнике. Перевод в тендер — командой
+# opportunity.convert_to_tender: она создаёт тендер и записывает связь (converted_tender_id); обратная связь
+# «тендер ← лид» читается по этому столбцу (миграции только добавляют, столбец в tenders не появится).
+sales_opportunities = sa.Table("sales_opportunities", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("title", U(300), nullable=False),
+    sa.Column("source", U(16), nullable=False),
+    sa.Column("source_detail", U(300)),                    # площадка / канал — уточнение свободным текстом
+    sa.Column("customer_id", ID, sa.ForeignKey("customers.id"), index=True),
+    sa.Column("customer_name", U(300)),                    # если заказчика ещё нет в справочнике
+    sa.Column("owner_user_id", ID, sa.ForeignKey("users.id"), nullable=False),   # ответственный менеджер
+    sa.Column("expected_on", sa.Date),                     # ожидаемое решение заказчика — для справки
+    sa.Column("note", U(2000)),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("status_reason", U(2000)),
+    sa.Column("converted_tender_id", ID, sa.ForeignKey("tenders.id")),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("converted_tender_id", name="uq_sales_opportunities_tender"),
+    sa.CheckConstraint("source IN ('platform','manager','inbound','other')", name="source"),
+    sa.CheckConstraint("status IN ('new','qualified','tendered','declined')", name="status"),
+    sa.CheckConstraint("customer_id IS NOT NULL OR customer_name IS NOT NULL", name="customer_present"),
+    sa.CheckConstraint("(status = 'tendered' AND converted_tender_id IS NOT NULL) OR "
+                       "(status <> 'tendered' AND converted_tender_id IS NULL)", name="convert_consistent"))
+
+# Поток проекта (D-56): договор, РКД, закупка, производство, отгрузка, площадка идут ПАРАЛЛЕЛЬНО; projects.status —
+# грубая рамка (в работе / завершается / архив / отменён), а не единственная стадия. Допустимые статусы и переходы
+# каждого потока — в контракте workflows (workstream_<kind>); сервер проверяет их и шлюзы (gate) в момент эффекта.
+project_workstreams = sa.Table("project_workstreams", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("kind", U(16), nullable=False),
+    sa.Column("status", U(24), nullable=False),
+    sa.Column("responsible_user_id", ID, sa.ForeignKey("users.id")),   # ответственный за поток (участник проекта)
+    sa.Column("planned_start", sa.Date), sa.Column("planned_due", sa.Date),
+    sa.Column("note", U(2000)),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("project_id", "kind", name="uq_project_workstreams_kind"),
+    sa.CheckConstraint("kind IN ('contract','rkd','procurement','production','shipping','site')", name="kind"),
+    sa.CheckConstraint("planned_start IS NULL OR planned_due IS NULL OR planned_due >= planned_start",
+                       name="planned_range"))
+
+# Риск-разрешение (исключение, D-56): РП проекта осознанно разрешает шаг до выполнения стандартного условия —
+# закупку до согласования РКД заказчиком или сборку по неутверждённой РКД. Обязательны причина и срок действия;
+# истёкшее разрешение переход не открывает (состояние «истёк» вычисляется при чтении) и требует явного снятия.
+# Разрешение НЕ меняет статус документа и не является его утверждением. Снятие — только с причиной; строка
+# остаётся в истории (статус + resolved_*, записи не удаляются).
+project_risk_acceptances = sa.Table("project_risk_acceptances", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("kind", U(40), nullable=False),
+    sa.Column("scope_json", T),                            # какие комплекты затронуты (канонический JSON) или NULL = весь проект
+    sa.Column("reason", T, nullable=False),
+    sa.Column("mitigation", T),                            # компенсирующие меры — если указаны
+    sa.Column("due_on", sa.Date, nullable=False),          # срок действия (включительно); после него — «истёк»
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("accepted_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("authority", U(120), nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("resolved_by", ID, sa.ForeignKey("users.id")), sa.Column("resolved_at", UtcDateTime),
+    sa.Column("resolution_reason", U(2000)),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.CheckConstraint("kind IN ('procurement_before_rkd_approval','production_before_rkd_approval')", name="kind"),
+    sa.CheckConstraint("status IN ('active','resolved','withdrawn')", name="status"),
+    sa.CheckConstraint("(status = 'active' AND resolved_at IS NULL AND resolved_by IS NULL) OR "
+                       "(status <> 'active' AND resolved_at IS NOT NULL AND resolved_by IS NOT NULL "
+                       "AND resolution_reason IS NOT NULL)", name="resolve_consistent"))
+
+# События проекта для карточки (неизменяемо): создание, переходы потоков, риск-разрешения, закрытие — кто, когда,
+# на каком основании. Это доменная лента поверх журнала аудита: аудит хранит команды, здесь — понятные вехи.
+project_events = sa.Table("project_events", metadata,
+    sa.Column("id", BIGID, primary_key=True, autoincrement=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("seq", sa.Integer, nullable=False),
+    sa.Column("kind", U(40), nullable=False),
+    sa.Column("object_type", U(32)), sa.Column("object_id", U(64)),
+    sa.Column("summary", U(500), nullable=False),
+    sa.Column("details_json", T, nullable=False),
+    sa.Column("actor_id", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("authority", U(120)),
+    sa.Column("at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("project_id", "seq", name="uq_project_events_seq"))
+
+# Снимок закрытия проекта (неизменяемо): состояние на момент «Архив» — проект, потоки, риски, счётчики основных
+# объектов. Контрольная сумма content_sha256 — по каноническому JSON; по ней проверяется целостность снимка.
+project_closeouts = sa.Table("project_closeouts", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, unique=True),
+    sa.Column("snapshot_json", T, nullable=False),
+    # Контрольная сумма снимка — ровно 64 шестнадцатеричных знака (SHA-256): снимок проверяем без обращения к коду.
+    sa.Column("content_sha256", sa.String(64), nullable=False),
+    sa.Column("closed_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("authority", U(120), nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("length(content_sha256) = 64 AND content_sha256 = lower(content_sha256)"
+                       " AND trim(content_sha256, '0123456789abcdef') = ''",
+                       name="ck_project_closeouts_sha256"))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -1764,7 +1872,8 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (work_order_issues, 50026), (instance_compositions, 50027), (instance_events, 50028),
                  (passport_exports, 50029), (effectiveness_checks, 50030), (quality_decisions, 50031),
                  (claim_responses, 50032), (daily_report_events, 50033), (daily_report_auto, 50034),
-                 (org_events, 50035), (workday_events, 50036), (workday_auto_finishes, 50037), (overtime_events, 50040), (overtime_request_periods, 50041), (overtime_period_closures, 50042)):
+                 (org_events, 50035), (workday_events, 50036), (workday_auto_finishes, 50037), (overtime_events, 50040), (overtime_request_periods, 50041), (overtime_period_closures, 50042),
+                 (project_events, 50043), (project_closeouts, 50044)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

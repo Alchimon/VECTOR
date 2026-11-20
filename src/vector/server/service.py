@@ -30,6 +30,7 @@ from .authz import Authority, Policy, grant_is_active
 from .calc import CalcMixin
 from .config_store import ConfigMixin
 from .delegation import DelegationMixin
+from .delivery import DeliveryMixin
 from .notify import NotificationMixin
 from .lifecycle import LifecycleMixin
 from .quality import QualityMixin
@@ -93,7 +94,7 @@ class Ctx:
 
 class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin, NotificationMixin,
               ProductionMixin, LifecycleMixin, QualityMixin, WorktimeMixin, OrgMixin, WorkdayMixin,
-              ScheduleMixin, CalendarMixin):
+              ScheduleMixin, CalendarMixin, DeliveryMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
     склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py);
     замещение и основания решений — DelegationMixin (delegation.py, D-34/D-35); уведомления — NotificationMixin
@@ -103,7 +104,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
     отчёты — WorktimeMixin (worktime.py, D-42); оргструктура (филиалы, структуры, отделы, руководители и сотрудники)
     и маршрут проверки отчётов — OrgMixin (org.py, D-44); таймер рабочего дня и фактическое начало дня —
     WorkdayMixin (workday.py, D-46); графики работы — ScheduleMixin (schedule.py, D-47);
-    производственный календарь — CalendarMixin (prodcal.py, D-48).
+    производственный календарь — CalendarMixin (prodcal.py, D-48). Лиды, потоки проекта, риск-разрешения и архив —
+    DeliveryMixin (delivery.py, D-56).
 
     Как устроен обработчик команды (все _xxx_yyy(ctx, p, ev) следуют одной схеме — так их легко проверять):
 
@@ -147,6 +149,13 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "tkp.reopen": self._tkp_reopen, "tkp.record_sent": self._tkp_record_sent,
             "project.start_rkd": self._project_start_rkd, "project.assign": self._project_assign,
             "project.revoke_assignment": self._project_revoke_assignment,
+            # Лиды, потоки проекта, риск-разрешения и архив (delivery.py, D-56).
+            "opportunity.create": self._opportunity_create, "opportunity.update": self._opportunity_update,
+            "opportunity.transition": self._opportunity_transition,
+            "opportunity.convert_to_tender": self._opportunity_convert_to_tender,
+            "project.transition": self._project_transition,
+            "workstream.update": self._workstream_update, "workstream.set_status": self._workstream_set_status,
+            "risk.accept": self._risk_accept, "risk.resolve": self._risk_resolve,
             "kit.create": self._kit_create, "kit.update": self._kit_update,
             "account.change_password": self._account_change_password,
             "admin.create_user": self._admin_create_user, "admin.grant_role": self._admin_grant_role,
@@ -838,6 +847,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         ctx.conn.execute(projects.insert().values(id=pid, code=code, title=title, tender_id=t["id"], tender_version_at_start=t["version"],
                                                   status=self.wf["project"]["initial"], version=1, created_by=ctx.user_id,
                                                   created_at=ctx.now, updated_by=ctx.user_id, updated_at=ctx.now))
+        # Потоки проекта (D-56): договор, РКД, закупка, производство, отгрузка, площадка — с первого события в журнале.
+        self._streams_init(ctx, pid)
         ctx.log("project", pid, auth, None, 1, {"tender_id": t["id"], "tender_version": t["version"], "code": code,
                                                "note": "ГИП не назначен — назначает администратор."})
         return {"project": self.v_project(self._get(ctx.conn, projects, pid)), "gip_assigned": False}
@@ -1159,6 +1170,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
                         .order_by(project_assignments.c.id)))
         # Задачи, документы и метаданные версий (без содержимого файлов) — только по читаемым проектам.
         out.update(self._pull_work(conn, readable))
+        # Лиды, потоки проекта, риск-разрешения, события и снимок архива (D-56).
+        out.update(self._pull_delivery(conn, uid, now, readable))
         # Расчёты: черновики и версии — по читаемым проектам; ревизии итога — по отдельному праву.
         out.update(self._pull_calc(conn, uid, now, readable))
         # Склад (остатки, резервы, журнал) — по праву stock.read; потребности — по праву need.read в их проекте.
@@ -1195,7 +1208,7 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         if (out["tenders"] or out["projects"] or out["calc_revisions"] or out["warehouses"] or out["needs"]
                 or out["purchase_orders"] or me_roles["roles"] or out["delegations"] or out["work_orders"]
                 or out["product_instances"] or out["claims"] or out["change_requests"] or out["daily_reports"]
-                or out["org_units"]):
+                or out["org_units"] or out["opportunities"]):
             # Минимальный справочник людей (имя для отображения ответственного) — без логинов и контактов.
             out["people"] = [{"id": r["id"], "display_name": r["display_name"]} for r in
                              self._rows(conn, sa.select(users.c.id, users.c.display_name).where(users.c.active == sa.true()))]
@@ -1234,13 +1247,22 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
                   "tech_process": "tp.read", "work_order": "wo.read", "wo_operation": "wo.read",
                   "product_instance": "instance.read", "passport": "passport.read",
                   "claim": "quality.read", "change_request": "quality.read", "change_order": "quality.read",
-                  "daily_report": "worktime.read_all"}.get(otype)
+                  "daily_report": "worktime.read_all", "sales_opportunity": "opportunity.read",
+                  "project_workstream": "project.read", "project_risk_acceptance": "project.read",
+                  "project_closeout": "project.read"}.get(otype)
         if not action or not isinstance(oid, str):
             return {"status": "rejected", "code": "bad_history_request", "message_ru": "Укажите тип и id объекта."}
         pid = oid if otype in ("project", "project_calc") else None
         if otype == "procurement_need":
             n = self._get(conn, db.procurement_needs, oid)
             pid = n["project_id"] if n else None
+        if otype in ("project_workstream", "project_risk_acceptance", "project_closeout"):
+            # Объекты потоков проекта (D-56): право чтения определяется ролью в их проекте.
+            table = {"project_workstream": db.project_workstreams,
+                     "project_risk_acceptance": db.project_risk_acceptances,
+                     "project_closeout": db.project_closeouts}[otype]
+            w = self._get(conn, table, oid)
+            pid = w["project_id"] if w else None
         if otype in ("tech_process", "work_order"):
             t = self._get(conn, db.tech_processes if otype == "tech_process" else db.work_orders, oid)
             pid = t["project_id"] if t else None
