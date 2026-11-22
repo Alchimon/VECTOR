@@ -1,5 +1,5 @@
 {
- "contract": "command-catalog-slice1-v34",
+ "contract": "command-catalog-slice1-v35",
  "offline_classes": {
   "offline_full": "Полностью доступно офлайн (чтение локального кэша, локальные черновики без эффекта для других).",
   "queued": "Создаёт локальное изменение в очереди синхронизации. До ответа сервера это НЕ подтверждённое действие; сервер заново проверяет права, состояние и версию.",
@@ -249,6 +249,36 @@
    "object": "document_transmittal",
    "label_ru": "Зарегистрировать подтверждение доставки",
    "requires_expected_version": true
+  },
+  "docprofile.create": {
+   "offline": "online_required",
+   "object": "document_profile",
+   "label_ru": "Создать профиль шифров ревизий",
+   "note": "Проверка «один активный профиль на область» — только на сервере; офлайн-очередь дала бы двусмысленность."
+  },
+  "docprofile.update": {
+   "offline": "online_required",
+   "object": "document_profile",
+   "label_ru": "Изменить профиль шифров",
+   "requires_expected_version": true
+  },
+  "docprofile.activate": {
+   "offline": "online_required",
+   "object": "document_profile",
+   "label_ru": "Включить или отключить профиль шифров",
+   "requires_expected_version": true
+  },
+  "docprofile.preview": {
+   "offline": "online_required",
+   "object": "document_profile",
+   "label_ru": "Проверить шифр ревизии по шаблону профиля",
+   "note": "Ничего не записывает: предпросмотр перед созданием ревизии или пример при настройке профиля."
+  },
+  "docrev.set_issue": {
+   "offline": "online_required",
+   "object": "document_revision",
+   "label_ru": "Установить статус выдачи ревизии",
+   "note": "Одна действующая запись на ревизию; код и подпись сохраняются снимком из словаря профиля (D-62)."
   },
   "calc.save_draft": {
    "offline": "queued",

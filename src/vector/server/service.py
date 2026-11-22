@@ -164,6 +164,10 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "comment.add": self._comment_add, "comment.respond": self._comment_respond,
             "transmittal.create": self._transmittal_create,
             "transmittal.register_receipt": self._transmittal_register_receipt,
+            # Профили шифров и статусы выдачи (D-62, этап 3б blueprint 52).
+            "docprofile.create": self._docprofile_create, "docprofile.update": self._docprofile_update,
+            "docprofile.activate": self._docprofile_activate, "docprofile.preview": self._docprofile_preview,
+            "docrev.set_issue": self._docrev_set_issue,
             # Консолидация закупок и аналоги (consolidation.py, этап 4 blueprint 52).
             "pgroup.create": self._pgroup_create, "pgroup.update": self._pgroup_update,
             "batch.create": self._batch_create, "batch.update": self._batch_update,

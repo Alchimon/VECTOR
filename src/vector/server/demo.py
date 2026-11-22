@@ -426,6 +426,22 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
                                                    **({"reason": reason} if reason else {})},
                      rkd_ws["version"])["workstream"]
 
+    # D-62: профиль шифров ревизий демо-проекта (шаблон, пример и словарь статусов выдачи задаёт ЗАКАЗЧИК —
+    # здесь вымышленные), ревизия документа АТХ-001 по шаблону со штампом выдачи (снимок словаря).
+    prof = cmd(rp, "docprofile.create", {"id": str(uuid.uuid4()), "project_id": pid, "name": "Схема заказчика «ТехМаш»",
+                                         "label_pattern": r"\d{2}", "label_example": "01",
+                                         "issue_statuses": [{"code": "IFC", "label_ru": "Для производства работ"},
+                                                            {"code": "CEF", "label_ru": "Для сведения"}]})["profile"]
+    rev = cmd(eng, "docrev.create", {"id": str(uuid.uuid4()), "document_id": docs["АТХ-001"], "label": "01",
+                                     "doc_version_id": 3})["revision"]
+    rev = cmd(eng, "docrev.transition", {"id": rev["id"], "to": "ready_for_rp"}, ev=rev["version"])["revision"]
+    rev = cmd(rp, "docrev.transition", {"id": rev["id"], "to": "ready_to_transmit"},
+              ev=rev["version"])["revision"]
+    cmd(rp, "docrev.set_issue", {"id": rev["id"], "status_code": "IFC"})
+    # Предпросмотр шифра перед следующей ревизией: «02» подходит под шаблон, «REV-2» — нет (онлайн-запрос,
+    # в БД ничего не пишется).
+    preview = cmd(rp, "docprofile.preview", {"project_id": pid, "kit_id": kits["АТХ"], "label": "02"})
+
     prod = _seed_production(cmd, login, people, svc, kits, atx_v1)
     prod.update(_seed_lifecycle(cmd, login, people, svc, prod["tech_processes"][0], items, whs, docs))
     prod.update(_seed_quality(cmd, login, people, svc, prod["product_instances"][0], kits, prod["lifecycle_work_order"]))
@@ -725,9 +741,11 @@ def _seed_day_marks(cmd, login, svc) -> dict:
     """Отметки дня (D-49, ответ владельца на A-53 п. 3) — отправленные отчёты коммерческой службы, их проверяет
     v.zaitseva (руководитель подразделения, D-45). График — «Пятидневка» 08:00–17:00, пн–пт, перерыв 60 мин, норма 8 ч.
 
-    * s.morozov: в последний рабочий день по графику — 08:00–20:00 с перерывом час → «Сверхурочно — 3 ч»;
-    * o.nikitina: в последний выходной или праздник — 10:00–14:00 без перерыва → «Работа в выходной (праздничный)
-      день — 4 ч» (закрытие квартала).
+    * s.morozov: в рабочий день прошлой недели по графику — 08:00–20:00 с перерывом час → «Сверхурочно — 3 ч»;
+    * o.nikitina: в выходной или праздник прошлой недели — 10:00–14:00 без перерыва → «Работа в выходной
+      (праздничный) день — 4 ч» (закрытие квартала).
+    Именно прошлая неделя: недельная сводка руководителя (D-45) агрегирует прошлую полную неделю, и самопроверка
+    стенда (раздел 15) ждёт там отправленные отчёты.
     Отчёты — у сотрудников, которым раздел «Рабочее время» в демо больше ничем не нужен (у i.belova своих отчётов
     нет — по ней проверяется отчёт «не по проекту»).
     Дни подбираются от даты установки по встроенному календарю программы, чтобы отметки были на стенде всегда.
@@ -738,9 +756,14 @@ def _seed_day_marks(cmd, login, svc) -> dict:
     today = svc.now().date()
     five = {**sch.BUILTIN, "start_time": "08:00", "end_time": "17:00"}
     cal = pc.effective((today.year - 1, today.year), {}, [], [])
-    back = [today - timedelta(days=n) for n in range(1, 15)]
-    workday = next(d for d in back if wd.day_type(five, d, cal) in ("workday", "short"))
-    offday = next(d for d in back if wd.day_type(five, d, cal) in ("weekend", "holiday"))
+    # Отметки должны попадать в ПРОШЛУЮ полную неделю: именно её агрегирует сводка руководителя
+    # (worktime_weekly_metrics, D-45) и её проверяет самопроверка стенда. «Недавние дни» в понедельник/вторник
+    # оказываются в текущей неделе — сводка пуста.
+    monday_prev = today - timedelta(days=today.weekday() + 7)
+    last_week = [monday_prev + timedelta(days=n) for n in range(7)]
+    workday = next(d for d in last_week if wd.day_type(five, d, cal) in ("workday", "short"))
+    offday = next((d for d in last_week if wd.day_type(five, d, cal) in ("weekend", "holiday")),
+                  monday_prev + timedelta(days=5))
     sc = {"shift": True, "lines": True, "hours": True}
     out = []
     for who, day, start, end, brk, minutes, note in (

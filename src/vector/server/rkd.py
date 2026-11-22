@@ -11,17 +11,18 @@ contracts/permissions (docrev.*, comment.*, transmittal.*).
 """
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any, Optional
 
 import sqlalchemy as sa
 
 from vector.core import rkd as rk
-from vector.core.errors import Rejected
+from vector.core.errors import Conflict, Rejected
 
-from .db import (document_comment_responses, document_comments, document_reviews, document_revisions,
-                 document_transmittals, document_versions, documents, file_blobs, file_uploads, projects,
-                 transmittal_items)
+from .db import (document_comment_responses, document_comments, document_profiles, document_reviews,
+                 document_revision_issues, document_revisions, document_transmittals, document_versions,
+                 documents, file_blobs, file_uploads, kits, projects, transmittal_items)
 from .validation import iso, only_keys, opt_str, req_str, req_uuid
 from .work import _check_sha256
 
@@ -65,6 +66,251 @@ class RkdMixin:
                 "version": o["version"], "created_by": o["created_by"], "created_at": iso(o["created_at"]),
                 "delivered_at": iso(o["delivered_at"])}
 
+    # ------------------------------------------------------------ профили шифров и статусы выдачи (D-62)
+    def v_profile(self, o: dict, conn=None) -> dict:
+        """Профиль схемы шифров: словарь статусов выдачи распаковывается из JSON; revisions — число ревизий,
+        уже проверенных/размеченных этим профилем (нужен, если conn передан — для pull и ответов команд)."""
+        statuses = json.loads(o["issue_statuses_json"] or "[]")
+        out = {"id": o["id"], "project_id": o["project_id"], "kit_id": o["kit_id"], "name": o["name"],
+               "label_pattern": o["label_pattern"], "label_example": o["label_example"],
+               "issue_statuses": statuses, "active": bool(o["active"]), "version": o["version"],
+               "created_by": o["created_by"], "created_at": iso(o["created_at"]),
+               "updated_at": iso(o["updated_at"])}
+        if conn is not None:
+            out["revisions"] = conn.execute(sa.select(sa.func.count()).select_from(document_revision_issues)
+                                            .where(document_revision_issues.c.profile_id == o["id"])).scalar()
+        return out
+
+    @staticmethod
+    def v_issue(o: dict) -> dict:
+        """Действующий статус выдачи ревизии (код и подпись — снимок словаря профиля на момент установки)."""
+        return {"revision_id": o["revision_id"], "profile_id": o["profile_id"], "status_code": o["status_code"],
+                "status_label": o["status_label"], "version": o["version"],
+                "set_by": o["set_by"], "set_at": iso(o["set_at"])}
+
+    def _profile_ctx(self, ctx, profile_id: str) -> tuple[dict, dict]:
+        """Профиль и его проект (404, если профиля нет)."""
+        prof = self._require(ctx.conn, document_profiles, profile_id, "Профиль шифров")
+        return prof, self._require(ctx.conn, projects, prof["project_id"], "Проект")
+
+    def _effective_profile(self, conn, project_id: str, kit_id: Optional[str]) -> Optional[dict]:
+        """Действующий профиль для комплекта: активный комплектный переопределяет проектный (kit_id NULL)."""
+        rows = [dict(r._mapping) for r in conn.execute(sa.select(document_profiles).where(
+            document_profiles.c.project_id == project_id, document_profiles.c.active.is_(True)))]
+        kit_level = [p for p in rows if p["kit_id"] == kit_id]
+        project_level = [p for p in rows if p["kit_id"] is None]
+        return kit_level[0] if kit_level else (project_level[0] if project_level else None)
+
+    def _active_conflict(self, ctx, project_id: str, kit_id: Optional[str], exclude_id: Optional[str] = None) -> bool:
+        """Есть ли уже активный профиль на ту же область (проект целиком или тот же комплект), кроме exclude_id."""
+        cond = [document_profiles.c.project_id == project_id, document_profiles.c.active.is_(True)]
+        cond.append(document_profiles.c.kit_id.is_(None) if kit_id is None
+                    else document_profiles.c.kit_id == kit_id)
+        if exclude_id:
+            cond.append(document_profiles.c.id != exclude_id)
+        return ctx.conn.execute(sa.select(document_profiles.c.id).where(*cond)).first() is not None
+
+    def _profile_fields(self, ctx, p: dict, existing: Optional[dict] = None) -> dict:
+        """Проверить и нормализовать поля профиля: шаблон компилируется, словарь статусов — правилам ядра.
+
+        Для update (existing задан) берутся только присланные ключи; create требует name и принимает остальное.
+        """
+        out: dict[str, Any] = {}
+        if existing is None or "name" in p:
+            out["name"] = req_str(p, "name", 200) if existing is None else req_str(p, "name", 200)
+        if existing is None or "label_pattern" in p:
+            pattern = opt_str(p, "label_pattern", 200)
+            try:
+                out["label_pattern"] = rk.validate_label_pattern(pattern)
+            except ValueError as e:
+                raise Rejected("bad_label_pattern", str(e), {"field": "label_pattern"})
+        if existing is None or "label_example" in p:
+            out["label_example"] = opt_str(p, "label_example", 40)
+        if existing is None or "issue_statuses" in p:
+            try:
+                statuses = rk.validate_issue_statuses(p.get("issue_statuses") if existing is None
+                                                      else p["issue_statuses"])
+            except ValueError as e:
+                raise Rejected("bad_issue_statuses", str(e), {"field": "issue_statuses"})
+            out["issue_statuses_json"] = json.dumps(statuses, ensure_ascii=False)
+        # Пример шифра обязан соответствовать шаблону (если оба заданы) — иначе «предпросмотр» врёт.
+        pattern = out.get("label_pattern", existing["label_pattern"] if existing else None)
+        example = out.get("label_example", existing["label_example"] if existing else None)
+        if example is not None and not rk.label_matches(pattern, example):
+            raise Rejected("example_mismatch",
+                           "Пример шифра не соответствует шаблону — поправьте шаблон или пример.",
+                           {"field": "label_example"})
+        return out
+
+    def _docprofile_create(self, ctx, p, ev):
+        """docprofile.create {id, project_id, kit_id?, name, label_pattern?, label_example?, issue_statuses?} —
+        профиль схемы шифров ревизий для проекта (kit_id не задан) или конкретного комплекта.
+
+        Одновременно активен один профиль на область: комплектный переопределяет проектный (иначе двусмысленность
+        при проверке шифра). Словарь статусов выдачи задаёт заказчик (IFC/CEF и т.п.) — программа формат не
+        навязывает, только проверяет непустоту/уникальность кодов.
+        """
+        only_keys(p, {"id", "project_id", "kit_id", "name", "label_pattern", "label_example", "issue_statuses"})
+        pr = self._require(ctx.conn, projects, req_uuid(p, "project_id"), "Проект")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "docprofile.manage", ctx.now, project_id=pr["id"])
+        self._project_editable(pr)
+        kit_id = p.get("kit_id")
+        if kit_id is not None:
+            kit_id = req_uuid(p, "kit_id")
+            kit = self._get(ctx.conn, kits, kit_id)
+            if kit is None or kit["project_id"] != pr["id"]:
+                raise Rejected("not_found", "Комплект: объект не найден.", {"id": kit_id})
+        prof_id = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, document_profiles, prof_id)
+        if self._active_conflict(ctx, pr["id"], kit_id):
+            raise Rejected("profile_active_exists",
+                           "Активный профиль для этой области уже есть — отключите его или задайте другой комплект.",
+                           {"field": "kit_id"})
+        fields = self._profile_fields(ctx, p)
+        ctx.conn.execute(document_profiles.insert().values(
+            id=prof_id, project_id=pr["id"], kit_id=kit_id, active=True, version=1,
+            created_by=ctx.user_id, created_at=ctx.now, updated_by=ctx.user_id, updated_at=ctx.now, **fields))
+        ctx.log("document_profile", prof_id, auth, None, 1,
+                {"project_id": pr["id"], "kit_id": kit_id, "name": fields["name"],
+                 "label_pattern": fields.get("label_pattern"),
+                 "issue_statuses": json.loads(fields.get("issue_statuses_json", "[]"))})
+        self._project_event(ctx, pr["id"], "docprofile_created",
+                            f"Профиль шифров «{fields['name']}» создан", auth,
+                            object_type="document_profile", object_id=prof_id)
+        return {"profile": self.v_profile(self._get(ctx.conn, document_profiles, prof_id), ctx.conn)}
+
+    def _docprofile_update(self, ctx, p, ev):
+        """docprofile.update {id, name?, label_pattern?, label_example?, issue_statuses?} — правка профиля.
+
+        Новые правила действуют на новые ревизии и новые установки статуса; созданные ревизии и снимки статусов
+        не перепроверяются (история неизменна).
+        """
+        only_keys(p, {"id", "name", "label_pattern", "label_example", "issue_statuses"})
+        prof, pr = self._profile_ctx(ctx, req_uuid(p, "id"))
+        auth = self.policy.check(ctx.conn, ctx.user_id, "docprofile.manage", ctx.now, project_id=pr["id"])
+        self._project_editable(pr)
+        fields = self._profile_fields(ctx, p, existing=prof)
+        if not fields:
+            raise Rejected("nothing_to_update", "Нет изменений: передайте хотя бы одно поле профиля.")
+        self._check_version(prof, ev, lambda o: self.v_profile(o, ctx.conn))
+        n = self._update_versioned(ctx, document_profiles, prof,
+                                   {**fields, "updated_by": ctx.user_id, "updated_at": ctx.now})
+        ctx.log("document_profile", prof["id"], auth, prof["version"], n["version"], fields)
+        self._project_event(ctx, pr["id"], "docprofile_updated",
+                            f"Профиль шифров «{n['name']}» обновлён", auth,
+                            object_type="document_profile", object_id=prof["id"])
+        return {"profile": self.v_profile(n, ctx.conn)}
+
+    def _docprofile_activate(self, ctx, p, ev):
+        """docprofile.activate {id, active} — включить/отключить профиль. Включение отклоняется, если на ту же
+        область уже есть активный профиль; отключение делает область «без профиля» (шифры не проверяются)."""
+        only_keys(p, {"id", "active"})
+        prof, pr = self._profile_ctx(ctx, req_uuid(p, "id"))
+        auth = self.policy.check(ctx.conn, ctx.user_id, "docprofile.manage", ctx.now, project_id=pr["id"])
+        self._project_editable(pr)
+        active = p.get("active")
+        if not isinstance(active, bool):
+            raise Rejected("field_type", "Поле «active» должно быть логическим.", {"field": "active"})
+        self._check_version(prof, ev, lambda o: self.v_profile(o, ctx.conn))
+        if active == bool(prof["active"]):
+            raise Rejected("already_in_state",
+                           "Профиль уже активен." if active else "Профиль уже отключён.")
+        if active and self._active_conflict(ctx, pr["id"], prof["kit_id"], exclude_id=prof["id"]):
+            raise Rejected("profile_active_exists",
+                           "Активный профиль для этой области уже есть — сначала отключите его.")
+        n = self._update_versioned(ctx, document_profiles, prof,
+                                   {"active": active, "updated_by": ctx.user_id, "updated_at": ctx.now})
+        ctx.log("document_profile", prof["id"], auth, prof["version"], n["version"], {"active": active})
+        self._project_event(ctx, pr["id"], "docprofile_toggled",
+                            f"Профиль шифров «{prof['name']}» {'включён' if active else 'отключён'}", auth,
+                            object_type="document_profile", object_id=prof["id"])
+        return {"profile": self.v_profile(n, ctx.conn)}
+
+    def _docprofile_preview(self, ctx, p, ev):
+        """docprofile.preview {project_id, kit_id?, label, label_pattern?} — проверка шифра перед созданием ревизии.
+
+        Без label_pattern сверяет с действующим профилем области (комплектный переопределяет проектный); с
+        label_pattern — проверяет переданный шаблон («пример» при настройке профиля, в БД ничего не пишется).
+        """
+        only_keys(p, {"project_id", "kit_id", "label", "label_pattern"})
+        pr = self._require(ctx.conn, projects, req_uuid(p, "project_id"), "Проект")
+        self.policy.check(ctx.conn, ctx.user_id, "docprofile.read", ctx.now, project_id=pr["id"])
+        label = req_str(p, "label", 40)
+        pattern = opt_str(p, "label_pattern", 200)
+        profile_view = None
+        if pattern is not None:
+            try:
+                rk.validate_label_pattern(pattern)
+            except ValueError as e:
+                raise Rejected("bad_label_pattern", str(e), {"field": "label_pattern"})
+        else:
+            kit_id = p.get("kit_id")
+            if kit_id is not None:
+                kit_id = req_uuid(p, "kit_id")
+                kit = self._get(ctx.conn, kits, kit_id)
+                if kit is None or kit["project_id"] != pr["id"]:
+                    raise Rejected("not_found", "Комплект: объект не найден.", {"id": kit_id})
+            prof = self._effective_profile(ctx.conn, pr["id"], kit_id)
+            if prof is None:
+                return {"label": label, "pattern": None, "matches": True, "profile": None,
+                        "note": "Нет активного профиля — шифр не проверяется."}
+            pattern = prof["label_pattern"]
+            profile_view = self.v_profile(prof, ctx.conn)
+        return {"label": label, "pattern": pattern, "matches": rk.label_matches(pattern, label),
+                "profile": profile_view}
+
+    def _docrev_set_issue(self, ctx, p, ev):
+        """docrev.set_issue {id, status_code} — статус выдачи ревизии из словаря действующего профиля.
+
+        Одна действующая запись на ревизию: повторная установка заменяет статус (версия строки растёт), код и
+        расшифровка сохраняются снимком — смена словаря профиля историю не переписывает.
+        """
+        only_keys(p, {"id", "status_code"})
+        rev, doc, pr = self._revision_of(ctx, req_uuid(p, "id"))
+        auth = self.policy.check(ctx.conn, ctx.user_id, "docrev.set_issue", ctx.now, project_id=pr["id"])
+        self._project_editable(pr)
+        code = req_str(p, "status_code", 40)
+        prof = self._effective_profile(ctx.conn, pr["id"], doc["kit_id"])
+        if prof is None or not json.loads(prof["issue_statuses_json"] or "[]"):
+            raise Rejected("no_issue_profile",
+                           "Для проекта/комплекта нет активного профиля со словарём статусов выдачи.")
+        statuses = json.loads(prof["issue_statuses_json"])
+        entry = rk.issue_status_of(statuses, code)
+        if entry is None:
+            raise Rejected("unknown_issue_code",
+                           f"Статус «{code}» отсутствует в словаре профиля «{prof['name']}».",
+                           {"field": "status_code", "known": [s["code"] for s in statuses]})
+        row = ctx.conn.execute(sa.select(document_revision_issues).where(
+            document_revision_issues.c.revision_id == rev["id"])).mappings().first()
+        row = dict(row) if row is not None else None
+        if row is not None and row["status_code"].lower() == entry["code"].lower() \
+                and row["profile_id"] == prof["id"]:
+            raise Rejected("already_in_state", f"Статус выдачи уже «{entry['code']}».")
+        if row is None:
+            ctx.conn.execute(document_revision_issues.insert().values(
+                revision_id=rev["id"], profile_id=prof["id"], status_code=entry["code"],
+                status_label=entry["label_ru"], version=1,
+                set_by=ctx.user_id, set_at=ctx.now, updated_by=ctx.user_id, updated_at=ctx.now))
+            before, after = None, 1
+        else:
+            n = ctx.conn.execute(document_revision_issues.update().where(
+                document_revision_issues.c.revision_id == rev["id"],
+                document_revision_issues.c.version == row["version"]).values(
+                    profile_id=prof["id"], status_code=entry["code"], status_label=entry["label_ru"],
+                    version=row["version"] + 1, updated_by=ctx.user_id, updated_at=ctx.now)).rowcount
+            if n != 1:
+                raise Conflict("version_conflict",
+                               "Статус выдачи изменён параллельно. Повторите после обновления.", {"current": None})
+            before, after = row["version"], row["version"] + 1
+        ctx.log("document_revision_issue", rev["id"], auth, before, after,
+                {"profile_id": prof["id"], "status_code": entry["code"]})
+        self._project_event(ctx, pr["id"], "revision_issue_set",
+                            f"Документ {doc['code']}, ревизия «{rev['label']}»: статус выдачи {entry['code']}",
+                            auth, object_type="document_revision", object_id=rev["id"])
+        row = dict(ctx.conn.execute(sa.select(document_revision_issues).where(
+            document_revision_issues.c.revision_id == rev["id"])).mappings().one())
+        return {"issue": self.v_issue(row)}
+
     # ------------------------------------------------------------ общие выборки
     def _doc_project(self, ctx, document_id: str) -> tuple[dict, dict]:
         """Карточка документа и её проект (404, если документа нет)."""
@@ -97,6 +343,12 @@ class RkdMixin:
         rid = req_uuid(p, "id")
         self._ensure_new(ctx.conn, document_revisions, rid)
         label = req_str(p, "label", 40)
+        prof = self._effective_profile(ctx.conn, pr["id"], doc["kit_id"])
+        if prof is not None and prof["label_pattern"] and not rk.label_matches(prof["label_pattern"], label):
+            raise Rejected("label_pattern_mismatch",
+                           f"Шифр «{label}» не соответствует схеме профиля «{prof['name']}» "
+                           f"({prof['label_pattern']}). Пример: {prof['label_example'] or '—'}.",
+                           {"field": "label", "profile_id": prof["id"], "pattern": prof["label_pattern"]})
         labels = [r.label for r in ctx.conn.execute(
             sa.select(document_revisions.c.label).where(document_revisions.c.document_id == doc["id"]))]
         if not rk.label_free(labels, label):
@@ -365,13 +617,17 @@ class RkdMixin:
     def _pull_rkd(self, conn, project_ids: list[str]) -> dict:
         """Ревизии, проверки, замечания/ответы и трансмитталы проектов, которые пользователь уже вправе читать."""
         empty = {"document_revisions": [], "document_reviews": [], "document_comments": [],
-                 "document_comment_responses": [], "document_transmittals": [], "transmittal_items": []}
+                 "document_comment_responses": [], "document_transmittals": [], "transmittal_items": [],
+                 "document_profiles": [], "document_revision_issues": []}
         if not project_ids:
             return empty
+        profiles = [self.v_profile(dict(r._mapping), conn) for r in conn.execute(
+            sa.select(document_profiles).where(document_profiles.c.project_id.in_(project_ids))
+            .order_by(document_profiles.c.project_id, document_profiles.c.name))]
         doc_ids = [r.id for r in conn.execute(
             sa.select(documents.c.id).where(documents.c.project_id.in_(project_ids)))]
         if not doc_ids:
-            return empty
+            return {**empty, "document_profiles": profiles}
         revs = [dict(r._mapping) for r in conn.execute(
             sa.select(document_revisions).where(document_revisions.c.document_id.in_(doc_ids))
             .order_by(document_revisions.c.document_id, document_revisions.c.seq))]
@@ -399,6 +655,10 @@ class RkdMixin:
         transmittals = [self.v_transmittal(dict(r._mapping)) for r in conn.execute(
             sa.select(document_transmittals).where(document_transmittals.c.project_id.in_(project_ids))
             .order_by(document_transmittals.c.project_id, document_transmittals.c.seq))]
+        issues = [self.v_issue(dict(r._mapping)) for r in conn.execute(
+            sa.select(document_revision_issues).where(document_revision_issues.c.revision_id.in_(rev_ids))
+            .order_by(document_revision_issues.c.revision_id))] if rev_ids else []
         return {"document_revisions": [self.v_revision(r) for r in revs], "document_reviews": reviews,
                 "document_comments": comments, "document_comment_responses": responses,
-                "document_transmittals": transmittals, "transmittal_items": t_items}
+                "document_transmittals": transmittals, "transmittal_items": t_items,
+                "document_profiles": profiles, "document_revision_issues": issues}

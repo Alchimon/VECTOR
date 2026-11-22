@@ -71,7 +71,7 @@ from vector.core import money
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
 # v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
 #         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
-SCHEMA_VERSION = 33
+SCHEMA_VERSION = 34
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1992,6 +1992,38 @@ assembly_readiness_snapshots = sa.Table("assembly_readiness_snapshots", metadata
     sa.CheckConstraint("length(content_hash) = 64 AND content_hash = lower(content_hash)"
                        " AND trim(content_hash, '0123456789abcdef') = ''",
                        name="ck_assembly_readiness_sha256"))
+
+# ------------------------------------------------------------ этап 3б blueprint 52 (схема v34): профили шифров и статусы выдачи
+# Профиль схемы шифров ревизий (D-62): для проекта целиком (kit_id NULL) или конкретного комплекта — комплектный
+# переопределяет проектный. label_pattern — регулярное выражение шифра ревизии (None — без проверки формата);
+# issue_statuses_json — словарь статусов выдачи [{code, label_ru}] (IFC/CEF и т.п. задаёт ЗАКАЗЧИК, не код
+# программы). Одновременно активен один профиль на (проект, комплект) — контроль в сервере (kit_id может быть
+# NULL, уникальным индексом это кросс-диалектно не выразить). Профиль версионируется; смена правил не
+# переписывает созданные ревизии (проверка шифра — при создании ревизии).
+document_profiles = sa.Table("document_profiles", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id"), index=True),
+    sa.Column("name", U(200), nullable=False),
+    sa.Column("label_pattern", U(200)),
+    sa.Column("label_example", U(40)),
+    sa.Column("issue_statuses_json", T, nullable=False),
+    sa.Column("active", sa.Boolean, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
+
+# Статус выдачи ревизии — код И ПОДПИСЬ из словаря профиля на момент установки (снимок: смена словаря профиля
+# историю не переписывает). Одна действующая запись на ревизию (первичный ключ — ревизия); смена статуса —
+# новая версия строки.
+document_revision_issues = sa.Table("document_revision_issues", metadata,
+    sa.Column("revision_id", ID, sa.ForeignKey("document_revisions.id"), primary_key=True),
+    sa.Column("profile_id", ID, sa.ForeignKey("document_profiles.id"), nullable=False),
+    sa.Column("status_code", U(40), nullable=False),
+    sa.Column("status_label", U(200), nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("set_by", ID, nullable=False), sa.Column("set_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
 
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),

@@ -1,5 +1,5 @@
 {
- "contract": "permissions-slice1-v31",
+ "contract": "permissions-slice1-v32",
  "notes": [
   "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
   "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -639,6 +639,55 @@
   },
   "transmittal.register_receipt": {
    "same_as": "transmittal.create"
+  },
+  "docprofile.read": {
+   "same_as": "project.read"
+  },
+  "docprofile.create": {
+   "same_as": "docprofile.manage"
+  },
+  "docprofile.update": {
+   "same_as": "docprofile.manage"
+  },
+  "docprofile.activate": {
+   "same_as": "docprofile.manage"
+  },
+  "docprofile.preview": {
+   "same_as": "docprofile.read"
+  },
+  "docprofile.manage": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-62",
+   "note": "Схему шифров и словарь статусов выдачи задаёт заказчик/проект (blueprint 52, §2.2): настраивают РП и ГИП проекта; резерв — руководитель отдела."
+  },
+  "docrev.set_issue": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-62",
+   "note": "Штамп выдачи (IFC/CEF…) — решение проектного руководства, а не автора ревизии; резерв — руководитель отдела."
   },
   "calc.read": {
    "same_as": "project.read"

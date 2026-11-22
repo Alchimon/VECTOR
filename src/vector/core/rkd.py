@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 # Переходы, которые выполняет не docrev.transition, а системная команда (см. workflows docrev.system_only):
@@ -74,3 +75,60 @@ def open_blockers(statuses: list[str]) -> bool:
     """Есть ли незакрытые замечания: статусы всех замечаний ревизии; доработка/согласование — только при пустом
     списке открытых."""
     return any(s == "open" for s in statuses)
+
+
+# ---------------------------------------------------------------- профили шифров и статусы выдачи (D-62)
+# Схему шифра и словарь статусов выдачи задаёт ЗАКАЗЧИК/проект, а не код программы (blueprint 52, §2.2):
+# не зашивать один шаблон и не предполагать, что иностранная строка совпадает с ГОСТ-шифром.
+MAX_ISSUE_STATUSES = 50
+MAX_ISSUE_CODE = 40
+MAX_ISSUE_LABEL = 200
+
+
+def validate_label_pattern(pattern: Optional[str]) -> Optional[str]:
+    """Регулярное выражение шифра ревизии: None — без проверки формата; строка должна компилироваться."""
+    if pattern is None:
+        return None
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        raise ValueError(f"Шаблон шифра — не регулярное выражение: {e}.")
+    return pattern
+
+
+def label_matches(pattern: Optional[str], label: str) -> bool:
+    """Шифр соответствует шаблону профиля (полное совпадение); без шаблона — любой непустой."""
+    return True if pattern is None else re.fullmatch(pattern, label.strip()) is not None
+
+
+def validate_issue_statuses(raw: Any) -> list[dict]:
+    """Словарь статусов выдачи профиля → [{code, label_ru}] (нормализованный) или ValueError с русским текстом.
+
+    Коды непусты, уникальны без учёта регистра, ≤ MAX_ISSUE_CODE; подпись ≤ MAX_ISSUE_LABEL. Пустой список
+    допустим: профиль без словаря → статусы выдачи не используются (set_issue откажет no_issue_profile).
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or len(raw) > MAX_ISSUE_STATUSES:
+        raise ValueError(f"Статусы выдачи — список до {MAX_ISSUE_STATUSES} записей.")
+    out, seen = [], set()
+    for i, x in enumerate(raw, start=1):
+        if not isinstance(x, dict):
+            raise ValueError(f"Статус выдачи № {i}: нужен объект {{code, label_ru}}.")
+        code = str(x.get("code") or "").strip()
+        label = str(x.get("label_ru") or "").strip()
+        if not code or len(code) > MAX_ISSUE_CODE:
+            raise ValueError(f"Статус выдачи № {i}: код обязателен (до {MAX_ISSUE_CODE} знаков).")
+        if not label or len(label) > MAX_ISSUE_LABEL:
+            raise ValueError(f"Статус выдачи «{code}»: укажите расшифровку (до {MAX_ISSUE_LABEL} знаков).")
+        if code.lower() in seen:
+            raise ValueError(f"Статус выдачи «{code}» повторяется — коды уникальны.")
+        seen.add(code.lower())
+        out.append({"code": code, "label_ru": label})
+    return out
+
+
+def issue_status_of(statuses: list[dict], code: str) -> Optional[dict]:
+    """Запись словаря по коду (без учёта регистра) или None."""
+    norm = code.strip().lower()
+    return next((s for s in statuses if s["code"].lower() == norm), None)

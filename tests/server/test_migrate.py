@@ -1266,7 +1266,7 @@ def test_v32_to_v33_adds_assembly_readiness(backend, tmp_path, clock, keys):
     before = counts(eng, mg.tables_of_version(32))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (32, db.SCHEMA_VERSION)
-    assert rep.created_tables == ["assembly_readiness_snapshots"]
+    assert rep.created_tables == [t.name for v in range(33, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]]
     after = counts(eng, mg.tables_of_version(32))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
 
@@ -1290,5 +1290,69 @@ def test_v32_to_v33_adds_assembly_readiness(backend, tmp_path, clock, keys):
                                                         created_by=uid, created_at=now))
     bad(db.assembly_readiness_snapshots.update().values(content_json="{}"))
     bad(db.assembly_readiness_snapshots.delete())
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
+
+
+def test_v33_to_v34_adds_document_profiles(backend, tmp_path, clock, keys):
+    """v33 → v34 (D-62, этап 3б blueprint 52): профили шифров и действующие статусы выдачи ревизий.
+    Профиль ссылается на проект (и, для комплектного, на комплект); статус выдачи — одна запись на ревизию
+    (первичный ключ — ревизия) со ссылкой на профиль. Данные v33 не меняются."""
+    eng = make_v3(backend, tmp_path, clock, version=33)
+    now = clock.now()
+    uid, pid, tid, cust, kit, did, rid = (new_id() for _ in range(7))
+    stamp = dict(version=1, created_by=uid, created_at=now, updated_by=uid, updated_at=now)
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x",
+                                           must_change_password=False, password_changed_at=now, failed_attempts=0,
+                                           active=True, created_at=now))
+        c.execute(db.customers.insert().values(id=cust, name="З", **stamp))
+        c.execute(db.tenders.insert().values(id=tid, customer_id=cust, title="Т", status="won",
+                                             owner_user_id=uid, **stamp))
+        c.execute(db.projects.insert().values(id=pid, code="П-1", title="П", tender_id=tid,
+                                              tender_version_at_start=1, status="rkd_in_progress", **stamp))
+        c.execute(db.kits.insert().values(id=kit, project_id=pid, code="АТХ", title="К", **stamp))
+        c.execute(db.documents.insert().values(id=did, project_id=pid, kit_id=kit, code="АТХ-001", title="Схема",
+                                               current_version_no=1, **stamp))
+        c.execute(db.file_blobs.insert().values(sha256="a" * 64, size_bytes=3, chunk_count=1,
+                                                uploaded_by=uid, uploaded_at=now))
+        c.execute(db.document_versions.insert().values(document_id=did, version_no=1, sha256="a" * 64,
+                                                       file_name="a.pdf", size_bytes=3, comment=None,
+                                                       created_by=uid, created_at=now))
+        vid = c.execute(sa.select(db.document_versions.c.id)).scalar()
+        c.execute(db.document_revisions.insert().values(id=rid, document_id=did, seq=1, label="01",
+                                                        status="in_work", doc_version_id=vid, note=None, **stamp))
+    before = counts(eng, mg.tables_of_version(33))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (33, db.SCHEMA_VERSION)
+    assert rep.created_tables == ["document_profiles", "document_revision_issues"]
+    after = counts(eng, mg.tables_of_version(33))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+
+    prof = new_id()
+    with eng.begin() as c:
+        c.execute(db.document_profiles.insert().values(id=prof, project_id=pid, kit_id=None, name="ГОСТ",
+                                                       label_pattern=r"\d{2}", label_example="01",
+                                                       issue_statuses_json='[{"code": "IFC", "label_ru": "Для строительства"}]',
+                                                       active=True, **stamp))
+        c.execute(db.document_revision_issues.insert().values(revision_id=rid, profile_id=prof,
+                                                              status_code="IFC", status_label="Для строительства",
+                                                              version=1, set_by=uid, set_at=now,
+                                                              updated_by=uid, updated_at=now))
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    # Одна действующая запись статуса на ревизию (первичный ключ); профиль и ревизия обязаны существовать.
+    bad(db.document_revision_issues.insert().values(revision_id=rid, profile_id=prof, status_code="CEF",
+                                                    status_label="Для сведения", version=1, set_by=uid,
+                                                    set_at=now, updated_by=uid, updated_at=now))
+    bad(db.document_revision_issues.insert().values(revision_id=new_id(), profile_id=prof, status_code="IFC",
+                                                    status_label="Для строительства", version=1, set_by=uid,
+                                                    set_at=now, updated_by=uid, updated_at=now))
+    bad(db.document_profiles.insert().values(id=new_id(), project_id=new_id(), kit_id=None, name="Х",
+                                             label_pattern=None, label_example=None,
+                                             issue_statuses_json="[]", active=True, **stamp))
     assert db.check_schema(eng) == db.SCHEMA_VERSION
     assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
