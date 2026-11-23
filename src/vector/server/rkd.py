@@ -11,6 +11,8 @@ contracts/permissions (docrev.*, comment.*, transmittal.*).
 """
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import uuid
 from typing import Any, Optional
@@ -20,9 +22,10 @@ import sqlalchemy as sa
 from vector.core import rkd as rk
 from vector.core.errors import Conflict, Rejected
 
-from .db import (document_comment_responses, document_comments, document_profiles, document_reviews,
+from .db import (FILE_CHUNK, document_comment_responses, document_comments, document_profiles, document_reviews,
                  document_revision_issues, document_revisions, document_transmittals, document_versions,
-                 documents, file_blobs, file_uploads, kits, projects, transmittal_items)
+                 documents, file_blobs, file_chunks, file_uploads, kits, projects, transmittal_items,
+                 transmittal_packages, users)
 from .validation import iso, only_keys, opt_str, req_str, req_uuid
 from .work import _check_sha256
 
@@ -537,8 +540,10 @@ class RkdMixin:
         """transmittal.create {id, project_id, recipient, channel, note?, items: [revision_id, …]} — пакет выдачи.
 
         Атомарно: каждая ревизия пакета должна быть «Разрешена к отправке»; при создании все они переходят в
-        «Отправлена заказчику». Ручная отправка регистрируется тем же трансмитталом; подтверждение доставки —
-        отдельной командой (transmittal.register_receipt).
+        «Отправлена заказчику». В той же транзакции собирается ZIP-пакет из неизменяемых версий файлов ревизий
+        с манифестом (D-63): байты детерминированы, хэш записывается в transmittal_packages и больше не
+        пересобирается — он доказывает, что именно ушло заказчику. Ручная отправка регистрируется тем же
+        трансмитталом; подтверждение доставки — отдельной командой (transmittal.register_receipt).
         """
         only_keys(p, {"id", "project_id", "recipient", "channel", "note", "items"})
         pr = self._require(ctx.conn, projects, req_uuid(p, "project_id"), "Проект")
@@ -586,10 +591,121 @@ class RkdMixin:
                                          "from": "ready_to_transmit", "to": "sent", "transmittal": tid})
         ctx.log("document_transmittal", tid, auth, None, 1,
                 {"project_id": pr["id"], "seq": seq + 1, "channel": channel, "items": rev_ids})
+        pkg = self._build_package(ctx, pr, tid, seq + 1, recipient, channel, opt_str(p, "note", 2000), revs)
+        ctx.log("transmittal_package", tid, auth, None, None,
+                {"package_sha256": pkg["package_sha256"], "size_bytes": pkg["size_bytes"]})
         self._notify(ctx, [rev["created_by"] for rev, _ in revs], "transmittal_sent",
                      f"Трансмиттал № {seq + 1} отправлен ({rk.TRANSMITTAL_CHANNELS[channel].lower()})",
                      f"Адресат: {recipient[:200]}", object_type="document_transmittal", object_id=tid)
         return {"transmittal": self.v_transmittal(self._get(ctx.conn, document_transmittals, tid))}
+
+    def _blob_bytes(self, conn, sha256: str) -> bytes:
+        """Содержимое blob из хранилища блоков (упорядоченные части, склеенные)."""
+        return b"".join(bytes(r.data) for r in conn.execute(
+            sa.select(file_chunks.c.data).where(file_chunks.c.sha256 == sha256).order_by(file_chunks.c.idx)))
+
+    def _build_package(self, ctx, pr, transmittal_id, seq, recipient, channel, note, revs) -> dict:
+        """Собрать и сохранить ZIP-пакет трансмиттала (в транзакции команды). Возвращает строку
+        transmittal_packages. Пакет детерминирован (core.rkd.build_package) и неизменяем: повторная сборка не
+        предусмотрена — хэш фиксирует, что именно ушло заказчику."""
+        sender = self._get(ctx.conn, users, ctx.user_id)
+        manifest_items, files = [], []
+        for pos, (rev, doc) in enumerate(revs, start=1):
+            ver = self._get(ctx.conn, document_versions, rev["doc_version_id"])
+            issue = ctx.conn.execute(sa.select(document_revision_issues).where(
+                document_revision_issues.c.revision_id == rev["id"])).mappings().first()
+            manifest_items.append({
+                "position": pos, "document_code": doc["code"], "document_title": doc["title"],
+                "revision_label": rev["label"], "revision_seq": rev["seq"],
+                "issue_status_code": issue["status_code"] if issue else None,
+                "issue_status_label": issue["status_label"] if issue else None,
+                "file_name": ver["file_name"], "sha256": ver["sha256"], "size_bytes": ver["size_bytes"]})
+            files.append((f"{pos:02d}/{ver['file_name']}", self._blob_bytes(ctx.conn, ver["sha256"])))
+        manifest = {"format": rk.PACKAGE_FORMAT,
+                    "transmittal": {"id": transmittal_id, "seq": seq, "project_code": pr["code"],
+                                    "project_title": pr["title"], "recipient": recipient, "channel": channel,
+                                    "note": note, "created_by": sender["display_name"], "created_at": iso(ctx.now)},
+                    "items": manifest_items}
+        data = rk.build_package(manifest, files)
+        sha = hashlib.sha256(data).hexdigest()
+        if self._get(ctx.conn, file_blobs, sha, "sha256") is None:
+            chunk_count = max(1, -(-len(data) // FILE_CHUNK))
+            ctx.conn.execute(file_blobs.insert().values(sha256=sha, size_bytes=len(data), chunk_count=chunk_count,
+                                                        uploaded_by=ctx.user_id, uploaded_at=ctx.now))
+            for idx in range(chunk_count):
+                ctx.conn.execute(file_chunks.insert().values(sha256=sha, idx=idx,
+                                                             data=data[idx * FILE_CHUNK:(idx + 1) * FILE_CHUNK]))
+        name = f"Трансмиттал № {seq} — {pr['code']}.zip"
+        ctx.conn.execute(transmittal_packages.insert().values(
+            transmittal_id=transmittal_id, package_sha256=sha, package_name=name, size_bytes=len(data),
+            created_by=ctx.user_id, created_at=ctx.now))
+        return {"transmittal_id": transmittal_id, "package_sha256": sha, "package_name": name,
+                "size_bytes": len(data)}
+
+    @staticmethod
+    def v_package(o: dict) -> dict:
+        return {"transmittal_id": o["transmittal_id"], "package_sha256": o["package_sha256"],
+                "package_name": o["package_name"], "size_bytes": o["size_bytes"],
+                "created_at": iso(o["created_at"])}
+
+    def get_transmittal_package_to(self, token: Optional[str], transmittal_id: object, dest,
+                                   client_addr: Optional[str] = None) -> dict:
+        """Записать ZIP-пакет трансмиттала в dest (как get_file_to: потоком, с пересчётом SHA-256 и размера).
+
+        Права — transmittal.read в проекте трансмиттала (команда проекта скачивает пакет для отправки или сверки).
+        При расхождении контрольной суммы ответ file_corrupted, и dest обязан быть выброшен (HTTP-слой так и
+        делает). Событие пишется в аудит в обоих случаях.
+        """
+        try:
+            tid = req_uuid({"transmittal_id": transmittal_id}, "transmittal_id")
+        except Rejected as e:
+            return {"status": "rejected", "code": e.code, "message_ru": e.message_ru}
+
+        def tx(conn):
+            now = self.now()
+            user, device, _ = self._auth(conn, token, now)
+            t = self._get(conn, document_transmittals, tid)
+            authority = self._authority_for(conn, user["id"], "transmittal.read", now, t["project_id"]) \
+                if t is not None else None
+            if authority is None:
+                self._audit(conn, now, user["id"], device, client_addr, None, "file.download",
+                            "document_transmittal", tid, None, None, None, "denied", {})
+                return {"status": "denied", "code": "no_authority",
+                        "message_ru": "Трансмиттал не найден или нет доступа."}
+            pkg = self._get(conn, transmittal_packages, tid, "transmittal_id")
+            if pkg is None:
+                return {"status": "rejected", "code": "package_absent",
+                        "message_ru": "Пакет трансмиттала отсутствует (трансмиттал создан до версии программы с "
+                                      "формированием пакета)."}
+            dest.seek(0)
+            dest.truncate()
+            h, size = hashlib.sha256(), 0
+            q = (sa.select(file_chunks.c.data).where(file_chunks.c.sha256 == pkg["package_sha256"])
+                 .order_by(file_chunks.c.idx).execution_options(yield_per=4))
+            for row in conn.execute(q):
+                b = bytes(row.data)
+                h.update(b)
+                size += len(b)
+                dest.write(b)
+            dest.flush()
+            ok = h.hexdigest() == pkg["package_sha256"] and size == pkg["size_bytes"]
+            self._audit(conn, now, user["id"], device, client_addr, None, "file.download", "document_transmittal",
+                        tid, authority, None, None, "accepted" if ok else "error",
+                        {"package_sha256": pkg["package_sha256"], "intact": ok})
+            if not ok:
+                return {"status": "error", "code": "file_corrupted",
+                        "message_ru": "Пакет на сервере повреждён (контрольная сумма не совпала) и не будет выдан. "
+                                      "Сообщите администратору: нужно восстановление из резервной копии."}
+            return {"status": "accepted", "file_name": pkg["package_name"],
+                    "sha256": pkg["package_sha256"], "size_bytes": pkg["size_bytes"]}
+        return self._guarded_tx(tx)
+
+    def get_transmittal_package(self, token: Optional[str], transmittal_id: object,
+                                client_addr: Optional[str] = None) -> tuple[dict, Optional[bytes]]:
+        """То же, что get_transmittal_package_to, с результатом в памяти: (ответ, байты или None). Для тестов."""
+        buf = io.BytesIO()
+        resp = self.get_transmittal_package_to(token, transmittal_id, buf, client_addr)
+        return resp, (buf.getvalue() if resp.get("status") == "accepted" else None)
 
     def _transmittal_register_receipt(self, ctx, p, ev):
         """transmittal.register_receipt {id, external_ref} — подтверждение доставки (номер письма/квитанции).
@@ -618,7 +734,7 @@ class RkdMixin:
         """Ревизии, проверки, замечания/ответы и трансмитталы проектов, которые пользователь уже вправе читать."""
         empty = {"document_revisions": [], "document_reviews": [], "document_comments": [],
                  "document_comment_responses": [], "document_transmittals": [], "transmittal_items": [],
-                 "document_profiles": [], "document_revision_issues": []}
+                 "document_profiles": [], "document_revision_issues": [], "transmittal_packages": []}
         if not project_ids:
             return empty
         profiles = [self.v_profile(dict(r._mapping), conn) for r in conn.execute(
@@ -658,7 +774,12 @@ class RkdMixin:
         issues = [self.v_issue(dict(r._mapping)) for r in conn.execute(
             sa.select(document_revision_issues).where(document_revision_issues.c.revision_id.in_(rev_ids))
             .order_by(document_revision_issues.c.revision_id))] if rev_ids else []
+        t_ids = [t["id"] for t in transmittals]
+        packages = [self.v_package(dict(r._mapping)) for r in conn.execute(
+            sa.select(transmittal_packages).where(transmittal_packages.c.transmittal_id.in_(t_ids))
+            .order_by(transmittal_packages.c.transmittal_id))] if t_ids else []
         return {"document_revisions": [self.v_revision(r) for r in revs], "document_reviews": reviews,
                 "document_comments": comments, "document_comment_responses": responses,
                 "document_transmittals": transmittals, "transmittal_items": t_items,
-                "document_profiles": profiles, "document_revision_issues": issues}
+                "document_profiles": profiles, "document_revision_issues": issues,
+                "transmittal_packages": packages}

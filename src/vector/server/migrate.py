@@ -114,6 +114,8 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     33: [db.assembly_readiness_snapshots],
     # Профили шифров ревизий и статусы выдачи (этап 3б blueprint 52, D-62). Порядок — по внешним ключам.
     34: [db.document_profiles, db.document_revision_issues],
+    # ZIP-пакет трансмиттала из неизменяемых версий (этап 3б blueprint 52, D-63).
+    35: [db.transmittal_packages],
 }
 
 
@@ -301,7 +303,8 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               30: _create_tables(ADDED_IN[31]),
                               31: _create_tables(ADDED_IN[32]),
                               32: _create_tables(ADDED_IN[33]),
-                              33: _create_tables(ADDED_IN[34])}
+                              33: _create_tables(ADDED_IN[34]),
+                              34: _create_tables(ADDED_IN[35])}
 
 
 @dataclass

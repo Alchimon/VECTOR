@@ -1325,7 +1325,7 @@ def test_v33_to_v34_adds_document_profiles(backend, tmp_path, clock, keys):
     before = counts(eng, mg.tables_of_version(33))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (33, db.SCHEMA_VERSION)
-    assert rep.created_tables == ["document_profiles", "document_revision_issues"]
+    assert rep.created_tables == [t.name for v in range(34, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]]
     after = counts(eng, mg.tables_of_version(33))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
 
@@ -1354,5 +1354,60 @@ def test_v33_to_v34_adds_document_profiles(backend, tmp_path, clock, keys):
     bad(db.document_profiles.insert().values(id=new_id(), project_id=new_id(), kit_id=None, name="Х",
                                              label_pattern=None, label_example=None,
                                              issue_statuses_json="[]", active=True, **stamp))
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
+
+
+def test_v34_to_v35_adds_transmittal_packages(backend, tmp_path, clock, keys):
+    """v34 → v35 (D-63, этап 3б blueprint 52): ZIP-пакет трансмиттала — одна запись на трансмиттал (первичный
+    ключ — трансмиттал), ссылается на blob хранилища, неизменяем (триггеры). Данные v34 не меняются."""
+    eng = make_v3(backend, tmp_path, clock, version=34)
+    now = clock.now()
+    uid, pid, tid, cust = new_id(), new_id(), new_id(), new_id()
+    stamp = dict(version=1, created_by=uid, created_at=now, updated_by=uid, updated_at=now)
+    with eng.begin() as c:
+        c.execute(db.users.insert().values(id=uid, login="u1", display_name="u1", pwd_hash="x",
+                                           must_change_password=False, password_changed_at=now, failed_attempts=0,
+                                           active=True, created_at=now))
+        c.execute(db.customers.insert().values(id=cust, name="З", **stamp))
+        c.execute(db.tenders.insert().values(id=tid, customer_id=cust, title="Т", status="won",
+                                             owner_user_id=uid, **stamp))
+        c.execute(db.projects.insert().values(id=pid, code="П-1", title="П", tender_id=tid,
+                                              tender_version_at_start=1, status="rkd_in_progress", **stamp))
+        trid = new_id()
+        c.execute(db.document_transmittals.insert().values(id=trid, project_id=pid, seq=1,
+                                                           recipient="ООО «З»", channel="email", note=None,
+                                                           status="sent", external_ref=None, version=1,
+                                                           created_by=uid, created_at=now, delivered_at=None))
+        c.execute(db.file_blobs.insert().values(sha256="b" * 64, size_bytes=7, chunk_count=1,
+                                                uploaded_by=uid, uploaded_at=now))
+    before = counts(eng, mg.tables_of_version(34))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (34, db.SCHEMA_VERSION)
+    assert rep.created_tables == ["transmittal_packages"]
+    after = counts(eng, mg.tables_of_version(34))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+
+    with eng.begin() as c:
+        c.execute(db.transmittal_packages.insert().values(transmittal_id=trid, package_sha256="b" * 64,
+                                                          package_name="t.zip", size_bytes=7,
+                                                          created_by=uid, created_at=now))
+
+    def bad(stmt):
+        with pytest.raises(sa.exc.DBAPIError):
+            with eng.begin() as c:
+                c.execute(stmt)
+    # Один пакет на трансмиттал (первичный ключ); blob и трансмиттал обязаны существовать; запись неизменяема.
+    bad(db.transmittal_packages.insert().values(transmittal_id=trid, package_sha256="b" * 64,
+                                                package_name="t2.zip", size_bytes=7,
+                                                created_by=uid, created_at=now))
+    bad(db.transmittal_packages.insert().values(transmittal_id=new_id(), package_sha256="b" * 64,
+                                                package_name="t.zip", size_bytes=7,
+                                                created_by=uid, created_at=now))
+    bad(db.transmittal_packages.insert().values(transmittal_id=new_id(), package_sha256="c" * 64,
+                                                package_name="t.zip", size_bytes=7,
+                                                created_by=uid, created_at=now))
+    bad(db.transmittal_packages.update().values(package_name="x.zip"))
+    bad(db.transmittal_packages.delete())
     assert db.check_schema(eng) == db.SCHEMA_VERSION
     assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []

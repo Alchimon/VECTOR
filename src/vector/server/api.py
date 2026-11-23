@@ -208,6 +208,43 @@ def create_app(service: Service) -> Starlette:
             "Content-Disposition": f"attachment; filename=\"document.bin\"; filename*=UTF-8''{quote(resp['file_name'])}",
         })
 
+    async def transmittal_package_download(request: Request):
+        """GET /api/v1/transmittals/{transmittal_id}/package → ZIP пакета выдачи (D-63).
+
+        Тот же контур, что и у файлов документов: сервис собирает пакет из блоков БД во временный файл,
+        пересчитывает SHA-256 и размер и только потом отдаёт; повреждённый пакет не отдаётся ни байтом.
+        """
+        from starlette.concurrency import run_in_threadpool
+        spool = tempfile.SpooledTemporaryFile(max_size=FILE_SPOOL_IN_MEMORY)
+        try:
+            resp = await run_in_threadpool(service.get_transmittal_package_to, bearer(request),
+                                           request.path_params["transmittal_id"], spool, addr(request))
+        except BaseException:
+            spool.close()
+            raise
+        if resp.get("status") != "accepted":
+            spool.close()
+            return reply(resp)
+        spool.seek(0)
+
+        def blocks():
+            """Отдавать проверенный временный файл клиенту блоками по FILE_CHUNK."""
+            try:
+                while True:
+                    b = spool.read(FILE_CHUNK)
+                    if not b:
+                        break
+                    yield b
+            finally:
+                spool.close()
+
+        return StreamingResponse(blocks(), media_type="application/zip", headers={
+            "Cache-Control": "no-store",
+            "Content-Length": str(resp["size_bytes"]),
+            "X-Content-SHA256": resp["sha256"],
+            "Content-Disposition": f"attachment; filename=\"package.zip\"; filename*=UTF-8''{quote(resp['file_name'])}",
+        })
+
     async def health(request: Request):
         """GET /api/v1/health — проверка «сервер отвечает» для мониторинга и скриптов стенда (без входа, без данных).
         """
@@ -224,6 +261,7 @@ def create_app(service: Service) -> Starlette:
         Route("/api/v1/query", query, methods=["POST"]),
         Route("/api/v1/files", file_upload, methods=["POST"]),
         Route("/api/v1/files/{document_id}/{version_no}", file_download, methods=["GET"]),
+        Route("/api/v1/transmittals/{transmittal_id}/package", transmittal_package_download, methods=["GET"]),
         Route("/api/v1/health", health, methods=["GET"]),
         Route("/api/v1/about", about, methods=["GET"]),
     ])

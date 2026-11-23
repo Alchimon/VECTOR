@@ -441,6 +441,11 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     # Предпросмотр шифра перед следующей ревизией: «02» подходит под шаблон, «REV-2» — нет (онлайн-запрос,
     # в БД ничего не пишется).
     preview = cmd(rp, "docprofile.preview", {"project_id": pid, "kit_id": kits["АТХ"], "label": "02"})
+    # D-63: ревизия «01» отправлена заказчику трансмитталом — в той же транзакции собран неизменяемый
+    # ZIP-пакет (манифест + точные версии файлов; хэш пакета в pull, скачивание — «пакет трансмиттала»).
+    cmd(rp, "transmittal.create", {"id": str(uuid.uuid4()), "project_id": pid, "recipient": "ООО «ТехМаш», отдел АСУ",
+                                   "channel": "email", "note": "Первая выдача по договору",
+                                   "items": [rev["id"]]})
 
     prod = _seed_production(cmd, login, people, svc, kits, atx_v1)
     prod.update(_seed_lifecycle(cmd, login, people, svc, prod["tech_processes"][0], items, whs, docs))

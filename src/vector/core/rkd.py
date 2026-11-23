@@ -17,8 +17,13 @@
 """
 from __future__ import annotations
 
+import io
+import json
 import re
+import zipfile
 from typing import Optional
+
+from vector.core.delivery import canon
 
 # Переходы, которые выполняет не docrev.transition, а системная команда (см. workflows docrev.system_only):
 #   sent — только трансмитталом (transmittal.create); customer_comments — только comment.add(source=customer).
@@ -132,3 +137,48 @@ def issue_status_of(statuses: list[dict], code: str) -> Optional[dict]:
     """Запись словаря по коду (без учёта регистра) или None."""
     norm = code.strip().lower()
     return next((s for s in statuses if s["code"].lower() == norm), None)
+
+
+# ---------------------------------------------------------------- ZIP-пакет трансмиттала (D-63)
+# Пакет выдачи собирается из уже сохранённых неизменяемых версий файлов, а не из меняющегося сетевого пути
+# (blueprint 52, §2.2). Байты пакета ДЕТЕРМИНИРОВАНЫ: одинаковый состав и содержимое дают одинаковый SHA-256
+# (фиксированная дата записей, нулевая система создания, сортировка имён, манифест — канонический JSON).
+PACKAGE_FORMAT = "vector-transmittal-package/1"
+_ZIP_DATE = (1980, 1, 1, 0, 0, 0)
+
+
+def build_package(manifest: dict, files: list[tuple[str, bytes]]) -> bytes:
+    """Собрать ZIP пакета трансмиттала: manifest.json (канонический JSON) + файлы по arcname.
+
+    manifest — словарь с метаданными выдачи (в него уже включён format=PACKAGE_FORMAT вызывающим).
+    files — [(arcname, data)]; arcname должны быть уникальны (вызывающий нумерует каталоги позиций).
+    Даты записей фиксированы (_ZIP_DATE), имена сортируются — повторная сборка тех же входов даёт
+    байт-в-байт тот же пакет, и его хэш в записи трансмиттала доказуем.
+    """
+    names = [n for n, _ in files]
+    if len(set(names)) != len(names):
+        raise ValueError("Пути файлов пакета должны быть уникальны.")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in sorted([("manifest.json", canon(manifest).encode("utf-8")), *files],
+                                 key=lambda x: x[0]):
+            info = zipfile.ZipInfo(name, date_time=_ZIP_DATE)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 0
+            info.external_attr = 0o600 << 16
+            z.writestr(info, data)
+    return buf.getvalue()
+
+
+def read_package(data: bytes) -> tuple[dict, dict[str, bytes]]:
+    """Разобрать пакет трансмиттала: (манифест, {arcname: содержимое}). Проверяет формат и целостность ZIP."""
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        if z.testzip() is not None:
+            raise ValueError("ZIP-пакет повреждён (контрольная сумма записи не совпала).")
+        names = set(z.namelist())
+        if "manifest.json" not in names:
+            raise ValueError("В пакете нет manifest.json.")
+        manifest = json.loads(z.read("manifest.json").decode("utf-8"))
+        if manifest.get("format") != PACKAGE_FORMAT:
+            raise ValueError(f"Неизвестный формат пакета: {manifest.get('format')!r}.")
+        return manifest, {n: z.read(n) for n in names if n != "manifest.json"}

@@ -71,7 +71,7 @@ from vector.core import money
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
 # v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
 #         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
-SCHEMA_VERSION = 34
+SCHEMA_VERSION = 35
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -2025,6 +2025,20 @@ document_revision_issues = sa.Table("document_revision_issues", metadata,
     sa.Column("set_by", ID, nullable=False), sa.Column("set_at", UtcDateTime, nullable=False),
     sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
 
+# ------------------------------------------------------------ этап 3б blueprint 52 (схема v35): ZIP-пакет трансмиттала
+# Пакет выдачи — ZIP из УЖЕ СОХРАНЁННЫХ неизменяемых версий файлов ревизий (blueprint 52, §2.2: «ZIP создаётся
+# из уже сохранённых неизменяемых версий, а не из меняющегося сетевого пути») с манифестом manifest.json
+# (состав, шифры, статусы выдачи, контрольные суммы). Собирается в транзакции transmittal.create и не
+# пересобирается никогда: хэш пакета — доказательство того, что именно ушло заказчику. Сам ZIP хранится в
+# общем адресном хранилище file_blobs/file_chunks (дедупликация по SHA-256, входит в резервную копию).
+# Запись неизменяема (триггер).
+transmittal_packages = sa.Table("transmittal_packages", metadata,
+    sa.Column("transmittal_id", ID, sa.ForeignKey("document_transmittals.id"), primary_key=True),
+    sa.Column("package_sha256", sa.String(64), sa.ForeignKey("file_blobs.sha256"), nullable=False),
+    sa.Column("package_name", U(255), nullable=False),
+    sa.Column("size_bytes", sa.BigInteger, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False))
+
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
     sa.Column("user_id", ID),
@@ -2123,7 +2137,7 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (org_events, 50035), (workday_events, 50036), (workday_auto_finishes, 50037), (overtime_events, 50040), (overtime_request_periods, 50041), (overtime_period_closures, 50042),
                  (project_events, 50043), (project_closeouts, 50044), (document_reviews, 50045),
                  (document_comment_responses, 50046), (transmittal_items, 50047),
-                 (assembly_readiness_snapshots, 50048)):
+                 (assembly_readiness_snapshots, 50048), (transmittal_packages, 50049)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):
