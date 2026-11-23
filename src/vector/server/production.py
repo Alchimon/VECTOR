@@ -41,7 +41,8 @@ from vector.core import production as prod
 from vector.core.errors import Conflict, Rejected
 
 from .authz import active_delegated_project, effective_roles
-from .db import (assembly_readiness_snapshots, calc_version_lines, calc_versions, kits, procurement_needs,
+from .db import (assembly_readiness_snapshots, calc_version_lines, calc_versions, kits, norm_proposals,
+                 procurement_needs,
                  project_assignments, project_risk_acceptances, projects, stock_items, stock_movements,
                  stock_reservations, tech_process_approvals, tech_process_ops, tech_processes, users, wo_operations,
                  wo_substitutions, wo_timer_events, work_order_issues, work_order_snapshots, work_orders)
@@ -734,12 +735,109 @@ class ProductionMixin:
         return wo
 
     # ------------------------------------------------------------ pull
+    # ------------------------------------------------------------ нормы трудоёмкости (D-72, этап 7 blueprint 52)
+    @staticmethod
+    def v_norm_proposal(o: dict, people: Optional[dict[str, str]] = None) -> dict:
+        """Предложение нормы: операция, агрегированный диапазон (снимок на момент предложения), статус, решение."""
+        people = people or {}
+        return {"id": o["id"], "op_name": o["op_name"], "work_center": o["work_center"],
+                "sample_size": o["sample_size"], "min_min": money.to_json(o["min_min"]),
+                "median_min": money.to_json(o["median_min"]), "max_min": money.to_json(o["max_min"]),
+                "proposed_min": money.to_json(o["proposed_min"]), "comment": o["comment"],
+                "status": o["status"], "decision_reason": o["decision_reason"], "version": o["version"],
+                "created_by": o["created_by"], "created_by_name": people.get(o["created_by"], ""),
+                "created_at": iso(o["created_at"]),
+                "decided_by_name": people.get(o.get("decided_by") or "", ""),
+                "decided_at": iso(o["decided_at"]) if o.get("decided_at") else None}
+
+    def _norm_stats(self, conn, uid: str, now) -> dict:
+        """Запрос norm_stats: агрегированные диапазоны фактической трудоёмкости по завершённым операциям нарядов
+        (все проекты; агрегат — без персональных данных). Право norm.read проверено вызывающим (_query)."""
+        ops = [dict(r._mapping) for r in conn.execute(
+            sa.select(wo_operations.c.name, wo_operations.c.work_center, wo_operations.c.fact_seconds,
+                      wo_operations.c.finished_at).where(wo_operations.c.state == "done"))]
+        stats = prod.norm_stats(ops)
+        # Действующие нормы из утверждённых ТП — справочно (какие нормы сейчас стоят у таких операций).
+        norms: dict[tuple, list[str]] = defaultdict(list)
+        for r in conn.execute(sa.select(tech_process_ops.c.name, tech_process_ops.c.work_center,
+                                        tech_process_ops.c.norm_min)
+                              .select_from(tech_process_ops.join(
+                                  tech_processes, tech_processes.c.id == tech_process_ops.c.tp_id))
+                              .where(tech_processes.c.status == "approved")):
+            norms[(r.name, r.work_center or "")].append(money.to_json(r.norm_min))
+        for st in stats:
+            st["current_norms"] = sorted(set(norms.get((st["op_name"], st["work_center"]), [])))
+        return {"status": "accepted", "result": {"stats": stats}}
+
+    def _norm_propose(self, ctx, p, ev):
+        """norm.propose {id, op_name, work_center, proposed_min, comment?} — предложить норму по агрегированным
+        данным. Диапазон сервер пересчитывает сам в момент команды (снимок); нужна выборка ≥ 2 завершённых
+        операций — по одному факту норму не предлагают. Норма НЕ применяется автоматически (ручное утверждение,
+        затем правка черновика ТП обычным путём)."""
+        only_keys(p, {"id", "op_name", "work_center", "proposed_min", "comment"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "norm.propose", ctx.now)
+        name = req_str(p, "op_name", 200)
+        wc = opt_str(p, "work_center", 200) or ""
+        stats = prod.norm_stats([dict(r._mapping) for r in ctx.conn.execute(
+            sa.select(wo_operations.c.name, wo_operations.c.work_center, wo_operations.c.fact_seconds,
+                      wo_operations.c.finished_at)
+            .where(wo_operations.c.state == "done", wo_operations.c.name == name,
+                   wo_operations.c.work_center == wc))])
+        st = next((x for x in stats if x["op_name"] == name and x["work_center"] == wc), None)
+        if st is None or st["sample_size"] < 2:
+            raise Rejected("sample_too_small",
+                           "Норму предлагают по агрегированным данным: нужна выборка хотя бы из двух завершённых "
+                           "операций с этим наименованием и рабочим центром.", {"op_name": name, "work_center": wc})
+        proposed = prod_qty(p.get("proposed_min"))
+        if proposed <= 0:
+            raise Rejected("bad_value", "Предлагаемая норма должна быть больше нуля (минуты).",
+                           {"field": "proposed_min"})
+        nid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, norm_proposals, nid)
+        ctx.conn.execute(norm_proposals.insert().values(
+            id=nid, op_name=name, work_center=wc, sample_size=st["sample_size"],
+            min_min=money.parse_decimal(str(st["min_min"])), median_min=money.parse_decimal(str(st["median_min"])),
+            max_min=money.parse_decimal(str(st["max_min"])),
+            proposed_min=proposed, comment=opt_str(p, "comment", 2000), status="proposed", decision_reason=None,
+            version=1, created_by=ctx.user_id, created_at=ctx.now, decided_by=None, decided_at=None))
+        ctx.log("norm_proposal", nid, auth, None, 1, {"op_name": name, "work_center": wc,
+                                                      "sample_size": st["sample_size"]})
+        return {"proposal": self.v_norm_proposal(self._get(ctx.conn, norm_proposals, nid))}
+
+    def _norm_decide(self, ctx, p, ev):
+        """norm.decide {id, resolution, reason?} — ручное решение по предложению нормы: approved | rejected
+        (отклонение — с причиной). Решает НЕ автор предложения; решение одноразовое. Утверждение не меняет нормы
+        в техпроцессах — технолог правит черновик ТП обычным путём (D-72)."""
+        only_keys(p, {"id", "resolution", "reason"})
+        o = self._require(ctx.conn, norm_proposals, req_uuid(p, "id"), "Предложение нормы")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "norm.decide", ctx.now)
+        if o["created_by"] == ctx.user_id:
+            raise Rejected("self_decision", "Предложение нормы решает не его автор (разделение полномочий).")
+        if o["status"] != "proposed":
+            raise Rejected("decision_final", "Решение по предложению уже принято и неизменяемо.")
+        resolution = p.get("resolution")
+        if resolution not in ("approved", "rejected"):
+            raise Rejected("bad_value", "Решение: approved (утвердить) или rejected (отклонить).",
+                           {"field": "resolution"})
+        reason = opt_str(p, "reason", 2000)
+        if resolution == "rejected" and not reason:
+            raise Rejected("reason_required", "Отклонение предложения нормы — с причиной.", {"field": "reason"})
+        n = self._update_versioned(ctx, norm_proposals, o, {"status": resolution, "decision_reason": reason,
+                                                            "decided_by": ctx.user_id, "decided_at": ctx.now})
+        self._notify(ctx, [o["created_by"]], "norm_decided",
+                     "Норма «" + o["op_name"] + "»: " + ("утверждена" if resolution == "approved" else "отклонена"),
+                     f"Предложение нормы {o['proposed_min']} мин ({o['op_name']}, {o['work_center'] or 'без РЦ'})"
+                     + (f". Причина: {reason}" if reason else ""),
+                     object_type="norm_proposal", object_id=o["id"])
+        ctx.log("norm_proposal", o["id"], auth, o["version"], n["version"], {"resolution": resolution})
+        return {"proposal": self.v_norm_proposal(n)}
+
     def _pull_production(self, conn, uid: str, now) -> dict:
         """ТП и состав изделий (без цен) — по праву tp.read в проекте; наряды и их операции — по праву wo.read в
         проекте, а исполнителю с ролью «Производство» — наряды, где он назначен хотя бы на одну операцию.
         """
         out: dict[str, Any] = {"tech_processes": [], "tech_specs": [], "production_kits": [], "work_orders": [],
-                               "wo_operations": [], "production_staff": []}
+                               "wo_operations": [], "production_staff": [], "norm_proposals": []}
         pids = [r.id for r in conn.execute(sa.select(projects.c.id).order_by(projects.c.code))]
         tp_ids = [pid for pid in pids if self.policy.can(conn, uid, "tp.read", now, pid)]
         if tp_ids:
@@ -779,6 +877,12 @@ class ProductionMixin:
                 if self._is_producer(conn, u.id, now):
                     staff.append({"id": u.id, "display_name": u.display_name})
             out["production_staff"] = staff
+        # Предложения норм — тем, кто читает статистику норм (norm.read); ФИО автора/решения подставляем.
+        if self.policy.can(conn, uid, "norm.read", now):
+            people = {r.id: r.display_name for r in conn.execute(
+                sa.select(users.c.id, users.c.display_name).where(users.c.active == sa.true()))}
+            out["norm_proposals"] = [self.v_norm_proposal(dict(r._mapping), people) for r in conn.execute(
+                sa.select(norm_proposals).order_by(norm_proposals.c.created_at))]
         return out
 
 

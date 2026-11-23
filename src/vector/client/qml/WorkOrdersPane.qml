@@ -24,6 +24,7 @@ MasterDetail {
     readonly property var all: pv.work_orders || []
     readonly property var items: all.filter(w => search === "" || (w.label + " " + w.title + " " + w.kit_label).toLowerCase().indexOf(search.toLowerCase()) >= 0)
     readonly property var sel: all.find(w => w.id === selectedId) || null
+    readonly property var normsView: sel ? backend.normProposalsView(sel.id, 0) : ({ rows: [], can_propose: false })
     // «10.5000» → «10.5», «100» → «100» (для поля ввода количества).
     function plain(x) { var t = String(x === undefined || x === null ? "" : x); return t.indexOf(".") >= 0 ? t.replace(/0+$/, "").replace(/\.$/, "") : t }
     title: "Производство"
@@ -150,6 +151,50 @@ MasterDetail {
             Text { text: "Причина: " + modelData.reason + "  ·  " + modelData.who + ", " + modelData.when; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true } }
     }
 
+    // Нормы трудоёмкости (D-72): агрегированный факт по операциям этого наряда и ручное предложение/утверждение
+    // нормы. Программа не выставляет норму и не строит рейтинг исполнителей — агрегат без персональных данных;
+    // утверждённую норму технолог заносит в черновик ТП обычной правкой.
+    SectionTitle { text: "Нормы трудоёмкости"; iconName: "timer" }
+    Text { text: "Агрегированный факт по одноимённым операциям всех нарядов (мин/медиана/макс на операцию) и действующие нормы из утверждённых ТП. Норму предлагает человек; утверждает не автор предложения; в техпроцесс норма заносится вручную."
+           color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+    RowLayout {
+        Layout.fillWidth: true; spacing: 8
+        visible: normsView.can_propose === true || normsView.rows.length > 0
+        VButton { objectName: "btnNormStats"; text: "Статистика операций"; kind: "soft"; iconName: "bar-chart-3"
+                  enabled: page.pv.online === true; onClicked: statsDialog.openFor() }
+        VButton { objectName: "btnNormPropose"; visible: normsView.can_propose === true
+                  text: "Предложить норму"; kind: "primary"; iconName: "plus"; onClicked: proposeForm.openFor() }
+    }
+    EmptyState { visible: normsView.rows.length === 0; Layout.fillWidth: true; tone: "neutral"; iconName: "timer"
+                 title: "Предложений по операциям наряда нет"
+                 text: "Предложить норму можно по агрегированным данным: выборка хотя бы из двух завершённых одноимённых операций." }
+    Repeater {
+        model: normsView.rows
+        delegate: VCard {
+            required property var modelData
+            objectName: "normRow"
+            Layout.fillWidth: true
+            RowLayout { Layout.fillWidth: true; spacing: 10
+                ColumnLayout { spacing: 2; Layout.fillWidth: true
+                    Text { text: modelData.title + "  →  норма " + modelData.proposed_label; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    Text { text: modelData.range_label; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    Text { visible: modelData.comment !== ""; text: modelData.comment; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    Text { text: "Предложил(а) " + modelData.author_name + ", " + modelData.created_label
+                                 + (modelData.decision_label !== "" ? "  ·  " + modelData.decision_label : "")
+                                 + (modelData.decision_reason !== "" ? " — " + modelData.decision_reason : "")
+                           color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                }
+                VChip { text: modelData.status_label; tone: modelData.status_tone }
+                ColumnLayout { visible: modelData.can_decide === true; spacing: 4
+                    VButton { objectName: "btnNormApprove"; text: "Утвердить"; compact: true; kind: "primary"; iconName: "check"
+                              onClicked: decideForm.openFor(modelData, "approved") }
+                    VButton { objectName: "btnNormReject"; text: "Отклонить"; compact: true; kind: "danger"; iconName: "x"
+                              onClicked: decideForm.openFor(modelData, "rejected") }
+                }
+            }
+        }
+    }
+
     SectionTitle { text: "Материалы со склада"; iconName: "package-check" }
     Text { text: "Выдача — в разделе «Склад»: «Выдать» с выбором этого наряда. Сторно выдачи уменьшает «выдано»."
            color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
@@ -266,4 +311,109 @@ MasterDetail {
         VField { id: xReason; objectName: "woCancelReason"; label: "Причина"; required: true }
     }
     Cmd { id: xCmd; dialog: cancelForm; tag: "wo-cancel" }
+
+    // ---------- нормы трудоёмкости (D-72)
+    // Статистика операций: серверный запрос (агрегат по всем нарядам), только при связи.
+    FormDialog {
+        id: statsDialog
+        objectName: "normStatsForm"
+        readonly property string tag: "norm-stats"
+        property var rows: []
+        property string state: "idle"   // idle | loading | ready | offline | denied
+        title: "Статистика операций (агрегированный факт)"
+        subtitle: "По завершённым операциям всех нарядов: мин/медиана/макс фактических минут на операцию, размер выборки и действующие нормы из утверждённых ТП. Без привязки к исполнителям."
+        confirmText: ""; canConfirm: false
+        function openFor() { rows = []; state = "loading"; backend.loadNormStats(tag); open() }
+        Text { visible: statsDialog.state === "loading"; text: "Загрузка…"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
+        Text { visible: statsDialog.state === "offline"; text: "Статистика доступна при связи с сервером."; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
+        Text { visible: statsDialog.state === "denied"; text: "Нет права на просмотр статистики норм."; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
+        EmptyState { visible: statsDialog.state === "ready" && statsDialog.rows.length === 0; Layout.fillWidth: true; tone: "neutral"
+                     iconName: "timer"; title: "Данных пока нет"; text: "Завершённых операций с зафиксированным временем ещё нет." }
+        Repeater {
+            model: statsDialog.rows
+            delegate: VCard { required property var modelData
+                objectName: "normStatRow"
+                Layout.fillWidth: true
+                ColumnLayout { spacing: 2; Layout.fillWidth: true
+                    Text { text: modelData.op_name + (modelData.work_center !== "" ? "  ·  " + modelData.work_center : "")
+                           color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    Text { text: "факт " + String(modelData.min_min).replace(".", ",") + "–" + String(modelData.max_min).replace(".", ",") + " мин"
+                                 + " · медиана " + String(modelData.median_min).replace(".", ",") + " · выборка " + modelData.sample_size
+                                 + (modelData.current_norms && modelData.current_norms.length > 0
+                                    ? " · действующие нормы: " + modelData.current_norms.map(x => String(x).replace(".", ",") + " мин").join(", ")
+                                    : " · действующей нормы нет")
+                           color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                }
+            }
+        }
+    }
+    Connections {
+        target: backend
+        function onQueryDone(t, r) {
+            if (t !== statsDialog.tag) return
+            if (r.status === "accepted") { statsDialog.rows = (r.result && r.result.stats) || []; statsDialog.state = "ready" }
+            else if (r.status === "denied") statsDialog.state = "denied"
+            else statsDialog.state = "offline"
+        }
+    }
+
+    // Предложить норму по операции этого наряда: диапазон сервер пересчитывает в момент команды (нужна выборка ≥ 2).
+    FormDialog {
+        id: proposeForm
+        objectName: "normProposeForm"
+        readonly property string tag: "norm-propose"
+        title: "Предложить норму"
+        subtitle: "По агрегированным данным завершённых операций (диапазон пересчитает сервер). Утверждённую норму технолог заносит в техпроцесс вручную — автоматически норма не применяется."
+        confirmText: "Предложить"
+        canConfirm: pOp.currentIndex >= 0 && pOp.currentValue !== null && pMin.text.trim() !== "" && /^\\d+([.,]\\d+)?$/.test(pMin.text.trim())
+        function openFor() { pOp.currentIndex = -1; pMin.text = ""; pComment.text = ""; open() }
+        readonly property var opOptions: sel ? sel.operations.filter(o => o.state === "done").map(o => ({ id: o.name + "\\n" + (o.work_center || ""), label: o.title + (o.work_center ? "  ·  " + o.work_center : "") })) : []
+        onConfirmed: { working = true; error = ""
+            var parts = String(pOp.currentValue).split("\\n")
+            backend.normPropose(tag, backend.newUuid(), parts[0], parts[1] || "", pMin.text.trim(), pComment.text.trim()) }
+        VSelect { id: pOp; objectName: "normOp"; label: "Операция (из завершённых в этом наряде)"; model: proposeForm.opOptions }
+        VField { id: pMin; objectName: "normMinutes"; label: "Предлагаемая норма, мин"; required: true
+                 placeholder: "Например, 90 или 1,5"
+                 error: text.trim() === "" || /^\\d+([.,]\\d+)?$/.test(text.trim()) ? "" : "Число минут, например 90 или 1,5." }
+        VField { id: pComment; objectName: "normComment"; label: "Комментарий"; placeholder: "Почему такая норма (необязательно)" }
+    }
+    Connections {
+        target: backend
+        function onCommandDone(t, r) {
+            if (t !== proposeForm.tag) return
+            proposeForm.working = false
+            if (r.status === "accepted") proposeForm.close()
+            else proposeForm.error = r.message_ru || "Предложение не создано."
+        }
+    }
+
+    // Решение по предложению: утвердить / отклонить (отклонение — с причиной; решает не автор).
+    FormDialog {
+        id: decideForm
+        objectName: "normDecideForm"
+        readonly property string tag: "norm-decide"
+        property var prop: null
+        property string resolution: "approved"
+        title: resolution === "approved" ? "Утвердить норму" : "Отклонить предложение"
+        subtitle: prop ? prop.title + "  →  " + prop.proposed_label : ""
+        confirmText: resolution === "approved" ? "Утвердить" : "Отклонить"
+        confirmKind: resolution === "approved" ? "primary" : "danger"
+        note: resolution === "approved"
+              ? "Утверждение не меняет техпроцессы автоматически: норму заносит технолог правкой черновика ТП."
+              : "Причина обязательна — её увидит автор предложения."
+        canConfirm: resolution === "approved" || dReason.text.trim() !== ""
+        function openFor(p, res) { prop = p; resolution = res; dReason.text = ""; open() }
+        onConfirmed: { working = true; error = ""; backend.normDecide(tag, prop.id, resolution, dReason.text.trim()) }
+        VField { id: dReason; objectName: "normDecisionReason"; label: "Причина"; required: decideForm.resolution === "rejected"
+                 visible: decideForm.resolution === "rejected" }
+    }
+    Connections {
+        target: backend
+        function onCommandDone(t, r) {
+            if (t !== decideForm.tag) return
+            decideForm.working = false
+            if (r.status === "accepted") decideForm.close()
+            else decideForm.error = r.message_ru || "Решение не принято."
+        }
+    }
 }

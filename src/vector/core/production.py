@@ -426,3 +426,29 @@ def readiness_content(*, work_order: dict, tp: dict, spec: dict, needs: list[dic
 def readiness_hash(content: dict) -> str:
     """SHA-256 канонического содержимого снимка готовности — хранится рядом и проверяется при показе."""
     return canon_hash(content)
+
+
+# ------------------------------------------------------------ нормы трудоёмкости (этап 7 blueprint 52, D-72)
+def norm_stats(ops: list[dict]) -> list[dict]:
+    """Агрегированный диапазон фактической трудоёмкости по операциям (наименование + рабочий центр).
+
+    На вход — завершённые операции нарядов (name, work_center, fact_seconds, qty_done). На выход — по каждой
+    группе: размер выборки, мин/медиана/макс фактических минут НА ОПЕРАЦИЮ (не на единицу — объёмы различаются,
+    это диапазон-ориентир, а не расчётная норма). Норма предлагается человеком и утверждается вручную —
+    программа не выставляет норму и не строит рейтинг исполнителей (персональных данных здесь нет: агрегат).
+    """
+    groups: dict[tuple[str, str], list[float]] = {}
+    for o in ops:
+        sec = o.get("fact_seconds") or 0
+        if not sec or not o.get("finished_at"):
+            continue
+        key = (o.get("name") or "", o.get("work_center") or "")
+        groups.setdefault(key, []).append(sec / 60.0)
+    out = []
+    for (name, wc), vals in sorted(groups.items()):
+        vals.sort()
+        n = len(vals)
+        med = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
+        out.append({"op_name": name, "work_center": wc, "sample_size": n,
+                    "min_min": round(vals[0], 1), "median_min": round(med, 1), "max_min": round(vals[-1], 1)})
+    return out

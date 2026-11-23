@@ -769,6 +769,49 @@ class Backend(QObject):
         """Табло таймера операции на «сейчас» (QML вызывает раз в секунду, пока операция в работе)."""
         return production_view.op_timer_label(fact_seconds, running_since, state)
 
+    # ------------------------------------------------------------ нормы трудоёмкости (D-72, этап 7 blueprint 52)
+    @Slot(str)
+    def loadNormStats(self, tag: str):
+        """«Обновить статистику норм»: серверный запрос (только онлайн — агрегат считает сервер по всем нарядам);
+        ответ придёт в queryDone(tag) — список диапазонов с действующими нормами из утверждённых ТП."""
+        self._run(lambda: self.client.query("norm_stats"), lambda r: self._query_done(tag, r))
+
+    @Slot(str, int, result="QVariantMap")
+    def normProposalsView(self, wo_id: str, _rev: int = 0):
+        """Блок «Нормы трудоёмкости» в карточке наряда: предложения по операциям этого наряда (снимок pull)."""
+        ops = {o.get("id"): o for o in self._data.get("wo_operation", [])}
+        keys = {(o.get("name") or "", o.get("work_center") or "") for o in ops.values() if o.get("work_order_id") == wo_id}
+        props = [p for p in (self._stock.get("norm_proposals") or []) if (p.get("op_name") or "", p.get("work_center") or "") in keys]
+        return qml_safe(production_view.norm_proposals_view(
+            props, self._me, self._online and self._session_mode == "online"))
+
+    @Slot(result=str)
+    def newUuid(self) -> str:
+        """Новый UUID (строчный) — id объектов, создаваемых из форм (предложение нормы и т.п.)."""
+        return str(uuid.uuid4())
+
+    @Slot(str, str, str, str, str, str)
+    def normPropose(self, tag: str, prop_id: str, op_name: str, work_center: str, proposed_min: str, comment: str):
+        """«Предложить норму»: команда norm.propose (только при связи); диапазон сервер пересчитывает сам."""
+        def job():
+            """Отправить norm.propose и снять снимок данных."""
+            r = self.client.execute("norm.propose", {"id": prop_id, "op_name": op_name.strip(),
+                                                     "work_center": work_center.strip(),
+                                                     "proposed_min": proposed_min.strip(),
+                                                     "comment": comment.strip() or None})
+            return {"result": r.__dict__, "snap": self._snapshot(True) if getattr(r, "status", "") == "accepted" else None}
+        self._run(job, lambda res: self._finish_command(tag, "norm.propose", res))
+
+    @Slot(str, str, str, str)
+    def normDecide(self, tag: str, prop_id: str, resolution: str, reason: str):
+        """Решение по предложению нормы: norm.decide (approved/rejected; отклонение — с причиной; решает не автор)."""
+        def job():
+            """Отправить norm.decide и снять снимок данных."""
+            r = self.client.execute("norm.decide", {"id": prop_id, "resolution": resolution,
+                                                    "reason": reason.strip() or None})
+            return {"result": r.__dict__, "snap": self._snapshot(True) if getattr(r, "status", "") == "accepted" else None}
+        self._run(job, lambda res: self._finish_command(tag, "norm.decide", res))
+
     @Slot(str, "QVariantMap")
     def saveTpDraft(self, tag: str, payload):
         """«Сохранить ТП»: через очередь (можно без связи); создание или правка и expected_version — решает

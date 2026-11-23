@@ -294,6 +294,9 @@ def production_view(tps: list[dict], specs: list[dict], wos: list[dict], ops: li
     tabs.append({"id": "orders", "label": "Наряды", "icon": "clipboard-list"})
     if tp_rows or "technologist" in roles or "dept_head" in roles:
         tabs.append({"id": "tps", "label": "Техпроцессы", "icon": "list-checks"})
+    # Предложения норм (D-72): ведущим инженерам (технологи), РП и руководителям отделов.
+    can_propose = bool(roles & {"lead_engineer", "rp", "dept_head"})
+    can_decide = bool(roles & {"lead_engineer", "dept_head"})
     return {
         "online": online, "as_of": as_of_label(last_pull), "tabs": tabs, "default_tab": tabs[0]["id"],
         "tps": tp_rows, "work_orders": wo_rows, "my_ops": my_ops,
@@ -310,6 +313,52 @@ def production_view(tps: list[dict], specs: list[dict], wos: list[dict], ops: li
         "empty_orders": "Нарядов пока нет. РП проекта выпускает наряд по утверждённому ТП.",
         "empty_my": "Вам пока не назначено операций. Назначение приходит уведомлением.",
     }
+
+
+NORM_STATUS_LABELS_RU = {"proposed": "предложена", "approved": "утверждена", "rejected": "отклонена"}
+NORM_TONES = {"proposed": "warning", "approved": "success", "rejected": "danger"}
+
+
+def _fmt_dec(v: Any) -> str:
+    """Десятичное число из JSON («60.5000») → «60,5» (точка → запятая, хвостовые нули убраны)."""
+    s = str(v or "").strip()
+    if not s:
+        return s
+    s = s.replace(".", ",")
+    return s.rstrip("0").rstrip(",") if "," in s else s
+
+
+def _norm_row(p: dict, me_id: str, online: bool, can_decide: bool) -> dict:
+    """Предложение нормы для списка: подписи, диапазон, статус, кто предложил/решил, флаги действий."""
+    st = p.get("status") or "proposed"
+    rng = (f"факт: {_fmt_dec(p.get('min_min'))}–{_fmt_dec(p.get('max_min'))} мин, "
+           f"медиана {_fmt_dec(p.get('median_min'))} · выборка {p.get('sample_size') or 0}")
+    decide_wait = can_decide and st == "proposed" and p.get("created_by") != me_id
+    return {
+        "id": p["id"], "op_name": p.get("op_name") or "", "work_center": p.get("work_center") or "",
+        "title": (p.get("op_name") or "") + (f" ({p['work_center']})" if p.get("work_center") else ""),
+        "range_label": rng, "proposed_label": f"{_fmt_dec(p.get('proposed_min'))} мин",
+        "comment": p.get("comment") or "", "status": st,
+        "status_label": NORM_STATUS_LABELS_RU.get(st, st), "status_tone": NORM_TONES.get(st, "neutral"),
+        "author_name": p.get("created_by_name") or "", "created_label": when(p.get("created_at")),
+        "decision_label": ((f"{NORM_STATUS_LABELS_RU.get(st, st)} · {p.get('decided_by_name') or ''}, "
+                            f"{when(p.get('decided_at'))}") if p.get("decided_at") else ""),
+        "decision_reason": p.get("decision_reason") or "",
+        # Решает не автор, при связи; предложить может технолог (не обязательно тот, кто решает).
+        "can_decide": online and decide_wait,
+    }
+
+
+def norm_proposals_view(proposals: list[dict], me: dict, online: bool) -> dict[str, Any]:
+    """Список предложений норм для блока в карточке наряда: сначала ждущие решения, внутри — новые сверху."""
+    roles = set(me.get("roles") or [])
+    me_id = me.get("user_id") or ""
+    rows = [_norm_row(p, me_id, online, bool(roles & {"lead_engineer", "dept_head"})) for p in proposals or []]
+    # Сначала ждущие решения, внутри группы — новые сверху (стабильная сортировка от обратной дате).
+    raw = {str(p.get("id")): str(p.get("created_at") or "") for p in proposals or []}
+    rows.sort(key=lambda r: raw.get(r["id"], ""), reverse=True)
+    rows.sort(key=lambda r: {"proposed": 0, "approved": 1, "rejected": 2}.get(r["status"], 9))
+    return {"rows": rows, "can_propose": online and bool(roles & {"lead_engineer", "rp", "dept_head"})}
 
 
 def _int_text(v: Any) -> Any:

@@ -71,7 +71,7 @@ from vector.core import money
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
 # v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
 #         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
-SCHEMA_VERSION = 38
+SCHEMA_VERSION = 39
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -2130,6 +2130,25 @@ delivery_docs = sa.Table("delivery_docs", metadata,
     sa.Column("version", sa.Integer, nullable=False),
     sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
     sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
+
+# Предложения норм трудоёмкости (этап 7 blueprint 52, D-72): агрегированный диапазон факта по операции
+# (наименование + рабочий центр) с размером выборки и РУЧНЫМ утверждением. Не авторейтинг: норма не применяется
+# сама — после утверждения технолог правит черновик ТП обычным путём. Решает не автор предложения.
+norm_proposals = sa.Table("norm_proposals", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("op_name", U(200), nullable=False, index=True),
+    sa.Column("work_center", U(200), nullable=False),
+    sa.Column("sample_size", sa.Integer, nullable=False),        # размер выборки на момент предложения (снимок)
+    sa.Column("min_min", Qty, nullable=False),                   # факт, минуты на операцию: минимум
+    sa.Column("median_min", Qty, nullable=False),                # медиана
+    sa.Column("max_min", Qty, nullable=False),                   # максимум
+    sa.Column("proposed_min", Qty, nullable=False),              # предлагаемая норма (мин)
+    sa.Column("comment", T),
+    sa.Column("status", U(12), nullable=False),                  # proposed | approved | rejected
+    sa.Column("decision_reason", T),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("decided_by", ID), sa.Column("decided_at", UtcDateTime))
 
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),

@@ -119,6 +119,7 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     36: [db.checklist_templates],
     37: [db.pnr_requests, db.fat_sessions, db.fat_findings],
     38: [db.delivery_doc_templates, db.delivery_docs],
+    39: [db.norm_proposals],
 }
 
 
@@ -310,7 +311,8 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               34: _create_tables(ADDED_IN[35]),
                               35: _create_tables(ADDED_IN[36]),
                               36: _create_tables(ADDED_IN[37]),
-                              37: _create_tables(ADDED_IN[38])}
+                              37: _create_tables(ADDED_IN[38]),
+                              38: _create_tables(ADDED_IN[39])}
 
 
 @dataclass
