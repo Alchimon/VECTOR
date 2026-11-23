@@ -447,6 +447,19 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
                                    "channel": "email", "note": "Первая выдача по договору",
                                    "items": [rev["id"]]})
 
+    # D-65: воронка лидов — одна новая возможность от площадки (тендерный отдел) и одна квалифицированная
+    # менеджера с заказчиком из справочника (готова к переводу в тендер одной командой).
+    cmd(rp, "opportunity.create", {"id": str(uuid.uuid4()),
+                                   "title": "АСУ ТП насосной станции — запрос КП",
+                                   "source": "platform", "source_detail": "ЭТП «Фабрикант»",
+                                   "customer_name": "АО «Водоканал Юг»", "expected_on": "2026-12-20",
+                                   "note": "Просят ориентировочную цену и сроки"})
+    opp2_id = str(uuid.uuid4())
+    cmd(rp, "opportunity.create", {"id": opp2_id, "title": "Модернизация шкафов управления «Энергомаш»",
+                                    "source": "manager", "customer_id": custs["АО «Энергомаш»"],
+                                    "expected_on": "2026-12-05", "note": "Повторный заказчик"})
+    cmd(rp, "opportunity.transition", {"id": opp2_id, "to": "qualified"}, ev=1)
+
     prod = _seed_production(cmd, login, people, svc, kits, atx_v1)
     prod.update(_seed_lifecycle(cmd, login, people, svc, prod["tech_processes"][0], items, whs, docs))
     prod.update(_seed_quality(cmd, login, people, svc, prod["product_instances"][0], kits, prod["lifecycle_work_order"]))

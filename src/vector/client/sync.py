@@ -134,7 +134,10 @@ STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_
               # пакетами, профили шифров и действующие статусы выдачи (меняются только онлайн-командами).
               "document_revisions", "document_reviews", "document_comments", "document_comment_responses",
               "document_transmittals", "transmittal_items", "transmittal_packages",
-              "document_profiles", "document_revision_issues")
+              "document_profiles", "document_revision_issues",
+              # D-65: лиды и потоки проекта — воронка возможностей, шесть потоков со шлюзами, риск-разрешения,
+              # журнал событий проекта и снимок закрытия (меняются только онлайн-командами).
+              "opportunities", "workstreams", "project_risks", "project_events", "project_closeouts")
 
 
 # Онлайн-команды, которым не нужно сначала отправить очередь (их результат не зависит от неотправленных правок).

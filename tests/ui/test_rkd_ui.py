@@ -122,6 +122,51 @@ def test_rkd_package_download_byte_exact(ui, tmp_path):
     assert "manifest.json" in names and any(n.startswith("01/") for n in names)
 
 
+def test_rkd_create_transmittal_through_form(ui):
+    from PySide6.QtCore import QMetaObject, QObject
+    _open_rkd(ui)
+    did = ui.ids["docs"]["АТХ-001"]
+    ver_id = next(d for d in ui.backend.documents if d["id"] == did)["versions"][0]["id"]
+    # Готовим ревизию «02» к отправке командами (как сделал бы пользователь на вкладке «Ревизии»).
+    import uuid
+    rid = str(uuid.uuid4())
+    for cmd, payload, ev in (("docrev.create", {"id": rid, "document_id": did, "label": "02",
+                                                "doc_version_id": ver_id}, None),
+                             ("docrev.transition", {"id": rid, "to": "ready_for_rp"}, 1),
+                             ("docrev.transition", {"id": rid, "to": "ready_to_transmit", "reason": "Проверена"}, 2)):
+        r = ui.backend.client.execute(cmd, payload, ev)
+        assert r.status == "accepted", (cmd, r.message_ru)
+    ui.backend.syncNow()
+    ui.wait_idle()
+    # Форма «Новый трансмиттал»: выбираем ревизию, получателя, канал — отправляем.
+    _, panel = _open_rkd(ui, "transmittals")
+    dlg = next(o for o in ui.win.findChildren(QObject)
+               if o.property("confirmText") == "Отправить" and o.property("title") == "Новый трансмиттал")
+    QMetaObject.invokeMethod(dlg, "ask")
+    ui.wait_idle()
+    assert dlg.property("readyRevs") and any(r["label"] == "02" for r in dlg.property("readyRevs").toVariant())
+    body = dlg.findChildren(QObject)
+    rec = next(o for o in body if o.property("label") == "Получатель")
+    rec.setProperty("text", "ООО «ТехМаш», ПТО")
+    # Отметить ревизию — как щелчок по чекбоксу (делегаты Repeater видны в визуальном дереве).
+    cb = next(i for i in ui.items("checkable")
+              if i.property("text") and "ревизия «02»" in (i.property("text") or ""))
+    cb.setProperty("checked", True)
+    cb.toggled.emit()
+    ui.wait_idle()
+    assert dlg.property("canConfirm")
+    QMetaObject.invokeMethod(dlg, "confirmed")
+    ui.wait_idle()
+    assert dlg.property("error") == "" and not dlg.property("visible")
+    trs = _rkd(ui)["transmittals"]
+    assert len(trs) == 2
+    t2 = next(t for t in trs if t["seq"] == 2)
+    assert t2["recipient"] == "ООО «ТехМаш», ПТО" and t2["has_package"]
+    # Ревизия «02» перешла в «Отправлена заказчику».
+    rev = next(r for r in _rkd(ui)["revisions"] if r["label"] == "02")
+    assert rev["status"] == "sent"
+
+
 def test_rkd_offline_disables_actions(ui):
     _, panel = _open_rkd(ui)
     ui.transport.online = False

@@ -134,6 +134,9 @@ MasterDetail {
            color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs }
     KitWork { Layout.fillWidth: true; kit: page.selKit; team: page.team; deputies: page.deputies }
 
+    // ---------- потоки, риск-разрешения и журнал событий проекта (D-65, этап 2 blueprint 52)
+    ProjectFlow { Layout.fillWidth: true; Layout.topMargin: 6; project: page.sel; visible: page.sel !== null }
+
     // ---------- официальный итог проекта: только из зафиксированных версий расчётов комплектов (R-12)
     ProjectTotal { Layout.fillWidth: true; Layout.topMargin: 6; projectId: page.selectedId
                    visible: page.sel !== null && page.canSeeTotal }

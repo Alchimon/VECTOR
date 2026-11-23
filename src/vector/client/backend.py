@@ -24,7 +24,7 @@ from vector import __version__
 from vector.core import stock
 from vector.core.contracts import Contracts
 
-from . import (calc_view, delegation_view, hints, lifecycle_view, notification_view, production_view, purchasing_view,
+from . import (calc_view, delegation_view, hints, lifecycle_view, notification_view, delivery_view, production_view, purchasing_view,
                org_view, prodcal_view, quality_view, rkd_view, stock_view, workday_view, worktime_view)
 from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
@@ -674,6 +674,26 @@ class Backend(QObject):
         self._notify_seen = max(self._notify_seen, top)
         if text:
             self.toast.emit("info", text)
+
+    # ------------------------------------------------------------ потоки проекта, риски, лиды (D-65)
+    @Slot(str, int, result="QVariantMap")
+    def projectDelivery(self, project_id: str, _rev: int = 0):
+        """«Потоки и риски» проекта: шесть потоков со статусами и допустимыми переходами (из контракта workflows),
+        риск-разрешения (действует/истёк/снято), лента событий, переходы рамки проекта, снимок закрытия."""
+        st = self._stock
+        pr = next((x for x in self._data.get("project", []) if x["id"] == project_id), None)
+        return qml_safe(delivery_view.project_delivery(
+            project_id, pr, st.get("workstreams") or [], st.get("project_risks") or [],
+            st.get("project_events") or [], st.get("project_closeouts") or [], self._data.get("kit", []),
+            self._people, self._me.get("user_id") or "", self._assignments, self._me.get("roles") or [],
+            self._online and self._session_mode == "online", self.contracts.workflows))
+
+    @Slot(int, result="QVariantMap")
+    def opportunitiesView(self, _rev: int = 0):
+        """Раздел «Лиды»: воронка возможностей продаж (снимок pull; действия — по праву, проверяет сервер)."""
+        return qml_safe(delivery_view.opportunities_view(
+            self._stock.get("opportunities") or [], self._people, self._me.get("user_id") or "",
+            self._me.get("roles") or [], self._online and self._session_mode == "online", self.contracts.workflows))
 
     # ------------------------------------------------------------ РКД: ревизии, замечания, трансмитталы (D-64)
     @Slot(str, int, result="QVariantMap")
@@ -1729,6 +1749,8 @@ class Backend(QObject):
                                  "notification", "wo", "tp", "org",
                                  # D-64: ревизии, замечания, трансмитталы и профили приходят только снимком pull.
                                  "docrev", "transmittal", "comment", "docprofile",
+                                 # D-65: потоки проекта, риск-разрешения и лиды приходят только снимком pull.
+                                 "workstream", "risk", "opportunity",
                                  # D-46: решение по фактическому началу дня меняет рабочий день сотрудника на сервере
                                  # (подтверждённое начало) и рассылает уведомления — сразу перечитываем снимок.
                                  "workday",

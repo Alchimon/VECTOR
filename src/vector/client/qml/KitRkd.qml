@@ -470,7 +470,7 @@ ColumnLayout {
         onConfirmed: {
             var payload = { id: backend.newId(), project_id: kr.kit.project_id, recipient: recipientField.text.trim(),
                             channel: channelSel.model[channelSel.currentIndex].id,
-                            revision_ids: revChecks.selected }
+                            items: revChecks.selected }
             if (noteTr.text.trim() !== "") payload.note = noteTr.text.trim()
             trCmd.run("transmittal.create", payload)
         }
