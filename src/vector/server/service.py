@@ -165,6 +165,10 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "pnr.create": self._pnr_create, "pnr.set_status": self._pnr_set_status,
             "fat.create": self._fat_create, "fat.finish": self._fat_finish,
             "fat.add_finding": self._fat_add_finding, "fat.close_finding": self._fat_close_finding,
+            # Документы доставки отдела логистики: настраиваемые формы (D-69, этап 6 blueprint 52).
+            "doc_template.create": self._doc_template_create, "doc_template.update": self._doc_template_update,
+            "doc_template.set_active": self._doc_template_set_active,
+            "delivery_doc.create": self._delivery_doc_create, "delivery_doc.update": self._delivery_doc_update,
             # Ревизии РКД: проверка, замечания, трансмитталы (rkd.py, этап 3 blueprint 52).
             "docrev.create": self._docrev_create, "docrev.transition": self._docrev_transition,
             "comment.add": self._comment_add, "comment.respond": self._comment_respond,

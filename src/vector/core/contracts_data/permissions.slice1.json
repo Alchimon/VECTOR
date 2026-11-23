@@ -1,5 +1,5 @@
 {
- "contract": "permissions-slice1-v34",
+ "contract": "permissions-slice1-v35",
  "notes": [
   "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
   "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -1860,6 +1860,50 @@
     }
    ],
    "decision": "D-68"
+  },
+  "doc_template.manage": {
+   "any_of": [
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-69",
+   "note": "Формы документов доставки ведёт начальник логистики; временное правило: глобальная «руководитель отдела» (A-59), до появления отдельной роли логиста."
+  },
+  "doc_template.create": {
+   "same_as": "doc_template.manage"
+  },
+  "doc_template.update": {
+   "same_as": "doc_template.manage"
+  },
+  "doc_template.set_active": {
+   "same_as": "doc_template.manage"
+  },
+  "delivery_doc.read": {
+   "same_as": "project.read"
+  },
+  "delivery_doc.create": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-69",
+   "note": "Документ выписывает логист — участник проекта; временно также РП/ГИП проекта."
+  },
+  "delivery_doc.update": {
+   "same_as": "delivery_doc.create"
   }
  }
 }

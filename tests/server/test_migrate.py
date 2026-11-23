@@ -1446,3 +1446,16 @@ def test_v36_to_v37_adds_pnr_and_fat(backend, tmp_path, clock, keys):
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
     assert db.check_schema(eng) == db.SCHEMA_VERSION
     assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
+
+
+def test_v37_to_v38_adds_delivery_docs(backend, tmp_path, clock, keys):
+    """v37 → v38 (D-69, этап 6 blueprint 52): формы документов доставки (плейсхолдеры) и выписанные документы."""
+    eng = make_v3(backend, tmp_path, clock, version=37)
+    before = counts(eng, mg.tables_of_version(37))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (37, db.SCHEMA_VERSION)
+    assert {"delivery_doc_templates", "delivery_docs"} <= set(rep.created_tables)
+    after = counts(eng, mg.tables_of_version(37))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []

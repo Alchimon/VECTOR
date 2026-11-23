@@ -29,9 +29,9 @@ from vector.core import delivery as dl
 from vector.core.errors import Rejected
 
 from .authz import project_member
-from .db import (checklist_templates, customers, documents, fat_findings, fat_sessions, kits, pnr_requests,
-                 project_closeouts, project_events, project_risk_acceptances, project_workstreams, projects,
-                 sales_opportunities, tasks, tenders, users)
+from .db import (checklist_templates, customers, delivery_doc_templates, delivery_docs, documents, fat_findings,
+                 fat_sessions, kits, pnr_requests, project_closeouts, project_events, project_risk_acceptances,
+                 project_workstreams, projects, sales_opportunities, tasks, tenders, users)
 from .validation import iso, only_keys, opt_date, opt_str, req_str, req_uuid
 
 
@@ -58,6 +58,23 @@ class DeliveryMixin:
                 "severities": dl.parse_severities(o["severities_json"]), "active": bool(o["active"]),
                 "version": o["version"], "created_by": o["created_by"], "created_at": iso(o["created_at"]),
                 "updated_at": iso(o["updated_at"])}
+
+    @staticmethod
+    def v_doc_template(o: dict) -> dict:
+        """Шаблон документа доставки: код, название, текст с плейсхолдерами, активность, версия."""
+        return {"id": o["id"], "code": o["code"], "title": o["title"], "body": o["body"],
+                "fields": dl.template_fields(o["body"]), "active": bool(o["active"]), "version": o["version"],
+                "created_by": o["created_by"], "created_at": iso(o["created_at"]),
+                "updated_by": o["updated_by"], "updated_at": iso(o["updated_at"])}
+
+    @staticmethod
+    def v_delivery_doc(o: dict) -> dict:
+        """Документ доставки: шаблон (снимок кода/названия), отрендеренный текст, версия."""
+        return {"id": o["id"], "project_id": o["project_id"], "kit_id": o["kit_id"],
+                "template_id": o["template_id"], "template_code": o["template_code"],
+                "template_title": o["template_title"], "rendered": o["rendered"], "version": o["version"],
+                "created_by": o["created_by"], "created_at": iso(o["created_at"]),
+                "updated_by": o["updated_by"], "updated_at": iso(o["updated_at"])}
 
     @staticmethod
     def v_pnr(o: dict) -> dict:
@@ -869,6 +886,127 @@ class DeliveryMixin:
         ctx.log("fat_finding", o["id"], auth, o["version"], n["version"], {"closed": True})
         return {"finding": self.v_finding(n)}
 
+    # ------------------------------------------------------------ документы доставки (D-69)
+    def _delivery_values(self, ctx, pr: dict, kit: Optional[dict]) -> dict:
+        """Поля автозаполнения документа доставки из карточки проекта и комплекта.
+
+        Заказчик: у проекта (стадия РКД) своего customer_id может не быть — берём из тендера, из которого проект
+        вырос (tender_id у проекта есть со start_rkd), затем из справочника заказчиков.
+        """
+        cust = None
+        cust_id = pr.get("customer_id")
+        if cust_id is None and pr.get("tender_id"):
+            t = self._get(ctx.conn, tenders, pr["tender_id"])
+            cust_id = t["customer_id"] if t else None
+        if cust_id:
+            cust = self._get(ctx.conn, customers, cust_id)
+        v = {"project.code": pr["code"], "project.title": pr["title"],
+             "customer.name": cust["name"] if cust else ""}
+        if kit:
+            v.update({"kit.code": kit["code"], "kit.title": kit["title"]})
+        return v
+
+    def _doc_template_create(self, ctx, p, ev):
+        """doc_template.create {id, code, title, body} — настраиваемая форма документа доставки (временно:
+        ведёт руководитель отдела, A-59; в оргструктуре — начальник логистики). Плейсхолдеры {{field}}."""
+        only_keys(p, {"id", "code", "title", "body"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "doc_template.manage", ctx.now)
+        tid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, delivery_doc_templates, tid)
+        ctx.conn.execute(delivery_doc_templates.insert().values(
+            id=tid, code=req_str(p, "code", 40), title=req_str(p, "title", 200),
+            body=req_str(p, "body", 20000), active=True, version=1,
+            created_by=ctx.user_id, created_at=ctx.now, updated_by=ctx.user_id, updated_at=ctx.now))
+        ctx.log("delivery_doc_template", tid, auth, None, 1, {"code": p["code"]})
+        return {"template": self.v_doc_template(self._get(ctx.conn, delivery_doc_templates, tid))}
+
+    def _doc_template_update(self, ctx, p, ev):
+        """doc_template.update {id, title?, body?, code?} — правка формы версионируется; на выписанные документы
+        не влияет (у них снимок)."""
+        only_keys(p, {"id", "code", "title", "body"})
+        o = self._require(ctx.conn, delivery_doc_templates, req_uuid(p, "id"), "Шаблон документа")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "doc_template.manage", ctx.now)
+        self._check_version(o, ev, self.v_doc_template)
+        ch = {}
+        if "code" in p:
+            ch["code"] = req_str(p, "code", 40)
+        if "title" in p:
+            ch["title"] = req_str(p, "title", 200)
+        if "body" in p:
+            ch["body"] = req_str(p, "body", 20000)
+        ch = {k: v for k, v in ch.items() if v != o[k]}
+        if not ch:
+            raise Rejected("no_changes", "Нет изменений.")
+        n = self._update_versioned(ctx, delivery_doc_templates, o, {**ch, "updated_by": ctx.user_id,
+                                                                    "updated_at": ctx.now})
+        ctx.log("delivery_doc_template", o["id"], auth, o["version"], n["version"], {"changed": sorted(ch)})
+        return {"template": self.v_doc_template(n)}
+
+    def _doc_template_set_active(self, ctx, p, ev):
+        """doc_template.set_active {id, active} — отключить/включить форму. Отключённая не даёт новых документов."""
+        only_keys(p, {"id", "active"})
+        o = self._require(ctx.conn, delivery_doc_templates, req_uuid(p, "id"), "Шаблон документа")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "doc_template.manage", ctx.now)
+        active = bool(p.get("active"))
+        if bool(o["active"]) == active:
+            raise Rejected("no_changes", "Шаблон уже " + ("активен." if active else "отключён."))
+        n = self._update_versioned(ctx, delivery_doc_templates, o, {"active": active,
+                                                                    "updated_by": ctx.user_id,
+                                                                    "updated_at": ctx.now})
+        ctx.log("delivery_doc_template", o["id"], auth, o["version"], n["version"], {"active": active})
+        return {"template": self.v_doc_template(n)}
+
+    def _delivery_doc_create(self, ctx, p, ev):
+        """delivery_doc.create {id, project_id, kit_id?, template_id, values?} — выписать документ по активной
+        форме: текст рендерится снимком (данные проекта/комплекта + ручные значения логиста поверх)."""
+        only_keys(p, {"id", "project_id", "kit_id", "template_id", "values"})
+        pr = self._require(ctx.conn, projects, req_uuid(p, "project_id"), "Проект")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "delivery_doc.create", ctx.now, project_id=pr["id"])
+        self._project_editable(pr)
+        tpl = self._get(ctx.conn, delivery_doc_templates, req_uuid(p, "template_id"))
+        if not tpl or not tpl["active"]:
+            raise Rejected("template_unusable", "Форма не найдена или отключена.", {"field": "template_id"})
+        kid = p.get("kit_id")
+        kit = None
+        if kid is not None:
+            kid = req_uuid({"kit_id": kid}, "kit_id")
+            kit = self._get(ctx.conn, kits, kid)
+            if not kit or kit["project_id"] != pr["id"]:
+                raise Rejected("kit_not_in_project", "Комплект не найден в этом проекте.", {"field": "kit_id"})
+        values = self._delivery_values(ctx, pr, kit)
+        extra = p.get("values")
+        if extra is not None:
+            if not isinstance(extra, dict):
+                raise Rejected("bad_value", "values — словарь поле→значение.", {"field": "values"})
+            values.update({str(k): str(v) for k, v in extra.items()})
+        did = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, delivery_docs, did)
+        rendered = dl.render_template(tpl["body"], values)
+        ctx.conn.execute(delivery_docs.insert().values(
+            id=did, project_id=pr["id"], kit_id=kid, template_id=tpl["id"], template_code=tpl["code"],
+            template_title=tpl["title"], rendered=rendered, version=1,
+            created_by=ctx.user_id, created_at=ctx.now, updated_by=ctx.user_id, updated_at=ctx.now))
+        self._project_event(ctx, pr["id"], "delivery_doc_issued", f"Оформлен документ «{tpl['title']}»", auth,
+                            object_type="delivery_doc", object_id=did)
+        ctx.log("delivery_doc", did, auth, None, 1, {"project_id": pr["id"], "template": tpl["code"]})
+        return {"doc": self.v_delivery_doc(self._get(ctx.conn, delivery_docs, did))}
+
+    def _delivery_doc_update(self, ctx, p, ev):
+        """delivery_doc.update {id, rendered} — правка текста документа логистом (версионируется)."""
+        only_keys(p, {"id", "rendered"})
+        o = self._require(ctx.conn, delivery_docs, req_uuid(p, "id"), "Документ доставки")
+        pr = self._get(ctx.conn, projects, o["project_id"])
+        auth = self.policy.check(ctx.conn, ctx.user_id, "delivery_doc.create", ctx.now, project_id=o["project_id"])
+        self._project_editable(pr)
+        self._check_version(o, ev, self.v_delivery_doc)
+        text = req_str(p, "rendered", 20000)
+        if text == o["rendered"]:
+            raise Rejected("no_changes", "Нет изменений.")
+        n = self._update_versioned(ctx, delivery_docs, o, {"rendered": text, "updated_by": ctx.user_id,
+                                                           "updated_at": ctx.now})
+        ctx.log("delivery_doc", o["id"], auth, o["version"], n["version"], {})
+        return {"doc": self.v_delivery_doc(n)}
+
     # ------------------------------------------------------------ данные для pull
     def _pull_delivery(self, conn, uid: str, now, readable: list[str]) -> dict:
         """Лиды (по праву opportunity.read) и, по читаемым проектам, — потоки, риск-разрешения, события и снимок
@@ -876,7 +1014,11 @@ class DeliveryMixin:
         """
         today = now.date()
         out: dict[str, Any] = {"opportunities": [], "workstreams": [], "project_risks": [], "project_events": [],
-                               "project_closeouts": [], "checklist_templates": []}
+                               "project_closeouts": [], "checklist_templates": [],
+                               "delivery_doc_templates": [], "delivery_docs": []}
+        if self.policy.can(conn, uid, "delivery_doc.read", now):
+            out["delivery_doc_templates"] = [self.v_doc_template(dict(r._mapping)) for r in conn.execute(
+                sa.select(delivery_doc_templates).order_by(delivery_doc_templates.c.code))]
         if self.policy.can(conn, uid, "checklist.read", now):
             out["checklist_templates"] = [self.v_checklist(dict(r._mapping)) for r in conn.execute(
                 sa.select(checklist_templates).order_by(checklist_templates.c.kind, checklist_templates.c.name))]
@@ -895,6 +1037,10 @@ class DeliveryMixin:
                 out["fat_findings"] = [self.v_finding(dict(r._mapping)) for r in conn.execute(
                     sa.select(fat_findings).where(fat_findings.c.fat_id.in_([f["id"] for f in fats]))
                     .order_by(fat_findings.c.fat_id, fat_findings.c.seq))]
+            if self.policy.can(conn, uid, "delivery_doc.read", now):
+                out["delivery_docs"] = [self.v_delivery_doc(dict(r._mapping)) for r in conn.execute(
+                    sa.select(delivery_docs).where(delivery_docs.c.project_id.in_(readable))
+                    .order_by(delivery_docs.c.created_at, delivery_docs.c.id))]
         if self.policy.can(conn, uid, "opportunity.read", now):
             out["opportunities"] = [self.v_opportunity(dict(r._mapping)) for r in conn.execute(
                 sa.select(sales_opportunities).order_by(sales_opportunities.c.created_at, sales_opportunities.c.id))]

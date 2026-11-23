@@ -71,7 +71,7 @@ from vector.core import money
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
 # v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
 #         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 38
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -2104,6 +2104,32 @@ fat_findings = sa.Table("fat_findings", metadata,
     sa.Column("version", sa.Integer, nullable=False),
     sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
     sa.Column("closed_by", ID), sa.Column("closed_at", UtcDateTime))
+
+# Документы доставки (этап 6 blueprint 52, D-69, ответ владельца п. 6): оформляет отдел логистики. Формы
+# настраиваемые: шаблон с плейсхолдерами {{field}} и автозаполнением данными проекта/комплекта (ведёт
+# руководитель отдела — в оргструктуре начальник логистики, A-59). Экземпляр документа — версионируемый,
+# текст рендерится на момент создания правки (снимок), история правок — журналом аудита.
+delivery_doc_templates = sa.Table("delivery_doc_templates", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("code", U(40), nullable=False, index=True),        # UPD | TOR12 | PACKING_LIST | свои
+    sa.Column("title", U(200), nullable=False),
+    sa.Column("body", T, nullable=False),                        # текст с плейсхолдерами {{field}}
+    sa.Column("active", sa.Boolean, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
+
+delivery_docs = sa.Table("delivery_docs", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id"), index=True),
+    sa.Column("template_id", ID, sa.ForeignKey("delivery_doc_templates.id"), nullable=False),
+    sa.Column("template_code", U(40), nullable=False),           # снимок кода шаблона
+    sa.Column("template_title", U(200), nullable=False),         # снимок названия
+    sa.Column("rendered", T, nullable=False),                    # отрендеренный текст (снимок на правку)
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
 
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),

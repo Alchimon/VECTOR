@@ -1,5 +1,5 @@
 {
- "contract": "command-catalog-slice1-v37",
+ "contract": "command-catalog-slice1-v38",
  "offline_classes": {
   "offline_full": "Полностью доступно офлайн (чтение локального кэша, локальные черновики без эффекта для других).",
   "queued": "Создаёт локальное изменение в очереди синхронизации. До ответа сервера это НЕ подтверждённое действие; сервер заново проверяет права, состояние и версию.",
@@ -1010,6 +1010,46 @@
    "risk": "medium",
    "decision": "D-68",
    "note": "Закрытие не меняет итог сессии; разблокировка — новой финальной сессией."
+  },
+  "doc_template.create": {
+   "offline": "online_required",
+   "object": "delivery_doc_template",
+   "label_ru": "Создать форму документа доставки",
+   "risk": "medium",
+   "decision": "D-69",
+   "note": "Шаблон с плейсхолдерами {{field}}; ведёт начальник логистики (временно dept_head, A-59)."
+  },
+  "doc_template.update": {
+   "offline": "online_required",
+   "object": "delivery_doc_template",
+   "label_ru": "Изменить форму документа доставки",
+   "risk": "medium",
+   "decision": "D-69",
+   "note": "Версионируется; выписанные документы (снимок) не переписывает."
+  },
+  "doc_template.set_active": {
+   "offline": "online_required",
+   "object": "delivery_doc_template",
+   "label_ru": "Включить/отключить форму документа",
+   "risk": "low",
+   "decision": "D-69",
+   "note": "Отключённая форма не даёт новых документов."
+  },
+  "delivery_doc.create": {
+   "offline": "online_required",
+   "object": "delivery_doc",
+   "label_ru": "Выписать документ доставки по форме",
+   "risk": "medium",
+   "decision": "D-69",
+   "note": "Автозаполнение данными проекта/комплекта + значения логиста; текст — снимок."
+  },
+  "delivery_doc.update": {
+   "offline": "online_required",
+   "object": "delivery_doc",
+   "label_ru": "Изменить текст документа доставки",
+   "risk": "low",
+   "decision": "D-69",
+   "note": "Версионируемая правка выписанного документа."
   }
  },
  "queries": {

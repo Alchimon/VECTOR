@@ -200,3 +200,23 @@ def fat_shipping_gate(conn_rows: list[dict], findings_rows: list[dict]) -> Optio
     if last["status"] != "passed":
         return "Последний финальный FAT неуспешен — устраните замечания и проведите новое приёмочное испытание."
     return None
+
+
+# ------------------------------------------------------------ документы доставки (D-69)
+import re as _re
+
+# Поля автозаполнения из карточки проекта/комплекта (плейсхолдеры {{field}} в шаблоне). Список открытый:
+# неизвестный плейсхолдер остаётся как есть и виден — так безопаснее, чем молча подставить пустоту.
+PLACEHOLDER_RE = _re.compile(r"\{\{\s*([a-z0-9_.]+)\s*\}\}")
+
+
+def render_template(body: str, values: dict) -> str:
+    """Подставить значения в шаблон с плейсхолдерами {{field}}. Неизвестные поля остаются в тексте как есть."""
+    def sub(m):
+        return str(values.get(m.group(1), m.group(0)))
+    return PLACEHOLDER_RE.sub(sub, body)
+
+
+def template_fields(body: str) -> list[str]:
+    """Какие плейсхолдеры использует шаблон (для подсказки в справочнике)."""
+    return sorted(set(PLACEHOLDER_RE.findall(body or "")))

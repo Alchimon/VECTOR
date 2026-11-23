@@ -141,7 +141,9 @@ STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_
               # D-67: шаблоны чек-листов ПНР/FAT (разделы и градации настраивает начальник сервисной службы).
               "checklist_templates",
               # D-68: запросы ПНР, FAT-сессии (со снимком чек-листа) и их замечания.
-              "pnr_requests", "fat_sessions", "fat_findings")
+              "pnr_requests", "fat_sessions", "fat_findings",
+              # D-69: формы документов доставки (плейсхолдеры) и выписанные документы.
+              "delivery_doc_templates", "delivery_docs")
 
 
 # Онлайн-команды, которым не нужно сначала отправить очередь (их результат не зависит от неотправленных правок).
