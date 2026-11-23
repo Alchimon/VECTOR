@@ -29,8 +29,9 @@ from vector.core import delivery as dl
 from vector.core.errors import Rejected
 
 from .authz import project_member
-from .db import (checklist_templates, customers, documents, kits, project_closeouts, project_events,
-                 project_risk_acceptances, project_workstreams, projects, sales_opportunities, tasks, tenders, users)
+from .db import (checklist_templates, customers, documents, fat_findings, fat_sessions, kits, pnr_requests,
+                 project_closeouts, project_events, project_risk_acceptances, project_workstreams, projects,
+                 sales_opportunities, tasks, tenders, users)
 from .validation import iso, only_keys, opt_date, opt_str, req_str, req_uuid
 
 
@@ -57,6 +58,39 @@ class DeliveryMixin:
                 "severities": dl.parse_severities(o["severities_json"]), "active": bool(o["active"]),
                 "version": o["version"], "created_by": o["created_by"], "created_at": iso(o["created_at"]),
                 "updated_at": iso(o["updated_at"])}
+
+    @staticmethod
+    def v_pnr(o: dict) -> dict:
+        """Запрос ПНР для клиента: вид, питание, плановая дата, статус."""
+        kinds = dl.PNR_KINDS_RU
+        return {"id": o["id"], "project_id": o["project_id"], "kit_id": o["kit_id"], "kind": o["kind"],
+                "kind_label": kinds[o["kind"]], "title": o["title"], "need_power": bool(o["need_power"]),
+                "planned_on": o["planned_on"].isoformat() if o["planned_on"] else None, "note": o["note"],
+                "status": o["status"], "status_reason": o["status_reason"], "version": o["version"],
+                "created_by": o["created_by"], "created_at": iso(o["created_at"]),
+                "updated_at": iso(o["updated_at"])}
+
+    @staticmethod
+    def v_fat(o: dict) -> dict:
+        """FAT-сессия для клиента: вид, итог, шаблон (снимок разделов и градаций), кто начал/завершил."""
+        return {"id": o["id"], "project_id": o["project_id"], "seq": o["seq"], "kit_id": o["kit_id"],
+                "kind": o["kind"],
+                "template_id": o["template_id"], "template_name": o["template_name"],
+                "sections": dl.parse_sections(o["sections_json"]),
+                "severities": dl.parse_severities(o["severities_json"]),
+                "status": o["status"], "note": o["note"], "version": o["version"],
+                "created_by": o["created_by"], "created_at": iso(o["created_at"]),
+                "finished_by": o["finished_by"], "finished_at": iso(o["finished_at"]) if o["finished_at"] else None}
+
+    @staticmethod
+    def v_finding(o: dict) -> dict:
+        """Замечание FAT: раздел, градация (снимок), блокирует ли отгрузку, статус, закрытие. К проекту, не к
+        человеку (ответ владельца п. 5) — автора хранит журнал аудита, в представлении его нет."""
+        return {"id": o["id"], "fat_id": o["fat_id"], "seq": o["seq"], "section_code": o["section_code"],
+                "severity": o["severity"], "severity_label": o["severity_label"], "blocking": bool(o["blocking"]),
+                "text": o["text"], "status": o["status"], "close_reason": o["close_reason"],
+                "version": o["version"], "created_at": iso(o["created_at"]),
+                "closed_at": iso(o["closed_at"]) if o["closed_at"] else None}
 
     @staticmethod
     def v_workstream(o: dict) -> dict:
@@ -318,6 +352,21 @@ class DeliveryMixin:
         """
         gate = dl.stream_gate(self.wf, kind, to)
         if not gate:
+            return
+        # Шлюз отгрузки (D-68, ответ владельца п. 3): «Отгружена» — только после успешного финального FAT без
+        # открытых блокирующих замечаний; предварительный FAT на шлюз не влияет (п. 4).
+        if "requires_fat" in gate:
+            fats = [dict(r._mapping) for r in ctx.conn.execute(
+                sa.select(fat_sessions).where(fat_sessions.c.project_id == pr["id"],
+                                              fat_sessions.c.kind == "final")
+                .order_by(fat_sessions.c.seq.desc()))]   # «последний финальный» — по монотонному seq в проекте
+            findings = []
+            if fats:
+                findings = [dict(r._mapping) for r in ctx.conn.execute(
+                    sa.select(fat_findings).where(fat_findings.c.fat_id.in_([f["id"] for f in fats])))]
+            why = dl.fat_shipping_gate(fats, findings)
+            if why:
+                raise Rejected("gate_requires_fat", why, {"stream": kind, "to": to})
             return
         rkd = self._stream(ctx, pr["id"], "rkd")
         if rkd and rkd["status"] == gate["requires_rkd"]:
@@ -633,6 +682,193 @@ class DeliveryMixin:
         """checklist.unarchive — вернуть шаблон в работу."""
         return self._checklist_set_active(ctx, p, ev, True)
 
+    # ------------------------------------------------------------ ПНР и FAT (D-68, этап 6 blueprint 52)
+    def _pnr_create(self, ctx, p, ev):
+        """pnr.create {id, project_id, kit_id?, kind, title, need_power?, planned_on?, note?} — запрос пусконаладки
+        (внутренней или на площадке). Создаёт участник проекта; статус ведёт РП (pnr.set_status)."""
+        only_keys(p, {"id", "project_id", "kit_id", "kind", "title", "need_power", "planned_on", "note"})
+        pr = self._require(ctx.conn, projects, req_uuid(p, "project_id"), "Проект")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "pnr.create", ctx.now, project_id=pr["id"])
+        self._project_editable(pr)
+        kind = req_str(p, "kind", 8)
+        if kind not in dl.PNR_KINDS:
+            raise Rejected("bad_value", "Вид запроса: internal (внутренняя наладка) или site (ПНР на площадке).",
+                           {"field": "kind"})
+        kid = p.get("kit_id")
+        if kid is not None:
+            kid = req_uuid({"kit_id": kid}, "kit_id")
+            k = self._get(ctx.conn, kits, kid)
+            if not k or k["project_id"] != pr["id"]:
+                raise Rejected("kit_not_in_project", "Комплект не найден в этом проекте.", {"field": "kit_id"})
+        rid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, pnr_requests, rid)
+        ctx.conn.execute(pnr_requests.insert().values(
+            id=rid, project_id=pr["id"], kit_id=kid, kind=kind, title=req_str(p, "title", 300),
+            need_power=bool(p.get("need_power")), planned_on=opt_date(p, "planned_on"),
+            note=opt_str(p, "note", 2000), status=self.wf["pnr_request"]["initial"], status_reason=None,
+            version=1, created_by=ctx.user_id, created_at=ctx.now, updated_by=ctx.user_id, updated_at=ctx.now))
+        ctx.log("pnr_request", rid, auth, None, 1, {"project_id": pr["id"], "kind": kind})
+        self._project_event(ctx, pr["id"], "pnr_requested", f"Запрос ПНР ({dl.PNR_KINDS_RU[kind].lower()}): "
+                            f"{p['title'][:120]}", auth, object_type="pnr_request", object_id=rid)
+        return {"pnr": self.v_pnr(self._get(ctx.conn, pnr_requests, rid))}
+
+    def _pnr_set_status(self, ctx, p, ev):
+        """pnr.set_status {id, to, reason?} — перевод запроса по контракту workflows; отмена — с причиной."""
+        only_keys(p, {"id", "to", "reason"})
+        o = self._require(ctx.conn, pnr_requests, req_uuid(p, "id"), "Запрос ПНР")
+        pr = self._get(ctx.conn, projects, o["project_id"])
+        auth = self.policy.check(ctx.conn, ctx.user_id, "pnr.set_status", ctx.now, project_id=o["project_id"])
+        self._project_editable(pr)
+        self._check_version(o, ev, self.v_pnr)
+        wf = self.wf["pnr_request"]
+        to = p.get("to")
+        allowed = wf["transitions"].get(o["status"], [])
+        if to not in allowed:
+            raise Rejected("transition_not_allowed",
+                           f"Переход запроса ПНР «{wf['labels_ru'][o['status']]}» → «{to}» не разрешён. Допустимо: "
+                           f"{', '.join(allowed) or 'нет'}.", {"from": o["status"], "to": to})
+        reason = opt_str(p, "reason", 2000)
+        if to in wf.get("reason_required_for", []) and not reason:
+            raise Rejected("reason_required", "Для отмены запроса укажите причину.", {"field": "reason"})
+        n = self._update_versioned(ctx, pnr_requests, o, {"status": to, "status_reason": reason,
+                                                          "updated_by": ctx.user_id, "updated_at": ctx.now})
+        self._project_event(ctx, o["project_id"], "pnr_status",
+                            f"ПНР «{o['title'][:80]}»: «{wf['labels_ru'][o['status']]}» → «{wf['labels_ru'][to]}»"
+                            + (f". Причина: {reason}" if reason else ""), auth,
+                            object_type="pnr_request", object_id=o["id"])
+        ctx.log("pnr_request", o["id"], auth, o["version"], n["version"], {"to": to})
+        return {"pnr": self.v_pnr(n)}
+
+    def _fat_create(self, ctx, p, ev):
+        """fat.create {id, project_id, kit_id?, kind, template_id, note?} — начать испытание по шаблону чек-листа.
+
+        Разделы и градации фиксируются СНИМКОМ шаблона на момент создания: правка шаблона историю испытаний не
+        переписывает. Шаблон обязан быть активным и вида «fat». Предварительный FAT не влияет на показатели и
+        отгрузку (ответ владельца п. 4); финальный решает шлюз отгрузки (п. 3).
+        """
+        only_keys(p, {"id", "project_id", "kit_id", "kind", "template_id", "note"})
+        pr = self._require(ctx.conn, projects, req_uuid(p, "project_id"), "Проект")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "fat.create", ctx.now, project_id=pr["id"])
+        self._project_editable(pr)
+        kind = req_str(p, "kind", 12)
+        if kind not in dl.FAT_KINDS:
+            raise Rejected("bad_value", "Вид испытания: preliminary (предварительный) или final (приёмочный).",
+                           {"field": "kind"})
+        tpl = self._get(ctx.conn, checklist_templates, req_uuid(p, "template_id"))
+        if not tpl or not tpl["active"] or tpl["kind"] != "fat":
+            raise Rejected("template_unusable", "Шаблон не найден, отключён или не вида «FAT».",
+                           {"field": "template_id"})
+        kid = p.get("kit_id")
+        if kid is not None:
+            kid = req_uuid({"kit_id": kid}, "kit_id")
+            k = self._get(ctx.conn, kits, kid)
+            if not k or k["project_id"] != pr["id"]:
+                raise Rejected("kit_not_in_project", "Комплект не найден в этом проекте.", {"field": "kit_id"})
+        fid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, fat_sessions, fid)
+        seq = ctx.conn.execute(sa.select(sa.func.max(fat_sessions.c.seq)).where(
+            fat_sessions.c.project_id == pr["id"])).scalar() or 0
+        ctx.conn.execute(fat_sessions.insert().values(
+            id=fid, project_id=pr["id"], seq=seq + 1, kit_id=kid, kind=kind, template_id=tpl["id"],
+            template_name=tpl["name"], sections_json=tpl["sections_json"],
+            severities_json=tpl["severities_json"], status=self.wf["fat_session"]["initial"],
+            note=opt_str(p, "note", 2000), version=1, created_by=ctx.user_id, created_at=ctx.now,
+            finished_by=None, finished_at=None))
+        kind_label = self.wf["fat_session"]["kinds"][kind]
+        self._project_event(ctx, pr["id"], "fat_started", f"{kind_label} начат (шаблон «{tpl['name']}»)", auth,
+                            object_type="fat_session", object_id=fid)
+        ctx.log("fat_session", fid, auth, None, 1, {"project_id": pr["id"], "kind": kind,
+                                                    "template_id": tpl["id"]})
+        return {"fat": self.v_fat(self._get(ctx.conn, fat_sessions, fid))}
+
+    def _fat_finish(self, ctx, p, ev):
+        """fat.finish {id, result, reason?} — завершить испытание: passed | failed; «неуспешен» — с причиной.
+        Итог неизменяем: повторное испытание — новая сессия (история сохраняется)."""
+        only_keys(p, {"id", "result", "reason"})
+        o = self._require(ctx.conn, fat_sessions, req_uuid(p, "id"), "FAT-сессия")
+        pr = self._get(ctx.conn, projects, o["project_id"])
+        auth = self.policy.check(ctx.conn, ctx.user_id, "fat.finish", ctx.now, project_id=o["project_id"])
+        self._project_editable(pr)
+        self._check_version(o, ev, self.v_fat)
+        wf = self.wf["fat_session"]
+        result = p.get("result")
+        allowed = wf["transitions"].get(o["status"], [])
+        if result not in allowed:
+            raise Rejected("transition_not_allowed",
+                           "Испытание уже завершено (итог неизменяем) — повторное испытание создаётся новой сессией."
+                           if not allowed else f"Итог: {', '.join(allowed)}.", {"status": o["status"]})
+        reason = opt_str(p, "reason", 2000)
+        if result in wf.get("reason_required_for", []) and not reason:
+            raise Rejected("reason_required", "Для итога «неуспешен» укажите причину.", {"field": "reason"})
+        n = self._update_versioned(ctx, fat_sessions, o, {"status": result, "finished_by": ctx.user_id,
+                                                          "finished_at": ctx.now,
+                                                          "note": reason or o["note"]})
+        kind_label = wf["kinds"][o["kind"]]
+        res_label = wf["labels_ru"][result]
+        self._project_event(ctx, o["project_id"], "fat_finished", f"{kind_label}: {res_label.lower()}"
+                            + (f". Причина: {reason}" if reason else ""), auth,
+                            object_type="fat_session", object_id=o["id"],
+                            details={"kind": o["kind"], "result": result})
+        ctx.log("fat_session", o["id"], auth, o["version"], n["version"], {"result": result})
+        self._notify(ctx, self._project_rps(ctx, o["project_id"]), "fat_finished",
+                     f"{kind_label}: {res_label.lower()}",
+                     f"Проект {pr['code']}: испытание завершено" + (f". Причина: {reason[:300]}" if reason else ""),
+                     object_type="fat_session", object_id=o["id"])
+        return {"fat": self.v_fat(n)}
+
+    def _fat_add_finding(self, ctx, p, ev):
+        """fat.add_finding {id, fat_id, section_code, severity, text} — замечание к испытанию.
+
+        Раздел и градация — из СНИМКА шаблона сессии (а не из текущего шаблона); снимок блокирующего признака и
+        подписи градации хранится в замечании. Замечание атрибутируется к проекту, не к человеку (ответ п. 5).
+        Добавлять можно в идущее испытание; к завершённому — нельзя (замечания тогда закрывают, а новое испытание
+        соберёт свои).
+        """
+        only_keys(p, {"id", "fat_id", "section_code", "severity", "text"})
+        fat = self._require(ctx.conn, fat_sessions, req_uuid(p, "fat_id"), "FAT-сессия")
+        pr = self._get(ctx.conn, projects, fat["project_id"])
+        auth = self.policy.check(ctx.conn, ctx.user_id, "fat.add_finding", ctx.now, project_id=fat["project_id"])
+        self._project_editable(pr)
+        if fat["status"] != "in_progress":
+            raise Rejected("fat_finished", "Испытание завершено — замечания добавляются в идущее испытание; "
+                                           "по итогам закрывайте имеющиеся или создайте новое испытание.")
+        sections = {s_["code"] for s_ in dl.parse_sections(fat["sections_json"])}
+        sev_by_code = {s_["code"]: s_ for s_ in dl.parse_severities(fat["severities_json"])}
+        section = req_str(p, "section_code", 40)
+        if section not in sections:
+            raise Rejected("bad_value", "Раздел не из чек-листа этого испытания.", {"field": "section_code"})
+        sev = req_str(p, "severity", 40)
+        if sev not in sev_by_code:
+            raise Rejected("bad_value", "Градация не из словаря этого испытания.", {"field": "severity"})
+        fid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, fat_findings, fid)
+        seq = ctx.conn.execute(sa.select(sa.func.max(fat_findings.c.seq)).where(
+            fat_findings.c.fat_id == fat["id"])).scalar() or 0
+        ctx.conn.execute(fat_findings.insert().values(
+            id=fid, fat_id=fat["id"], seq=seq + 1, section_code=section, severity=sev,
+            severity_label=sev_by_code[sev]["label"], blocking=sev_by_code[sev]["blocking"],
+            text=req_str(p, "text", 2000), status="open", close_reason=None, version=1,
+            created_by=ctx.user_id, created_at=ctx.now, closed_by=None, closed_at=None))
+        ctx.log("fat_finding", fid, auth, None, 1, {"fat_id": fat["id"], "severity": sev,
+                                                    "blocking": sev_by_code[sev]["blocking"]})
+        return {"finding": self.v_finding(self._get(ctx.conn, fat_findings, fid))}
+
+    def _fat_close_finding(self, ctx, p, ev):
+        """fat.close_finding {id, reason} — закрыть замечание с причиной (что сделано). Закрытие не меняет итог
+        сессии; для разблокировки отгрузки после failed нужна новая финальная сессия."""
+        only_keys(p, {"id", "reason"})
+        o = self._require(ctx.conn, fat_findings, req_uuid(p, "id"), "Замечание FAT")
+        fat = self._get(ctx.conn, fat_sessions, o["fat_id"])
+        auth = self.policy.check(ctx.conn, ctx.user_id, "fat.close_finding", ctx.now, project_id=fat["project_id"])
+        self._check_version(o, ev, self.v_finding)
+        if o["status"] != "open":
+            raise Rejected("finding_closed", "Замечание уже закрыто.")
+        reason = req_str(p, "reason", 2000)
+        n = self._update_versioned(ctx, fat_findings, o, {"status": "closed", "close_reason": reason,
+                                                          "closed_by": ctx.user_id, "closed_at": ctx.now})
+        ctx.log("fat_finding", o["id"], auth, o["version"], n["version"], {"closed": True})
+        return {"finding": self.v_finding(n)}
+
     # ------------------------------------------------------------ данные для pull
     def _pull_delivery(self, conn, uid: str, now, readable: list[str]) -> dict:
         """Лиды (по праву opportunity.read) и, по читаемым проектам, — потоки, риск-разрешения, события и снимок
@@ -644,6 +880,21 @@ class DeliveryMixin:
         if self.policy.can(conn, uid, "checklist.read", now):
             out["checklist_templates"] = [self.v_checklist(dict(r._mapping)) for r in conn.execute(
                 sa.select(checklist_templates).order_by(checklist_templates.c.kind, checklist_templates.c.name))]
+        out["pnr_requests"] = []
+        out["fat_sessions"] = []
+        out["fat_findings"] = []
+        if readable:
+            out["pnr_requests"] = [self.v_pnr(dict(r._mapping)) for r in conn.execute(
+                sa.select(pnr_requests).where(pnr_requests.c.project_id.in_(readable))
+                .order_by(pnr_requests.c.created_at, pnr_requests.c.id))]
+            fats = [dict(r._mapping) for r in conn.execute(
+                sa.select(fat_sessions).where(fat_sessions.c.project_id.in_(readable))
+                .order_by(fat_sessions.c.project_id, fat_sessions.c.seq))]
+            out["fat_sessions"] = [self.v_fat(o) for o in fats]
+            if fats:
+                out["fat_findings"] = [self.v_finding(dict(r._mapping)) for r in conn.execute(
+                    sa.select(fat_findings).where(fat_findings.c.fat_id.in_([f["id"] for f in fats]))
+                    .order_by(fat_findings.c.fat_id, fat_findings.c.seq))]
         if self.policy.can(conn, uid, "opportunity.read", now):
             out["opportunities"] = [self.v_opportunity(dict(r._mapping)) for r in conn.execute(
                 sa.select(sales_opportunities).order_by(sales_opportunities.c.created_at, sales_opportunities.c.id))]

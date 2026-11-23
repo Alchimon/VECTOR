@@ -161,6 +161,10 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "risk.accept": self._risk_accept, "risk.resolve": self._risk_resolve,
             "checklist.create": self._checklist_create, "checklist.update": self._checklist_update,
             "checklist.archive": self._checklist_archive, "checklist.unarchive": self._checklist_unarchive,
+            # ПНР и FAT-сессии с замечаниями; шлюз отгрузки — в workstream.set_status (D-68, этап 6 blueprint 52).
+            "pnr.create": self._pnr_create, "pnr.set_status": self._pnr_set_status,
+            "fat.create": self._fat_create, "fat.finish": self._fat_finish,
+            "fat.add_finding": self._fat_add_finding, "fat.close_finding": self._fat_close_finding,
             # Ревизии РКД: проверка, замечания, трансмитталы (rkd.py, этап 3 blueprint 52).
             "docrev.create": self._docrev_create, "docrev.transition": self._docrev_transition,
             "comment.add": self._comment_add, "comment.respond": self._comment_respond,

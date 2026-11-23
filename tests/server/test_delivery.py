@@ -222,8 +222,25 @@ def test_risk_expiry_and_resolve(world):
 
 
 # ====================================================================== архив проекта
-def _finish_all_streams(rp, pid):
-    """Довести все потоки до конечных статусов (РКД — с основанием согласования заказчиком)."""
+def _pass_final_fat(world, rp, pid):
+    """Провести успешный финальный FAT (шлюз отгрузки D-68, ответ владельца п. 3).
+
+    Шаблон чек-листа при необходимости создаёт начальник сервисной службы (head1, A-58) — в чистом мире
+    справочник пуст.
+    """
+    tpl = next((t for t in pull(rp)["checklist_templates"] if t["kind"] == "fat" and t["active"]), None)
+    if tpl is None:
+        head = world.login("head1")
+        tpl = head.ok("checklist.create", {"id": new_id(), "kind": "fat", "name": "FAT (типовой)",
+                                           "sections": [{"code": "all", "title": "Общие проверки"}]})["checklist"]
+    fat = rp.ok("fat.create", {"id": new_id(), "project_id": pid, "kind": "final",
+                               "template_id": tpl["id"]})["fat"]
+    rp.ok("fat.finish", {"id": fat["id"], "result": "passed"}, expected_version=1)
+
+
+def _finish_all_streams(world, rp, pid):
+    """Довести все потоки до конечных статусов (РКД — с основанием согласования заказчиком; перед «Отгружено» —
+    успешный финальный FAT: шлюз D-68)."""
     data = pull(rp)
     approve_rkd(rp, pid, data)
     data = pull(rp)
@@ -235,6 +252,8 @@ def _finish_all_streams(rp, pid):
                        ("site", ["scheduled", "in_progress", "accepted"])):
         ws = streams(data, pid)[kind]
         for to in path:
+            if kind == "shipping" and to == "shipped":
+                _pass_final_fat(world, rp, pid)   # шлюз D-68: отгрузка — после успешного финального FAT
             ws = set_status(rp, ws, to, reason="доработка по замечаниям" if to == "assembling" else None)
             assert ws["status"] == "accepted", (kind, to, ws)
             ws = ws["result"]["workstream"]
@@ -255,7 +274,7 @@ def test_archive_requires_finished_streams_and_no_open_risks(world):
     rp.ok("project.transition", {"id": pid, "to": "rkd_in_progress", "reason": "заказчик вернулся к переговорам"},
           expected_version=2)
     # Действующее риск-разрешение блокирует архив даже при завершённых потоках.
-    _finish_all_streams(rp, pid)
+    _finish_all_streams(world, rp, pid)
     rid = new_id()
     rp.ok("risk.accept", {"id": rid, "project_id": pid, "kind": "procurement_before_rkd_approval",
                           "reason": "контрольный пример", "due_on": "2026-12-31"})

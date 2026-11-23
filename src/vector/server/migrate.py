@@ -117,6 +117,7 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     # ZIP-пакет трансмиттала из неизменяемых версий (этап 3б blueprint 52, D-63).
     35: [db.transmittal_packages],
     36: [db.checklist_templates],
+    37: [db.pnr_requests, db.fat_sessions, db.fat_findings],
 }
 
 
@@ -306,7 +307,8 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               32: _create_tables(ADDED_IN[33]),
                               33: _create_tables(ADDED_IN[34]),
                               34: _create_tables(ADDED_IN[35]),
-                              35: _create_tables(ADDED_IN[36])}
+                              35: _create_tables(ADDED_IN[36]),
+                              36: _create_tables(ADDED_IN[37])}
 
 
 @dataclass

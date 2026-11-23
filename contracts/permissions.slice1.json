@@ -1,5 +1,5 @@
 {
- "contract": "permissions-slice1-v33",
+ "contract": "permissions-slice1-v34",
  "notes": [
   "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
   "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -1770,6 +1770,96 @@
   },
   "checklist.unarchive": {
    "same_as": "checklist.manage"
+  },
+  "pnr.create": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "decision": "D-68",
+   "note": "Запросить ПНР может участник проекта (как добавление позиции/ревизии, A-43); статус ведёт РП."
+  },
+  "pnr.set_status": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-68"
+  },
+  "fat.create": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-68"
+  },
+  "fat.finish": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-68"
+  },
+  "fat.add_finding": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "decision": "D-68",
+   "note": "Замечание к идущему испытанию фиксирует и исполнитель (участник проекта); к проекту, не к человеку."
+  },
+  "fat.close_finding": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-68"
   }
  }
 }

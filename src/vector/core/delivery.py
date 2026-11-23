@@ -173,3 +173,30 @@ def validate_severities(rows: Any) -> list[dict]:
         raise ValueError("Хотя бы одна градация должна быть блокирующей (blocking=true) — иначе финальный FAT "
                          "не сможет остановить отгрузку.")
     return out
+
+
+PNR_KINDS = ("internal", "site")
+PNR_KINDS_RU = {"internal": "Внутренняя наладка", "site": "ПНР на площадке"}
+
+FAT_KINDS = ("preliminary", "final")
+
+
+def fat_shipping_gate(conn_rows: list[dict], findings_rows: list[dict]) -> Optional[str]:
+    """Шлюз отгрузки (ответ владельца п. 3): None — отгрузка разрешена; иначе текст причины блокировки.
+
+    conn_rows — финальные FAT-сессии области (новые первыми); findings_rows — их замечания. Правило: последняя
+    финальная сессия должна быть успешной и без открытых блокирующих замечаний; предварительные сессии на шлюз
+    не влияют (ответ п. 4). Сессия «идёт испытание» — отгрузка заблокирована (испытание не завершено).
+    """
+    if not conn_rows:
+        return "Нет финального (приёмочного) FAT — сначала проведите и завершите приёмочные испытания."
+    last = conn_rows[0]
+    if last["status"] == "in_progress":
+        return "Финальный FAT ещё идёт — завершите испытание с итогом."
+    open_blocking = [f for f in findings_rows if f["fat_id"] == last["id"] and f["status"] == "open" and f["blocking"]]
+    if open_blocking:
+        return (f"Открыты блокирующие замечания финального FAT: {len(open_blocking)} шт. — закройте их "
+                f"(с причиной) или проведите новое испытание.")
+    if last["status"] != "passed":
+        return "Последний финальный FAT неуспешен — устраните замечания и проведите новое приёмочное испытание."
+    return None

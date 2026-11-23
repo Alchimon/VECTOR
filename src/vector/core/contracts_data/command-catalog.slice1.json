@@ -1,5 +1,5 @@
 {
- "contract": "command-catalog-slice1-v36",
+ "contract": "command-catalog-slice1-v37",
  "offline_classes": {
   "offline_full": "Полностью доступно офлайн (чтение локального кэша, локальные черновики без эффекта для других).",
   "queued": "Создаёт локальное изменение в очереди синхронизации. До ответа сервера это НЕ подтверждённое действие; сервер заново проверяет права, состояние и версию.",
@@ -962,6 +962,54 @@
    "risk": "R-56",
    "decision": "D-66",
    "note": "Настраивает начальник сервисной службы (ответ владельца 2026-11-22, D-66); только онлайн — офлайн-очередь дала бы двусмысленность при параллельной правке справочника."
+  },
+  "pnr.create": {
+   "offline": "online_required",
+   "object": "pnr_request",
+   "label_ru": "Запросить ПНР (внутреннюю или на площадке)",
+   "risk": "medium",
+   "decision": "D-68",
+   "note": "Участник проекта. Вид, питание, плановая дата."
+  },
+  "pnr.set_status": {
+   "offline": "online_required",
+   "object": "pnr_request",
+   "label_ru": "Изменить статус запроса ПНР",
+   "risk": "medium",
+   "decision": "D-68",
+   "note": "РП проекта; отмена — с причиной."
+  },
+  "fat.create": {
+   "offline": "online_required",
+   "object": "fat_session",
+   "label_ru": "Начать FAT по шаблону чек-листа",
+   "risk": "high",
+   "decision": "D-68",
+   "note": "Разделы и градации — снимком шаблона; предварительный не влияет на показатели."
+  },
+  "fat.finish": {
+   "offline": "online_required",
+   "object": "fat_session",
+   "label_ru": "Завершить FAT (успешен/неуспешен)",
+   "risk": "high",
+   "decision": "D-68",
+   "note": "Итог неизменяем; «неуспешен» — с причиной. Неуспешный финальный блокирует отгрузку."
+  },
+  "fat.add_finding": {
+   "offline": "online_required",
+   "object": "fat_finding",
+   "label_ru": "Добавить замечание к FAT",
+   "risk": "medium",
+   "decision": "D-68",
+   "note": "К проекту, не к человеку; раздел и градация из снимка чек-листа сессии."
+  },
+  "fat.close_finding": {
+   "offline": "online_required",
+   "object": "fat_finding",
+   "label_ru": "Закрыть замечание FAT (с причиной)",
+   "risk": "medium",
+   "decision": "D-68",
+   "note": "Закрытие не меняет итог сессии; разблокировка — новой финальной сессией."
   }
  },
  "queries": {

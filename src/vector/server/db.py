@@ -71,7 +71,7 @@ from vector.core import money
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
 # v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
 #         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
-SCHEMA_VERSION = 36
+SCHEMA_VERSION = 37
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -2053,6 +2053,57 @@ checklist_templates = sa.Table("checklist_templates", metadata,
     sa.Column("version", sa.Integer, nullable=False),
     sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
     sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
+
+# ПНР и FAT (этап 6 blueprint 52, D-68, ответы владельца D-66). Запрос ПНР — внутренняя наладка или выезд на
+# площадку (need_power — нужно питание). FAT-сессия — испытание по шаблону чек-листа: разделы и градации хранятся
+# СНИМКОМ шаблона на момент создания (правка шаблона историю не переписывает). kind: preliminary (не влияет на
+# показатели и не блокирует) | final (итог решает отгрузку). Замечание — к проекту, не к человеку (ответ п. 5):
+# автора хранит журнал аудита, в записи замечания персональной атрибуции нет.
+pnr_requests = sa.Table("pnr_requests", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id"), index=True),
+    sa.Column("kind", U(16), nullable=False),                    # internal | site
+    sa.Column("title", U(300), nullable=False),
+    sa.Column("need_power", sa.Boolean, nullable=False),
+    sa.Column("planned_on", sa.Date),
+    sa.Column("note", T),
+    sa.Column("status", U(24), nullable=False),
+    sa.Column("status_reason", T),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
+
+fat_sessions = sa.Table("fat_sessions", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("seq", sa.Integer, nullable=False),                  # порядок в проекте (монотонный; «последний FAT»)
+    sa.Column("kit_id", ID, sa.ForeignKey("kits.id"), index=True),
+    sa.Column("kind", U(16), nullable=False),                    # preliminary | final
+    sa.Column("template_id", ID, sa.ForeignKey("checklist_templates.id"), nullable=False),
+    sa.Column("template_name", U(200), nullable=False),
+    sa.Column("sections_json", T, nullable=False),               # снимок разделов шаблона
+    sa.Column("severities_json", T, nullable=False),             # снимок градаций шаблона
+    sa.Column("status", U(16), nullable=False),                  # in_progress | passed | failed
+    sa.Column("note", T),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("finished_by", ID), sa.Column("finished_at", UtcDateTime))
+
+fat_findings = sa.Table("fat_findings", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("fat_id", ID, sa.ForeignKey("fat_sessions.id"), nullable=False, index=True),
+    sa.Column("seq", sa.Integer, nullable=False),
+    sa.Column("section_code", U(40), nullable=False),
+    sa.Column("severity", U(40), nullable=False),
+    sa.Column("severity_label", U(120), nullable=False),         # снимок подписи градации
+    sa.Column("blocking", sa.Boolean, nullable=False),           # снимок признака блокировки
+    sa.Column("text", T, nullable=False),
+    sa.Column("status", U(12), nullable=False),                  # open | closed
+    sa.Column("close_reason", T),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("closed_by", ID), sa.Column("closed_at", UtcDateTime))
 
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),
