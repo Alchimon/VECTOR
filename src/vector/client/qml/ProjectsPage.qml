@@ -140,6 +140,9 @@ MasterDetail {
     // ---------- ПНР, испытания (FAT) и документы доставки (D-70, этап 6 blueprint 52)
     ProjectPnrFat { Layout.fillWidth: true; Layout.topMargin: 6; project: page.sel; visible: page.sel !== null }
 
+    // ---------- аналитика проекта: план/факт потоков, сводка ПНР/FAT (D-71, этап 7 blueprint 52)
+    ProjectAnalytics { Layout.fillWidth: true; Layout.topMargin: 6; project: page.sel; visible: page.sel !== null }
+
     // ---------- официальный итог проекта: только из зафиксированных версий расчётов комплектов (R-12)
     ProjectTotal { Layout.fillWidth: true; Layout.topMargin: 6; projectId: page.selectedId
                    visible: page.sel !== null && page.canSeeTotal }

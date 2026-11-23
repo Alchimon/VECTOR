@@ -700,6 +700,16 @@ class Backend(QObject):
             self._people, self._me.get("user_id") or "", self._assignments, self._me.get("roles") or [],
             self._online and self._session_mode == "online", self.contracts.workflows))
 
+    @Slot(str, int, result="QVariantMap")
+    def projectAnalytics(self, project_id: str, _rev: int = 0):
+        """«Аналитика проекта» (этап 7 blueprint 52, D-71): план/факт потоков, сводка ПНР/FAT/замечаний,
+        документы доставки, факты снимка закрытия. Только чтение из снимка pull (работает и офлайн)."""
+        st = self._stock
+        return qml_safe(delivery_view.project_analytics_block(
+            project_id, st.get("workstreams") or [], st.get("project_events") or [], st.get("fat_sessions") or [],
+            st.get("fat_findings") or [], st.get("pnr_requests") or [], st.get("delivery_docs") or [],
+            st.get("project_closeouts") or [], self._people, self.contracts.workflows))
+
     @Slot(int, result="QVariantMap")
     def opportunitiesView(self, _rev: int = 0):
         """Раздел «Лиды»: воронка возможностей продаж (снимок pull; действия — по праву, проверяет сервер)."""

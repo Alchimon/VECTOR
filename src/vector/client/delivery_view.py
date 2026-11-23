@@ -316,3 +316,68 @@ def pnr_fat_block(project_id: str, pnr: list[dict], fats: list[dict], findings: 
                                             if any(f["fat_id"] == fat["id"] for fat in my_fats)
                                             and f["status"] == "open" and f["blocking"]),
                        "docs": len(my_docs)}}
+
+
+# ------------------------------------------------------------ аналитика проекта (D-71, этап 7 blueprint 52)
+def project_analytics_block(project_id: str, streams: list[dict], events: list[dict], fats: list[dict],
+                            findings: list[dict], pnr: list[dict], docs: list[dict], closeouts: list[dict],
+                            people: dict[str, str], wf: dict) -> dict:
+    """«Аналитика проекта»: план/факт по потокам, сводка испытаний и замечаний, ПНР, документы доставки.
+
+    Считается из снимка pull (чтение и офлайн): фактические даты потоков — из журнала событий (details
+    workstream_status), плановые — из карточек потоков. Снимок закрытия (если проект в архиве) показывает
+    зафиксированные факты с контрольной суммой.
+    """
+    from vector.core.delivery import stream_facts, delivery_facts, STREAM_LABELS_RU
+
+    my_events = [e for e in events if e.get("project_id") == project_id]
+    my_streams = [w for w in streams if w.get("project_id") == project_id]
+    facts = stream_facts(my_events, wf)
+    rows = []
+    for w in sorted(my_streams, key=lambda x: STREAM_ORDER.index(x["kind"]) if x["kind"] in STREAM_ORDER else 99):
+        contract = wf.get("workstream_" + w["kind"], {})
+        labels = contract.get("labels_ru", {})
+        f = facts.get(w["kind"], {})
+        plan_days = None
+        if w.get("planned_start") and w.get("planned_due"):
+            from datetime import date
+            try:
+                y1, m1, d1 = (int(x) for x in w["planned_start"].split("-"))
+                y2, m2, d2 = (int(x) for x in w["planned_due"].split("-"))
+                plan_days = (date(y2, m2, d2) - date(y1, m1, d1)).days
+            except ValueError:
+                plan_days = None
+        fact_days = None
+        if f.get("start") and f.get("finish"):
+            from datetime import date
+            try:
+                y1, m1, d1 = (int(x) for x in f["start"].split("-"))
+                y2, m2, d2 = (int(x) for x in f["finish"].split("-"))
+                fact_days = (date(y2, m2, d2) - date(y1, m1, d1)).days
+            except ValueError:
+                fact_days = None
+        rows.append({"kind": w["kind"], "kind_label": STREAM_LABELS_RU.get(w["kind"], w["kind"]),
+                     "status": w["status"], "status_label": labels.get(w["status"], w["status"]),
+                     "terminal": w["status"] in set(contract.get("terminal", [])),
+                     "planned_start": w.get("planned_start") or "", "planned_due": w.get("planned_due") or "",
+                     "plan_days": plan_days, "actual_start": f.get("start", ""), "actual_finish": f.get("finish", ""),
+                     "fact_days": fact_days})
+    my_fats = [f for f in fats if f.get("project_id") == project_id]
+    fat_ids = {f["id"] for f in my_fats}
+    my_findings = [f for f in findings if f.get("fat_id") in fat_ids]
+    my_pnr = [r for r in pnr if r.get("project_id") == project_id]
+    my_docs = [d for d in docs if d.get("project_id") == project_id]
+    agg = delivery_facts(my_pnr, my_fats, my_findings, my_docs)
+    closeout = next((c for c in closeouts if c.get("project_id") == project_id), None)
+    closeout_facts = None
+    if closeout:
+        import json as _json
+        snap = _json.loads(closeout["snapshot"]) if isinstance(closeout.get("snapshot"), str) \
+            else closeout.get("snapshot")
+        closeout_facts = {"sha256": closeout["content_sha256"],
+                          "created_label": _fmt(closeout.get("created_at")),
+                          "closed_by_name": people.get(closeout.get("closed_by") or "", ""),
+                          "facts": (snap or {}).get("facts") or {}}
+    return {"streams": rows, "facts": agg,
+            "done_streams": sum(1 for r in rows if r["terminal"]),
+            "total_streams": len(rows), "closeout": closeout_facts}

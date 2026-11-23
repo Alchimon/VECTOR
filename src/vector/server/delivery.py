@@ -20,6 +20,7 @@ risk.* пользуются общей инфраструктурой серви
 """
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any, Optional
 
@@ -134,6 +135,7 @@ class DeliveryMixin:
         """Событие проекта для ленты в карточке: вид, краткий текст, кто и когда."""
         return {"id": o["id"], "project_id": o["project_id"], "seq": o["seq"], "kind": o["kind"],
                 "object_type": o["object_type"], "object_id": o["object_id"], "summary": o["summary"],
+                "details": json.loads(o["details_json"]) if o.get("details_json") else {},
                 "actor_id": o["actor_id"], "at": iso(o["at"])}
 
     # ------------------------------------------------------------ общие проверки и журнал проекта
@@ -570,7 +572,26 @@ class DeliveryMixin:
             "documents": ctx.conn.execute(sa.select(sa.func.count()).select_from(documents).where(documents.c.project_id == pr["id"])).scalar_one(),
             "tasks": ctx.conn.execute(sa.select(sa.func.count()).select_from(tasks).where(tasks.c.project_id == pr["id"])).scalar_one(),
         }
-        content = dl.closeout_content(pr, streams, risks, counts, dl.STREAM_LABELS_RU)
+        events = [dict(r._mapping) for r in ctx.conn.execute(
+            sa.select(project_events).where(project_events.c.project_id == pr["id"])
+            .order_by(project_events.c.seq))]
+        for e in events:   # details_json → details (как в pull) для stream_facts
+            e["details"] = json.loads(e["details_json"]) if e.get("details_json") else {}
+            e["at"] = iso(e["at"])
+        fats = [dict(r._mapping) for r in ctx.conn.execute(
+            sa.select(fat_sessions).where(fat_sessions.c.project_id == pr["id"]))]
+        findings = []
+        if fats:
+            findings = [dict(r._mapping) for r in ctx.conn.execute(
+                sa.select(fat_findings).where(fat_findings.c.fat_id.in_([f["id"] for f in fats])))]
+        facts = {"streams": dl.stream_facts(events, self.wf),
+                 **dl.delivery_facts(
+                     [dict(r._mapping) for r in ctx.conn.execute(
+                         sa.select(pnr_requests).where(pnr_requests.c.project_id == pr["id"]))],
+                     fats, findings,
+                     [dict(r._mapping) for r in ctx.conn.execute(
+                         sa.select(delivery_docs).where(delivery_docs.c.project_id == pr["id"]))])}
+        content = dl.closeout_content(pr, streams, risks, counts, dl.STREAM_LABELS_RU, facts)
         cid = str(uuid.uuid4())
         ctx.conn.execute(project_closeouts.insert().values(
             id=cid, project_id=pr["id"], snapshot_json=dl.canon(content),

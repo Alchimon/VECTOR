@@ -292,6 +292,12 @@ def test_archive_requires_finished_streams_and_no_open_risks(world):
     assert len(co) == 1
     import hashlib
     assert hashlib.sha256(co[0]["snapshot"].encode()).hexdigest() == co[0]["content_sha256"]
+    # D-71: снимок закрытия фиксирует агрегированные факты (сроки потоков, ПНР/FAT, документы доставки).
+    import json
+    snap = json.loads(co[0]["snapshot"])
+    assert "facts" in snap and snap["facts"]["fat"]["passed"] >= 1       # _pass_final_fat прошёл перед отгрузкой
+    assert snap["facts"]["delivery_docs"] == 0
+    assert "contract" in snap["facts"]["streams"]                         # фактические даты потоков из журнала
     # Архив — только чтение: ни потоки, ни комплекты не меняются.
     ws = streams(data, pid)["rkd"]
     assert rp.cmd("workstream.set_status", {"id": ws["id"], "to": "in_design"},

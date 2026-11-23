@@ -88,7 +88,7 @@ def canon(obj: Any) -> str:
 
 
 def closeout_content(project: dict, streams: list[dict], risks: list[dict], counts: dict[str, int],
-                     labels: dict[str, str]) -> dict:
+                     labels: dict[str, str], facts: Optional[dict] = None) -> dict:
     """Содержимое снимка закрытия проекта (перед записью в project_closeouts).
 
     Снимок — только факты на момент архива: сам проект, итоговые статусы потоков, все риск-разрешения с их
@@ -102,7 +102,55 @@ def closeout_content(project: dict, streams: list[dict], risks: list[dict], coun
                    "due_on": str(r["due_on"]), "resolved_by": r["resolved_by"],
                    "resolution_reason": r["resolution_reason"]} for r in sorted(risks, key=lambda r: r["created_at"])],
         "counts": dict(sorted(counts.items())),
+        # D-71: агрегированные факты на момент архива (сроки потоков, ПНР/FAT, замечания, документы доставки).
+        **({"facts": facts} if facts else {}),
     }
+
+
+def stream_facts(events: list[dict], wf: dict) -> dict:
+    """Фактические даты потоков из журнала событий проекта (этап 7 blueprint 52, D-71).
+
+    Для каждого потока: actual_start — первый выход из начального статуса, actual_finish — вход в конечный
+    статус (даты ISO из событий workstream_status; в details события — kind/from/to). События сортируются по
+    seq (порядок в проекте), при равных метках времени важен именно seq.
+    """
+    out: dict[str, dict] = {}
+    for e in sorted(events, key=lambda x: x.get("seq") or 0):
+        if e.get("kind") != "workstream_status":
+            continue
+        det = e.get("details") or {}
+        kind, to = det.get("kind"), det.get("to")
+        if not kind or not to:
+            continue
+        contract = wf.get("workstream_" + kind, {})
+        f = out.setdefault(kind, {})
+        at = (e.get("at") or "")[:10]
+        if not at:
+            continue
+        if "start" not in f and to != contract.get("initial"):
+            f["start"] = at                       # первый уход из начального статуса
+        if to in set(contract.get("terminal", [])):
+            f["finish"] = at                      # вход в конечный статус (последний, если терминалов много)
+    return out
+
+
+def delivery_facts(pnr: list[dict], fats: list[dict], findings: list[dict], docs: list[dict]) -> dict:
+    """Сводные факты этапа 6 для снимка закрытия и аналитики: ПНР, испытания, замечания, документы доставки."""
+    fat_by_id = {f["id"]: f for f in fats}
+    my_findings = [f for f in findings if f.get("fat_id") in fat_by_id]
+    return {"pnr": {"total": len(pnr),
+                    "done": sum(1 for r in pnr if r.get("status") == "done"),
+                    "cancelled": sum(1 for r in pnr if r.get("status") == "cancelled"),
+                    "site": sum(1 for r in pnr if r.get("kind") == "site")},
+            "fat": {"total": len(fats),
+                    "preliminary": sum(1 for f in fats if f.get("kind") == "preliminary"),
+                    "final": sum(1 for f in fats if f.get("kind") == "final"),
+                    "passed": sum(1 for f in fats if f.get("status") == "passed"),
+                    "failed": sum(1 for f in fats if f.get("status") == "failed")},
+            "findings": {"total": len(my_findings),
+                         "blocking": sum(1 for f in my_findings if f.get("blocking")),
+                         "closed": sum(1 for f in my_findings if f.get("status") == "closed")},
+            "delivery_docs": len(docs)}
 
 
 def closeout_sha256(content: dict) -> str:
