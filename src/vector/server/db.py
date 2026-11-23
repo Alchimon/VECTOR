@@ -71,7 +71,7 @@ from vector.core import money
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
 # v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
 #         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
-SCHEMA_VERSION = 35
+SCHEMA_VERSION = 36
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -2038,6 +2038,21 @@ transmittal_packages = sa.Table("transmittal_packages", metadata,
     sa.Column("package_name", U(255), nullable=False),
     sa.Column("size_bytes", sa.BigInteger, nullable=False),
     sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False))
+
+# Шаблоны чек-листов ПНР/FAT (этап 6 blueprint 52, D-66/D-67): набор разделов и градаций замечаний у каждого
+# заказчика/службы свой — поэтому не зашит, а настраивается начальником сервисной службы (ответ владельца п. 1–2).
+# sections: [{code, title}]; severities: [{code, label, blocking}] — blocking=true блокирует отгрузку до закрытия.
+# Правки версионируются; созданные по шаблону чек-листы хранят СНИМОК (правка шаблона историю не переписывает).
+checklist_templates = sa.Table("checklist_templates", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("kind", U(16), nullable=False),                    # pnr | fat
+    sa.Column("name", U(200), nullable=False),
+    sa.Column("sections_json", T, nullable=False),
+    sa.Column("severities_json", T, nullable=False),
+    sa.Column("active", sa.Boolean, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
 
 operations = sa.Table("operations", metadata,
     sa.Column("operation_id", ID, primary_key=True),

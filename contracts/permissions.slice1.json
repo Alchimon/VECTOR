@@ -1,5 +1,5 @@
 {
- "contract": "permissions-slice1-v32",
+ "contract": "permissions-slice1-v33",
  "notes": [
   "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
   "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -1737,6 +1737,39 @@
   },
   "overtime.period_close": {
    "same_as": "schedule.manage"
+  },
+  "checklist.manage": {
+   "any_of": [
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-66",
+   "assumption": "A-58",
+   "note": "Шаблоны чек-листов ПНР/FAT настраивает начальник сервисной службы (ответ владельца 2026-11-22, п. 2); временное правило: глобальная роль «руководитель отдела» — в оргструктуре это начальник сервисного отдела."
+  },
+  "checklist.read": {
+   "any_of": [
+    {
+     "authenticated": true
+    }
+   ],
+   "decision": "D-66",
+   "note": "Шаблоны читают все: по ним строятся чек-листы ПНР и FAT."
+  },
+  "checklist.create": {
+   "same_as": "checklist.manage"
+  },
+  "checklist.update": {
+   "same_as": "checklist.manage"
+  },
+  "checklist.archive": {
+   "same_as": "checklist.manage"
+  },
+  "checklist.unarchive": {
+   "same_as": "checklist.manage"
   }
  }
 }

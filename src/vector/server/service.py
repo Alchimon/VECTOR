@@ -159,6 +159,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "project.transition": self._project_transition,
             "workstream.update": self._workstream_update, "workstream.set_status": self._workstream_set_status,
             "risk.accept": self._risk_accept, "risk.resolve": self._risk_resolve,
+            "checklist.create": self._checklist_create, "checklist.update": self._checklist_update,
+            "checklist.archive": self._checklist_archive, "checklist.unarchive": self._checklist_unarchive,
             # Ревизии РКД: проверка, замечания, трансмитталы (rkd.py, этап 3 blueprint 52).
             "docrev.create": self._docrev_create, "docrev.transition": self._docrev_transition,
             "comment.add": self._comment_add, "comment.respond": self._comment_respond,

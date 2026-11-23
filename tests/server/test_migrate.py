@@ -1384,7 +1384,8 @@ def test_v34_to_v35_adds_transmittal_packages(backend, tmp_path, clock, keys):
     before = counts(eng, mg.tables_of_version(34))
     rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
     assert (rep.from_version, rep.to_version) == (34, db.SCHEMA_VERSION)
-    assert rep.created_tables == ["transmittal_packages"]
+    # Миграция идёт до текущей версии и может создать и более поздние таблицы (v36+) — проверяем свою.
+    assert "transmittal_packages" in rep.created_tables
     after = counts(eng, mg.tables_of_version(34))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
 
@@ -1409,5 +1410,25 @@ def test_v34_to_v35_adds_transmittal_packages(backend, tmp_path, clock, keys):
                                                 created_by=uid, created_at=now))
     bad(db.transmittal_packages.update().values(package_name="x.zip"))
     bad(db.transmittal_packages.delete())
+    assert db.check_schema(eng) == db.SCHEMA_VERSION
+    assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []
+
+
+def test_v35_to_v36_adds_checklist_templates(backend, tmp_path, clock, keys):
+    """v35 → v36 (D-66/D-67, этап 6 blueprint 52): шаблоны чек-листов ПНР/FAT — настраиваемые разделы и градации
+    замечаний (правки версионируются). Данные v35 не меняются."""
+    eng = make_v3(backend, tmp_path, clock, version=35)
+    before = counts(eng, mg.tables_of_version(35))
+    rep = mg.migrate(eng, tmp_path / "bk", keys, now=clock.now())
+    assert (rep.from_version, rep.to_version) == (35, db.SCHEMA_VERSION)
+    assert "checklist_templates" in rep.created_tables
+    after = counts(eng, mg.tables_of_version(35))
+    assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
+    now = clock.now()
+    with eng.begin() as c:
+        c.execute(db.checklist_templates.insert().values(
+            id=new_id(), kind="fat", name="FAT", sections_json='[{"code":"a","title":"А"}]',
+            severities_json='[{"code":"b","label":"Блокирующее","blocking":true}]',
+            active=True, version=1, created_by=new_id(), created_at=now, updated_by=new_id(), updated_at=now))
     assert db.check_schema(eng) == db.SCHEMA_VERSION
     assert mg.migrate(eng, tmp_path / "bk", keys, now=clock.now()).created_tables == []

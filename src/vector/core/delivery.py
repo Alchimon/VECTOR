@@ -108,3 +108,68 @@ def closeout_content(project: dict, streams: list[dict], risks: list[dict], coun
 def closeout_sha256(content: dict) -> str:
     """SHA-256 канонического содержимого снимка закрытия — контрольная сумма хранится рядом со снимком."""
     return hashlib.sha256(canon(content).encode("utf-8")).hexdigest()
+
+
+# ------------------------------------------------------------ чек-листы ПНР/FAT (D-66/D-67, этап 6 blueprint 52)
+
+CHECKLIST_KINDS = ("pnr", "fat")
+CHECKLIST_KINDS_RU = {"pnr": "ПНР (пусконаладочные работы)", "fat": "FAT (приёмочные испытания)"}
+
+# Градации замечаний по умолчанию, если шаблон не задаёт свои (blocking=true блокирует отгрузку до закрытия).
+DEFAULT_SEVERITIES = [{"code": "minor", "label": "Несущественное", "blocking": False},
+                      {"code": "major", "label": "Существенное", "blocking": False},
+                      {"code": "critical", "label": "Блокирующее", "blocking": True}]
+
+
+def parse_sections(raw: Any) -> list[dict]:
+    """Разделы чек-листа из JSON/списка: [{code, title}] в заданном порядке."""
+    rows = json.loads(raw) if isinstance(raw, str) else (raw or [])
+    return [{"code": str(r["code"]), "title": str(r["title"])} for r in rows]
+
+
+def parse_severities(raw: Any) -> list[dict]:
+    """Градации замечаний из JSON/списка; пустой ввод — градации по умолчанию."""
+    rows = json.loads(raw) if isinstance(raw, str) else (raw or [])
+    if not rows:
+        return [dict(x) for x in DEFAULT_SEVERITIES]
+    return [{"code": str(r["code"]), "label": str(r["label"]), "blocking": bool(r.get("blocking"))}
+            for r in rows]
+
+
+def validate_sections(rows: Any) -> list[dict]:
+    """Проверить разделы: непустой список {code, title}, коды уникальны (ошибка — ValueError с русским текстом)."""
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Разделы чек-листа — непустой список {code, title}.")
+    out, seen = [], set()
+    for r in rows:
+        code, title = str((r or {}).get("code") or "").strip(), str((r or {}).get("title") or "").strip()
+        if not code or not title or len(code) > 40 or len(title) > 200:
+            raise ValueError("У каждого раздела — код (до 40 символов) и название (до 200).")
+        if code in seen:
+            raise ValueError(f"Код раздела «{code}» повторяется.")
+        seen.add(code)
+        out.append({"code": code, "title": title})
+    return out
+
+
+def validate_severities(rows: Any) -> list[dict]:
+    """Проверить градации замечаний: список {code, label, blocking}; пустой ввод — None (шаблон возьмёт умолчание)."""
+    if rows is None:
+        return None
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("Градации замечаний — непустой список {code, label, blocking} или отсутствуют.")
+    out, seen, has_blocking = [], set(), False
+    for r in rows:
+        code, label = str((r or {}).get("code") or "").strip(), str((r or {}).get("label") or "").strip()
+        if not code or not label or len(code) > 40 or len(label) > 120:
+            raise ValueError("У каждой градации — код (до 40 символов) и название (до 120).")
+        if code in seen:
+            raise ValueError(f"Код градации «{code}» повторяется.")
+        seen.add(code)
+        blocking = bool(r.get("blocking"))
+        has_blocking = has_blocking or blocking
+        out.append({"code": code, "label": label, "blocking": blocking})
+    if not has_blocking:
+        raise ValueError("Хотя бы одна градация должна быть блокирующей (blocking=true) — иначе финальный FAT "
+                         "не сможет остановить отгрузку.")
+    return out

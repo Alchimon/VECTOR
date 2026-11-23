@@ -29,8 +29,8 @@ from vector.core import delivery as dl
 from vector.core.errors import Rejected
 
 from .authz import project_member
-from .db import (customers, documents, kits, project_closeouts, project_events, project_risk_acceptances,
-                 project_workstreams, projects, sales_opportunities, tasks, tenders, users)
+from .db import (checklist_templates, customers, documents, kits, project_closeouts, project_events,
+                 project_risk_acceptances, project_workstreams, projects, sales_opportunities, tasks, tenders, users)
 from .validation import iso, only_keys, opt_date, opt_str, req_str, req_uuid
 
 
@@ -47,6 +47,15 @@ class DeliveryMixin:
                 "expected_on": o["expected_on"].isoformat() if o["expected_on"] else None, "note": o["note"],
                 "status": o["status"], "status_reason": o["status_reason"],
                 "converted_tender_id": o["converted_tender_id"], "version": o["version"],
+                "updated_at": iso(o["updated_at"])}
+
+    @staticmethod
+    def v_checklist(o: dict) -> dict:
+        """Шаблон чек-листа для клиента: разделы и градации замечаний распакованы из JSON."""
+        return {"id": o["id"], "kind": o["kind"], "kind_label": dl.CHECKLIST_KINDS_RU[o["kind"]],
+                "name": o["name"], "sections": dl.parse_sections(o["sections_json"]),
+                "severities": dl.parse_severities(o["severities_json"]), "active": bool(o["active"]),
+                "version": o["version"], "created_by": o["created_by"], "created_at": iso(o["created_at"]),
                 "updated_at": iso(o["updated_at"])}
 
     @staticmethod
@@ -545,6 +554,85 @@ class DeliveryMixin:
                                self._get(ctx.conn, project_closeouts, closeout["id"])["content_sha256"]}
         return out
 
+    # ------------------------------------------------------------ шаблоны чек-листов ПНР/FAT (D-66/D-67)
+    def _checklist_fields(self, p: dict, existing: Optional[dict]) -> dict:
+        """Проверенные поля шаблона чек-листа (создание — все обязательные; правка — только переданные)."""
+        out: dict[str, Any] = {}
+        if existing is None or "kind" in p:
+            kind = req_str(p, "kind", 8)
+            if kind not in dl.CHECKLIST_KINDS:
+                raise Rejected("bad_value", "Вид чек-листа — pnr (пусконаладка) или fat (приёмочные испытания).",
+                               {"field": "kind"})
+            out["kind"] = kind
+        if existing is None or "name" in p:
+            out["name"] = req_str(p, "name", 200)
+        if existing is None or "sections" in p:
+            try:
+                sections = dl.validate_sections(p.get("sections"))
+            except ValueError as e:
+                raise Rejected("bad_checklist", str(e), {"field": "sections"})
+            out["sections_json"] = dl.canon(sections)
+        if existing is None or "severities" in p:
+            try:
+                sev = dl.validate_severities(p.get("severities"))
+            except ValueError as e:
+                raise Rejected("bad_checklist", str(e), {"field": "severities"})
+            # None (не заданы) → градации по умолчанию снимком в шаблоне: дальше везде работаем с явным списком.
+            out["severities_json"] = dl.canon(sev if sev is not None else dl.DEFAULT_SEVERITIES)
+        return out
+
+    def _checklist_create(self, ctx, p, ev):
+        """checklist.create {id, kind, name, sections, severities?} — новый шаблон чек-листа ПНР/FAT. Настраивает
+        начальник сервисной службы (ответ владельца D-66 п. 2; право checklist.manage — руководитель отдела, A-58)."""
+        only_keys(p, {"id", "kind", "name", "sections", "severities"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "checklist.manage", ctx.now)
+        fields = self._checklist_fields(p, existing=None)
+        tid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, checklist_templates, tid)
+        ctx.conn.execute(checklist_templates.insert().values(
+            id=tid, **fields, active=True, version=1, created_by=ctx.user_id, created_at=ctx.now,
+            updated_by=ctx.user_id, updated_at=ctx.now))
+        o = self._get(ctx.conn, checklist_templates, tid)
+        ctx.log("checklist_template", tid, auth, None, 1, {"kind": fields["kind"], "name": fields["name"]})
+        return {"checklist": self.v_checklist(o)}
+
+    def _checklist_update(self, ctx, p, ev):
+        """checklist.update {id, name?, sections?, severities?} — правка шаблона. Чек-листы, уже созданные по шаблону,
+        хранят снимок разделов/градаций — правка шаблона историю испытаний не переписывает."""
+        only_keys(p, {"id", "name", "sections", "severities"})
+        o = self._require(ctx.conn, checklist_templates, req_uuid(p, "id"), "Шаблон чек-листа")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "checklist.manage", ctx.now)
+        fields = self._checklist_fields(p, existing=o)
+        fields = {k: v for k, v in fields.items() if v != o[k]}
+        if not fields:
+            raise Rejected("no_changes", "Нет изменений.")
+        self._check_version(o, ev, self.v_checklist)
+        n = self._update_versioned(ctx, checklist_templates, o, {**fields, "updated_by": ctx.user_id,
+                                                                 "updated_at": ctx.now})
+        ctx.log("checklist_template", o["id"], auth, o["version"], n["version"], {"changed": sorted(fields)})
+        return {"checklist": self.v_checklist(n)}
+
+    def _checklist_set_active(self, ctx, p, ev, active: bool):
+        """checklist.archive/unarchive {id} — отключить/вернуть шаблон (новые чек-листы создаются по активным)."""
+        only_keys(p, {"id"})
+        o = self._require(ctx.conn, checklist_templates, req_uuid(p, "id"), "Шаблон чек-листа")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "checklist.manage", ctx.now)
+        if bool(o["active"]) == active:
+            raise Rejected("no_changes", "Шаблон уже в этом состоянии.")
+        self._check_version(o, ev, self.v_checklist)
+        n = self._update_versioned(ctx, checklist_templates, o, {"active": active, "updated_by": ctx.user_id,
+                                                                 "updated_at": ctx.now})
+        ctx.log("checklist_template", o["id"], auth, o["version"], n["version"], {"active": active})
+        return {"checklist": self.v_checklist(n)}
+
+    def _checklist_archive(self, ctx, p, ev):
+        """checklist.archive — отключить шаблон (действующие чек-листы по нему не меняются)."""
+        return self._checklist_set_active(ctx, p, ev, False)
+
+    def _checklist_unarchive(self, ctx, p, ev):
+        """checklist.unarchive — вернуть шаблон в работу."""
+        return self._checklist_set_active(ctx, p, ev, True)
+
     # ------------------------------------------------------------ данные для pull
     def _pull_delivery(self, conn, uid: str, now, readable: list[str]) -> dict:
         """Лиды (по праву opportunity.read) и, по читаемым проектам, — потоки, риск-разрешения, события и снимок
@@ -552,7 +640,10 @@ class DeliveryMixin:
         """
         today = now.date()
         out: dict[str, Any] = {"opportunities": [], "workstreams": [], "project_risks": [], "project_events": [],
-                               "project_closeouts": []}
+                               "project_closeouts": [], "checklist_templates": []}
+        if self.policy.can(conn, uid, "checklist.read", now):
+            out["checklist_templates"] = [self.v_checklist(dict(r._mapping)) for r in conn.execute(
+                sa.select(checklist_templates).order_by(checklist_templates.c.kind, checklist_templates.c.name))]
         if self.policy.can(conn, uid, "opportunity.read", now):
             out["opportunities"] = [self.v_opportunity(dict(r._mapping)) for r in conn.execute(
                 sa.select(sales_opportunities).order_by(sales_opportunities.c.created_at, sales_opportunities.c.id))]

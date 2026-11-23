@@ -137,7 +137,9 @@ STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_
               "document_profiles", "document_revision_issues",
               # D-65: лиды и потоки проекта — воронка возможностей, шесть потоков со шлюзами, риск-разрешения,
               # журнал событий проекта и снимок закрытия (меняются только онлайн-командами).
-              "opportunities", "workstreams", "project_risks", "project_events", "project_closeouts")
+              "opportunities", "workstreams", "project_risks", "project_events", "project_closeouts",
+              # D-67: шаблоны чек-листов ПНР/FAT (разделы и градации настраивает начальник сервисной службы).
+              "checklist_templates")
 
 
 # Онлайн-команды, которым не нужно сначала отправить очередь (их результат не зависит от неотправленных правок).
