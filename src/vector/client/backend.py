@@ -688,6 +688,18 @@ class Backend(QObject):
             self._people, self._me.get("user_id") or "", self._assignments, self._me.get("roles") or [],
             self._online and self._session_mode == "online", self.contracts.workflows))
 
+    @Slot(str, int, result="QVariantMap")
+    def projectPnrFat(self, project_id: str, _rev: int = 0):
+        """«ПНР, испытания и доставка» проекта (этап 6 blueprint 52): запросы ПНР, FAT-сессии с замечаниями
+        (снимок чек-листа), подсказка шлюза отгрузки, документы доставки по настраиваемым формам."""
+        st = self._stock
+        return qml_safe(delivery_view.pnr_fat_block(
+            project_id, st.get("pnr_requests") or [], st.get("fat_sessions") or [], st.get("fat_findings") or [],
+            st.get("checklist_templates") or [], st.get("delivery_doc_templates") or [],
+            st.get("delivery_docs") or [], self._data.get("kit", []),
+            self._people, self._me.get("user_id") or "", self._assignments, self._me.get("roles") or [],
+            self._online and self._session_mode == "online", self.contracts.workflows))
+
     @Slot(int, result="QVariantMap")
     def opportunitiesView(self, _rev: int = 0):
         """Раздел «Лиды»: воронка возможностей продаж (снимок pull; действия — по праву, проверяет сервер)."""

@@ -171,3 +171,148 @@ def opportunities_view(opportunities: list[dict], people: dict[str, str], me_id:
                        "new": sum(1 for r in rows if r["status"] == "new"),
                        "qualified": sum(1 for r in rows if r["status"] == "qualified")},
             "can_manage": can}
+
+
+# ------------------------------------------------------------ ПНР, FAT, документы доставки (D-70, этап 6)
+_PNR_TONE = {"requested": "info", "scheduled": "primary", "in_progress": "warning", "done": "success",
+             "cancelled": "neutral"}
+_FAT_TONE = {"in_progress": "warning", "passed": "success", "failed": "danger"}
+_FAT_KIND_LABEL = {"preliminary": "Предварительный FAT", "final": "Финальный (приёмочный) FAT"}
+_FINDING_TONE = {"open": "danger", "closed": "success"}
+_FINDING_STATUS = {"open": "Открыто", "closed": "Закрыто"}
+
+
+def _pnr_row(r: dict, wf: dict, roles: set[str], online: bool, kit_codes: dict[str, str]) -> dict:
+    """Строка запроса ПНР: вид, питание, плановая дата, статус; статус ведёт РП (кнопки — подсказка)."""
+    contract = wf.get("pnr_request", {})
+    labels = contract.get("labels_ru", {})
+    reason_req = set(contract.get("reason_required_for", []))
+    actions = []
+    if online and _can_risk(roles):
+        for to in contract.get("transitions", {}).get(r["status"], []):
+            actions.append({"to": to, "label": labels.get(to, to), "reason": to in reason_req,
+                            "danger": to == "cancelled"})
+    return {"id": r["id"], "kind": r["kind"], "kind_label": r["kind_label"], "title": r["title"],
+            "need_power": bool(r["need_power"]), "planned_on": r.get("planned_on") or "",
+            "kit_label": kit_codes.get(r.get("kit_id") or "", "Весь проект"),
+            "status": r["status"], "status_label": labels.get(r["status"], r["status"]),
+            "status_reason": r.get("status_reason") or "", "tone": _PNR_TONE.get(r["status"], "neutral"),
+            "terminal": r["status"] in set(contract.get("terminal", [])), "version": r["version"],
+            "created_label": _fmt(r.get("created_at")), "actions": actions}
+
+
+def _finding_row(f: dict, roles: set[str], online: bool, fat_status: str) -> dict:
+    """Строка замечания FAT: раздел, градация (снимок), блокировка, статус; закрытие — РП, с причиной."""
+    actions = []
+    if online and _can_risk(roles) and f["status"] == "open":
+        actions.append({"label": "Закрыть замечание"})
+    return {"id": f["id"], "fat_id": f["fat_id"], "seq": f["seq"], "section_code": f["section_code"],
+            "severity": f["severity"], "severity_label": f["severity_label"], "blocking": bool(f["blocking"]),
+            "text": f["text"], "status": f["status"], "status_label": _FINDING_STATUS[f["status"]],
+            "tone": _FINDING_TONE[f["status"]] if f["status"] == "closed" else ("danger" if f["blocking"] else "warning"),
+            "close_reason": f.get("close_reason") or "", "version": f["version"],
+            "created_label": _fmt(f.get("created_at")), "closed_label": _fmt(f.get("closed_at") or ""),
+            "can_close": bool(actions)}
+
+
+def _fat_row(fat: dict, findings: list[dict], templates: dict[str, dict], wf: dict, roles: set[str],
+             online: bool, kit_codes: dict[str, str], people: dict[str, str]) -> dict:
+    """Строка FAT-сессии: вид, итог, шаблон (снимок), замечания; действия — итог и добавление замечания."""
+    contract = wf.get("fat_session", {})
+    labels = contract.get("labels_ru", {})
+    reason_req = set(contract.get("reason_required_for", []))
+    my_findings = [f for f in findings if f.get("fat_id") == fat["id"]]
+    open_blocking = sum(1 for f in my_findings if f["status"] == "open" and f["blocking"])
+    actions = []
+    if online and _can_risk(roles) and fat["status"] == "in_progress":
+        for to in contract.get("transitions", {}).get(fat["status"], []):
+            actions.append({"to": to, "label": labels.get(to, to), "reason": to in reason_req,
+                            "danger": to == "failed"})
+    can_add = online and fat["status"] == "in_progress" and bool(roles & {"gip", "rp", "participant"})
+    sections = fat.get("sections") or []
+    severities = fat.get("severities") or []
+    return {"id": fat["id"], "seq": fat.get("seq"), "kind": fat["kind"],
+            "kind_label": contract.get("kinds", {}).get(fat["kind"], _FAT_KIND_LABEL.get(fat["kind"], fat["kind"])),
+            "template_name": fat["template_name"],
+            "kit_label": kit_codes.get(fat.get("kit_id") or "", "Весь проект"),
+            "status": fat["status"], "status_label": labels.get(fat["status"], fat["status"]),
+            "tone": _FAT_TONE.get(fat["status"], "neutral"), "version": fat["version"],
+            "note": fat.get("note") or "", "created_label": _fmt(fat.get("created_at")),
+            "finished_label": _fmt(fat.get("finished_at") or ""),
+            "finished_by_name": people.get(fat.get("finished_by") or "", ""),
+            "findings": [_finding_row(f, roles, online, fat["status"])
+                         for f in sorted(my_findings, key=lambda x: x["seq"])],
+            "counts": {"findings": len(my_findings),
+                       "open": sum(1 for f in my_findings if f["status"] == "open"),
+                       "open_blocking": open_blocking},
+            "section_options": [{"id": s["code"], "label": s["title"]} for s in sections],
+            "severity_options": [{"id": s["code"], "label": s["label"] + (" — блокирует отгрузку" if s["blocking"] else "")}
+                                 for s in severities],
+            "actions": actions, "can_add_finding": can_add}
+
+
+def _delivery_doc_row(d: dict, roles: set[str], online: bool, kit_codes: dict[str, str]) -> dict:
+    """Строка выписанного документа доставки: форма (снимок), текст, правка — участник проекта."""
+    return {"id": d["id"], "template_code": d["template_code"], "template_title": d["template_title"],
+            "kit_label": kit_codes.get(d.get("kit_id") or "", "Весь проект"),
+            "rendered": d["rendered"], "version": d["version"],
+            "updated_label": _fmt(d.get("updated_at")),
+            "can_edit": online and bool(roles & {"gip", "rp", "participant"})}
+
+
+def pnr_fat_block(project_id: str, pnr: list[dict], fats: list[dict], findings: list[dict],
+                  templates: list[dict], doc_templates: list[dict], docs: list[dict], kits: list[dict],
+                  people: dict[str, str], me_id: str, assignments: list[dict], global_roles: list[str],
+                  online: bool, wf: dict) -> dict:
+    """Срез «ПНР, испытания и документы доставки» проекта (этап 6 blueprint 52).
+
+    Запросы ПНР (внутренние/площадочные), FAT-сессии с замечаниями (снимок чек-листа), итоговый шлюз отгрузки
+    (подсказка, почему «Отгружено» недоступно), документы доставки по настраиваемым формам.
+    """
+    roles = _roles(me_id, assignments, project_id, global_roles)
+    kit_codes = {k["id"]: k["code"] for k in kits if k.get("project_id") == project_id}
+    my_pnr = [r for r in pnr if r.get("project_id") == project_id]
+    my_fats = sorted((f for f in fats if f.get("project_id") == project_id), key=lambda f: f.get("seq") or 0)
+    my_docs = [d for d in docs if d.get("project_id") == project_id]
+    # Шлюз отгрузки (подсказка к кнопке потока «Отгрузка»): повторяет серверное правило D-68 по снимку.
+    final_fats = sorted((f for f in my_fats if f["kind"] == "final"), key=lambda f: f.get("seq") or 0,
+                        reverse=True)
+    gate_block = None
+    if not final_fats:
+        gate_block = "Нет финального (приёмочного) FAT — сначала проведите и завершите приёмочные испытания."
+    else:
+        last = final_fats[0]
+        if last["status"] == "in_progress":
+            gate_block = "Финальный FAT ещё идёт — завершите испытание с итогом."
+        else:
+            open_bl = [f for f in findings if f.get("fat_id") == last["id"] and f["status"] == "open"
+                       and f["blocking"]]
+            if open_bl:
+                gate_block = (f"Открыты блокирующие замечания финального FAT: {len(open_bl)} шт. — закройте их "
+                              f"(с причиной) или проведите новое испытание.")
+            elif last["status"] != "passed":
+                gate_block = "Последний финальный FAT неуспешен — устраните замечания и проведите новое приёмочное испытание."
+    fat_templates = [{"id": t["id"], "label": t["name"]}
+                     for t in templates if t.get("kind") == "fat" and t.get("active")]
+    doc_tpl_options = [{"id": t["id"], "label": t["code"] + " — " + t["title"], "fields": t.get("fields") or []}
+                       for t in doc_templates if t.get("active")]
+    return {"pnr": [_pnr_row(r, wf, roles, online, kit_codes)
+                    for r in sorted(my_pnr, key=lambda r: r.get("created_at") or "", reverse=True)],
+            "fats": [_fat_row(f, findings, {t["id"]: t for t in templates}, wf, roles, online, kit_codes, people)
+                     for f in my_fats],
+            "docs": [_delivery_doc_row(d, roles, online, kit_codes) for d in my_docs],
+            "shipping_gate": {"blocked": gate_block is not None, "reason": gate_block or ""},
+            "fat_templates": fat_templates, "doc_templates": doc_tpl_options,
+            "kit_options": [{"id": "", "label": "Весь проект"}] +
+                           [{"id": k["id"], "label": k["code"]}
+                            for k in sorted((x for x in kits if x.get("project_id") == project_id),
+                                            key=lambda x: x["code"])],
+            "pnr_kinds": [{"id": k, "label": v} for k, v in wf.get("pnr_request", {}).get("kinds", {}).items()],
+            "fat_kinds": [{"id": k, "label": v} for k, v in wf.get("fat_session", {}).get("kinds", {}).items()],
+            "can_manage": online and _can_risk(roles),
+            "counts": {"pnr_open": sum(1 for r in my_pnr if r["status"] not in ("done", "cancelled")),
+                       "fats_running": sum(1 for f in my_fats if f["status"] == "in_progress"),
+                       "open_blocking": sum(1 for f in findings
+                                            if any(f["fat_id"] == fat["id"] for fat in my_fats)
+                                            and f["status"] == "open" and f["blocking"]),
+                       "docs": len(my_docs)}}
