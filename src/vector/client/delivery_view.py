@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Optional
 
 # Порядок и ярлыки шести потоков проекта (D-56): ключ потока → имя секции workflows.
@@ -381,3 +382,108 @@ def project_analytics_block(project_id: str, streams: list[dict], events: list[d
     return {"streams": rows, "facts": agg,
             "done_streams": sum(1 for r in rows if r["terminal"]),
             "total_streams": len(rows), "closeout": closeout_facts}
+
+
+# ====================================================================== сводная аналитика портфеля (D-73, этап 7 blueprint 52)
+def _day(s: Optional[str]):
+    """«2026-11-16» → date; пусто/ошибка → None."""
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(str(s)[:10])
+    except ValueError:
+        return None
+
+
+def _days(a: Optional[str], b: Optional[str]) -> Optional[int]:
+    """Число дней между двумя датами (обе обязательны), иначе None."""
+    da, db = _day(a), _day(b)
+    return (db - da).days if da and db else None
+
+
+def _median_label(vals: list[int]) -> str:
+    """Медиана целых дней → «45» / «45,5»; пустая выборка — «—»."""
+    if not vals:
+        return "—"
+    v = sorted(vals)
+    n = len(v)
+    med = v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2
+    return str(int(med)) if med == int(med) else f"{med:.1f}".replace(".", ",")
+
+
+def portfolio_analytics(projects: list[dict], streams: list[dict], events: list[dict], risks: list[dict],
+                        purchase_orders: list[dict], work_orders: list[dict], claims: list[dict],
+                        wf: dict) -> dict:
+    """Сводная аналитика портфеля проектов (этап 7 blueprint 52, D-73) — только чтение из снимка pull.
+
+    Показатели: потоки (сколько проектов дошли до конечных статусов каждого потока; медиана плана и факта в
+    днях), закупки (lead-time размещённых/закрытых заказов: размещён → закрыт, медиана и опоздавшие к
+    ожидаемой дате), замены в нарядах и рекламации (по источникам). Денег здесь нет: права на цены отдельные
+    (ответ владельца этапа 1), в сводку идут только количества и сроки. Доступ — по праву norm.read
+    (производственное руководство); пользователь видит только те проекты/заказы/наряды, что ему вернул pull.
+    """
+    from vector.core.delivery import STREAM_LABELS_RU, stream_facts
+
+    # ---------- потоки проектов
+    ev_by_project: dict[str, list[dict]] = {}
+    for e in events or []:
+        ev_by_project.setdefault(e.get("project_id"), []).append(e)
+    stream_rows = []
+    for kind in [k for k in STREAM_ORDER if k in STREAM_LABELS_RU]:
+        terminal = 0
+        plan_days: list[int] = []
+        fact_days: list[int] = []
+        for w in streams or []:
+            if w.get("kind") != kind:
+                continue
+            contract = wf.get("workstream_" + kind, {})
+            if w.get("status") in (contract.get("terminal") or []):
+                terminal += 1
+            pdays = _days(w.get("planned_start"), w.get("planned_due"))
+            if pdays is not None:
+                plan_days.append(pdays)
+            f = stream_facts(ev_by_project.get(w.get("project_id")), wf).get(kind, {})
+            fdays = _days(f.get("start"), f.get("finish"))
+            if fdays is not None:
+                fact_days.append(fdays)
+        stream_rows.append({"kind": kind, "label": STREAM_LABELS_RU.get(kind, kind), "terminal": terminal,
+                            "plan_median": _median_label(plan_days), "fact_median": _median_label(fact_days),
+                            "plan_n": len(plan_days), "fact_n": len(fact_days)})
+    # ---------- закупки: lead-time размещённых/закрытых заказов
+    leads: list[int] = []
+    lates: list[int] = []
+    total_placed = 0
+    for o in purchase_orders or []:
+        if o.get("status") not in ("placed", "closed"):
+            continue
+        total_placed += 1
+        lead = _days((o.get("placed_at") or "")[:10], (o.get("closed_at") or "")[:10])
+        if lead is not None:
+            leads.append(lead)
+        late = _days(o.get("expected_on"), (o.get("closed_at") or "")[:10])
+        if late is not None and late > 0:
+            lates.append(late)
+    # ---------- производство: замены в составе нарядов
+    subs = sum(len(w.get("substitutions") or []) for w in work_orders or [])
+    # ---------- качество: рекламации по источникам
+    claim_rows = []
+    for src, label in (("customer", "От заказчика"), ("internal", "Внутренние")):
+        mine = [c for c in claims or [] if c.get("source") == src]
+        claim_rows.append({"source": src, "label": label, "total": len(mine),
+                           "closed": sum(1 for c in mine if c.get("status") == "closed")})
+    # ---------- проекты по статусам (грубая рамка workflows project)
+    pr_labels = (wf.get("project") or {}).get("labels_ru", {})
+    statuses: dict[str, int] = {}
+    for p in projects or []:
+        statuses[p.get("status") or ""] = statuses.get(p.get("status") or "", 0) + 1
+    project_rows = [{"status": s, "label": pr_labels.get(s, s or "—"), "count": n}
+                    for s, n in sorted(statuses.items())]
+    return {
+        "projects_total": len(projects or []), "project_rows": project_rows,
+        "active_risks": sum(1 for r in risks or [] if r.get("state") == "active"),
+        "streams": stream_rows,
+        "procurement": {"placed_total": total_placed, "lead_median": _median_label(leads), "lead_n": len(leads),
+                        "late_count": len(lates), "late_median": _median_label(lates)},
+        "production": {"work_orders": len(work_orders or []), "substitutions": subs},
+        "claims": claim_rows, "claims_total": len(claims or []),
+    }

@@ -160,7 +160,7 @@ MasterDetail {
     RowLayout {
         Layout.fillWidth: true; spacing: 8
         visible: normsView.can_propose === true || normsView.rows.length > 0
-        VButton { objectName: "btnNormStats"; text: "Статистика операций"; kind: "soft"; iconName: "bar-chart-3"
+        VButton { objectName: "btnNormStats"; text: "Статистика операций"; kind: "soft"; iconName: "sliders-horizontal"
                   enabled: page.pv.online === true; onClicked: statsDialog.openFor() }
         VButton { objectName: "btnNormPropose"; visible: normsView.can_propose === true
                   text: "Предложить норму"; kind: "primary"; iconName: "plus"; onClicked: proposeForm.openFor() }

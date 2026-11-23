@@ -20,7 +20,7 @@ ColumnLayout {
 
     RowLayout {
         Layout.fillWidth: true
-        SectionTitle { text: "Аналитика проекта"; iconName: "chart-bar" }
+        SectionTitle { text: "Аналитика проекта"; iconName: "sliders-horizontal" }
         Item { Layout.fillWidth: true }
         Text { text: pa.v.total_streams ? "потоков завершено: " + (pa.v.done_streams || 0) + " из " + pa.v.total_streams : ""
                color: Theme.textMuted; font.pixelSize: Theme.fsS }

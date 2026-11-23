@@ -711,6 +711,17 @@ class Backend(QObject):
             st.get("project_closeouts") or [], self._people, self.contracts.workflows))
 
     @Slot(int, result="QVariantMap")
+    def portfolioAnalyticsView(self, _rev: int = 0):
+        """Раздел «Аналитика» (этап 7 blueprint 52, D-73): сводная аналитика портфеля — потоки, lead-time
+        закупок, замены в нарядах, рекламации. Только чтение из снимка pull (работает и офлайн)."""
+        st = self._stock
+        # Потоки/события/риски — списки meta; заказы, наряды и рекламации — версионируемые объекты кэша (_data).
+        return qml_safe(delivery_view.portfolio_analytics(
+            self._data.get("project", []), st.get("workstreams") or [], st.get("project_events") or [],
+            st.get("project_risks") or [], self._data.get("purchase_order", []),
+            self._data.get("work_order", []), self._data.get("claim", []), self.contracts.workflows))
+
+    @Slot(int, result="QVariantMap")
     def opportunitiesView(self, _rev: int = 0):
         """Раздел «Лиды»: воронка возможностей продаж (снимок pull; действия — по праву, проверяет сервер)."""
         return qml_safe(delivery_view.opportunities_view(

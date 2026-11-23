@@ -108,6 +108,9 @@ Item {
                     NavItem { text: "Проекты"; iconName: "folder-kanban"; active: shellRoot.page === "projects"; onClicked: shellRoot.go("projects") }
                     NavItem { text: "Итоги проектов"; iconName: "wallet"; active: shellRoot.page === "finance"; onClicked: shellRoot.go("finance")
                               visible: (backend.me.roles || []).indexOf("accountant") >= 0 || backend.financeOverview.length > 0 }
+                    // Аналитика портфеля (D-73): сводные сроки/количества без денег — производственному руководству.
+                    NavItem { objectName: "navAnalytics"; text: "Аналитика"; iconName: "sliders-horizontal"; active: shellRoot.page === "analytics"; onClicked: shellRoot.go("analytics")
+                              visible: backend.hint("norm.read", backend.permRevision) }
                     // Рабочее время (D-42): свой дневной отчёт — всем; бейдж — руководителю отдела отчёты на проверке,
                     // остальным — возвращённые на исправление.
                     NavItem { objectName: "navWorktime"; text: "Рабочее время"; iconName: "clock"; active: shellRoot.page === "worktime"; onClicked: shellRoot.go("worktime")
@@ -180,13 +183,14 @@ Item {
             sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC, finance: financeC,
                                stock: stockC, procurement: procurementC, delegations: delegationsC,
                                notifications: notificationsC, production: productionC, products: productsC, quality: qualityC, help: helpC,
-                               worktime: worktimeC, org: orgC, leads: leadsC })[shellRoot.page]
+                               worktime: worktimeC, org: orgC, leads: leadsC, analytics: analyticsC })[shellRoot.page]
         }
         }
     }
     Component { id: customersC; CustomersPage { shell: shellRoot } }
     Component { id: tendersC; TendersPage { shell: shellRoot } }
     Component { id: leadsC; LeadsPage { shell: shellRoot } }
+    Component { id: analyticsC; AnalyticsPage { shell: shellRoot } }
     Component { id: projectsC; ProjectsPage { shell: shellRoot } }
     Component { id: syncC; SyncPage {} }
     Component { id: financeC; FinancePage { shell: shellRoot } }
