@@ -25,7 +25,7 @@ from vector.core import stock
 from vector.core.contracts import Contracts
 
 from . import (calc_view, delegation_view, hints, lifecycle_view, notification_view, production_view, purchasing_view,
-               org_view, prodcal_view, quality_view, stock_view, workday_view, worktime_view)
+               org_view, prodcal_view, quality_view, rkd_view, stock_view, workday_view, worktime_view)
 from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
 from .vault import KeyringStore, MemoryStore, VaultError
@@ -674,6 +674,42 @@ class Backend(QObject):
         self._notify_seen = max(self._notify_seen, top)
         if text:
             self.toast.emit("info", text)
+
+    # ------------------------------------------------------------ РКД: ревизии, замечания, трансмитталы (D-64)
+    @Slot(str, int, result="QVariantMap")
+    def kitRkd(self, kit_id: str, _rev: int = 0):
+        """Вкладка «РКД» комплекта: ревизии документов со статусами/штампами/замечаниями, профили шифров и
+        трансмитталы проекта (снимок pull; действия — подсказка по роли, окончательное право проверяет сервер)."""
+        st = self._stock
+        kit = next((k for k in self._data.get("kit", []) if k["id"] == kit_id), None)
+        if kit is None:
+            return {}
+        return qml_safe(rkd_view.kit_rkd(
+            kit_id, kit.get("project_id"), self._data.get("document", []),
+            st.get("document_revisions") or [], st.get("document_comments") or [],
+            st.get("document_comment_responses") or [], st.get("document_revision_issues") or [],
+            st.get("document_profiles") or [], st.get("document_transmittals") or [],
+            st.get("transmittal_items") or [], st.get("transmittal_packages") or [],
+            self._people, self._me.get("user_id") or "", self._assignments,
+            self._online and self._session_mode == "online"))
+
+    @Slot(str, str, str)
+    def downloadTransmittalPackage(self, tag: str, transmittal_id: str, dest_url: str):
+        """Скачать ZIP-пакет трансмиттала в выбранное место; сохраняется только после сверки SHA-256."""
+        dest = Path(QUrl(dest_url).toLocalFile() if "://" in dest_url else dest_url)
+
+        def job():
+            """Скачать пакет (сохранение — только после сверки SHA-256)."""
+            r = self.client.download_transmittal_package(transmittal_id, dest)
+            return {"result": r.__dict__, "snap": None}
+
+        self._run(job, lambda res: self._file_done(tag, res, f"Пакет сохранён и проверен: {dest.name}."))
+
+    @Slot(str, result=str)
+    def transmittalPackageName(self, transmittal_id: str) -> str:
+        """Имя файла пакета трансмиттала для диалога «Сохранить как»."""
+        p = next((x for x in (self._stock.get("transmittal_packages") or []) if x["transmittal_id"] == transmittal_id), None)
+        return p.get("package_name", "") if p else ""
 
     # ------------------------------------------------------------ технология и производство (D-36)
     @Property("QVariantMap", notify=dataChanged)
@@ -1691,6 +1727,8 @@ class Backend(QObject):
     # Наряды (D-36): после выпуска, замены, закрытия — свежие материалы и статусы с сервера.
     _STOCK_PREFIXES = frozenset({"stock", "need", "item_alias", "unit_conversion", "config", "po", "delegation",
                                  "notification", "wo", "tp", "org",
+                                 # D-64: ревизии, замечания, трансмитталы и профили приходят только снимком pull.
+                                 "docrev", "transmittal", "comment", "docprofile",
                                  # D-46: решение по фактическому началу дня меняет рабочий день сотрудника на сервере
                                  # (подтверждённое начало) и рассылает уведомления — сразу перечитываем снимок.
                                  "workday",

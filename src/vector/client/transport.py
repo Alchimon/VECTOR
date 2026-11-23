@@ -195,6 +195,27 @@ class HttpTransport:
                 return out if isinstance(out, dict) else {"status": "error", "message_ru": "Некорректный ответ сервера."}
         return self._guard(fetch)
 
+    def download_package(self, token: str, transmittal_id: str, sink) -> dict:
+        """Скачать ZIP-пакет трансмиттала потоком в sink (D-63). При успехе ответ {"status": "accepted",
+        "sha256": <заголовок сервера>, "size_bytes": n}; байты уже в sink. Проверка SHA-256 — SyncClient."""
+        def fetch():
+            """Потоковое скачивание: при 200 и application/zip — байты в sink, иначе разбор JSON-ответа об ошибке."""
+            with self._http.stream("GET", f"/api/v1/transmittals/{transmittal_id}/package",
+                                   headers={"Authorization": f"Bearer {token}"}, timeout=self._FILE_TIMEOUT) as r:
+                if r.status_code == 200 and r.headers.get("content-type", "").startswith("application/zip"):
+                    n = 0
+                    for b in r.iter_bytes(FILE_BLOCK):
+                        sink.write(b)
+                        n += len(b)
+                    return {"status": "accepted", "sha256": r.headers.get("x-content-sha256", ""), "size_bytes": n}
+                r.read()   # ответ-ошибка небольшой (JSON); дочитываем, чтобы соединение вернулось в пул
+                try:
+                    out = r.json()
+                except ValueError:
+                    raise ResponseLost()
+                return out if isinstance(out, dict) else {"status": "error", "message_ru": "Некорректный ответ сервера."}
+        return self._guard(fetch)
+
     def ping(self) -> bool:
         """Проверка доступности сервера (/api/v1/health, 3 с); обновляет флаг online."""
         try:
@@ -263,6 +284,22 @@ class LoopbackTransport:
             content = buf.getvalue()
             if self.corrupt_next_download:
                 # Инъекция порчи «в пути» для тестов: клиент обязан заметить несовпадение SHA-256.
+                self.corrupt_next_download = False
+                content = content[:-1] + bytes([content[-1] ^ 0xFF]) if content else b"x"
+            sink.write(content)
+            resp = {"status": "accepted", "sha256": resp["sha256"], "size_bytes": len(content)}
+        return json.loads(json.dumps(resp, ensure_ascii=False))
+
+    def download_package(self, token: str, transmittal_id: str, sink) -> dict:
+        """Скачать ZIP-пакет трансмиттала из сервиса; corrupt_next_download портит байт «в пути» — клиент обязан
+        это обнаружить по контрольной сумме."""
+        if not self.online:
+            raise Offline()
+        buf = io.BytesIO()
+        resp = self._svc.get_transmittal_package_to(token, transmittal_id, buf, self._addr)
+        if resp.get("status") == "accepted":
+            content = buf.getvalue()
+            if self.corrupt_next_download:
                 self.corrupt_next_download = False
                 content = content[:-1] + bytes([content[-1] ^ 0xFF]) if content else b"x"
             sink.write(content)

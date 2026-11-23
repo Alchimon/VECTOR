@@ -129,7 +129,12 @@ STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_
               # считаются окно «Начните рабочий день», напоминание о конце дня и граница фактического начала.
               "work_schedules", "work_schedule_links", "workday_schedule",
               # D-48: производственный календарь — праздники, сокращённые дни, переносы выходных.
-              "work_calendar")
+              "work_calendar",
+              # D-64: РКД — ревизии документов, решения проверки, замечания и ответы, трансмитталы с составом и
+              # пакетами, профили шифров и действующие статусы выдачи (меняются только онлайн-командами).
+              "document_revisions", "document_reviews", "document_comments", "document_comment_responses",
+              "document_transmittals", "transmittal_items", "transmittal_packages",
+              "document_profiles", "document_revision_issues")
 
 
 # Онлайн-команды, которым не нужно сначала отправить очередь (их результат не зависит от неотправленных правок).
@@ -1219,6 +1224,51 @@ class SyncClient:
                 except OSError:
                     pass
         return LocalResult("accepted", message_ru=f"Файл сохранён: {dest.name}", response={"sha256": actual, "path": str(dest)})
+
+    def download_transmittal_package(self, transmittal_id: str, dest: Path) -> LocalResult:
+        """Скачать ZIP-пакет трансмиттала в dest (D-63/D-64) — та же дисциплина, что у файлов версий:
+        SHA-256 полученных байтов сверяется с заголовком сервера и записью пакета из кэша, целевое имя
+        появляется только после сверки (временный файл + переименование)."""
+        if not self.token:
+            return LocalResult("refused_offline", message_ru="Скачивание пакета доступно при связи с сервером.")
+        meta = next((x for x in (self.get_meta("transmittal_packages") or []) if x["transmittal_id"] == transmittal_id), None)
+        dest = Path(dest)
+        tmp = dest.with_name(dest.name + ".vector-partial")
+        saved = False
+        try:
+            with open(tmp, "wb") as f:
+                sink = _HashingWriter(f)
+                try:
+                    resp = self.t.download_package(self.token, transmittal_id, sink)
+                except (Offline, ResponseLost):
+                    return LocalResult("refused_offline", message_ru="Нет связи с сервером — пакет не скачан.")
+                except TlsError as e:
+                    return LocalResult("error", message_ru=str(e))
+                if resp.get("status") != "accepted":
+                    if resp.get("status") == "unauthenticated":
+                        self.token = None
+                    return LocalResult(resp.get("status", "error"), message_ru=resp.get("message_ru", "Пакет не получен."),
+                                       response=resp)
+                actual = sink.hexdigest()
+                expected = {resp.get("sha256")} | ({meta["package_sha256"]} if meta else set())
+                if expected != {actual}:
+                    return LocalResult("error", message_ru="Пакет повреждён при передаче (контрольная сумма не совпала) и не сохранён. "
+                                                           "Повторите скачивание; если ошибка повторяется — сообщите администратору.")
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, dest)
+            saved = True
+            _fsync_dir(dest.parent)
+        except OSError as e:
+            return LocalResult("error", message_ru=f"Не удалось сохранить пакет: {e}.")
+        finally:
+            if not saved:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        return LocalResult("accepted", message_ru=f"Пакет сохранён: {dest.name}",
+                           response={"sha256": actual, "path": str(dest)})
 
     # ------------------------------------------------------------ конфликты и отказы
     def problems(self) -> list[dict]:

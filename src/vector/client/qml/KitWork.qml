@@ -3,7 +3,8 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import QtQuick.Dialogs
 
-// Работа внутри комплекта: задачи, документы с версиями файлов (issue #1) и расчёт (KitCalc.qml, С3).
+// Работа внутри комплекта: задачи, документы с версиями файлов (issue #1), РКД — бизнес-ревизии/трансмитталы
+// (KitRkd.qml, D-64) и расчёт (KitCalc.qml, С3).
 //
 // Что важно для понимания поведения:
 //  * Задачи и карточки документов создаются/меняются и БЕЗ связи — команда ложится в офлайн-очередь
@@ -60,6 +61,7 @@ ColumnLayout {
                 Repeater {
                     model: [{ id: "tasks", label: "Задачи (" + kw.kitTasks.length + ")", icon: "list-checks" },
                             { id: "documents", label: "Документы (" + kw.kitDocs.length + ")", icon: "file-text" },
+                            { id: "rkd", label: "РКД", icon: "file-check" },
                             { id: "calc", label: "Расчёт", icon: "calculator" }]
                     delegate: Rectangle {
                         required property var modelData
@@ -89,6 +91,9 @@ ColumnLayout {
 
     // ================================================================== расчёт (С3)
     KitCalc { visible: kw.tab === "calc"; kit: kw.tab === "calc" ? kw.kit : null; Layout.fillWidth: true }
+
+    // ---------- РКД: бизнес-ревизии документов, замечания, трансмитталы, профили шифров (D-64)
+    KitRkd { visible: kw.tab === "rkd"; kit: kw.tab === "rkd" ? kw.kit : null; Layout.fillWidth: true }
 
     // ================================================================== задачи
     Repeater {
