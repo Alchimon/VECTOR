@@ -202,7 +202,7 @@ def _pnr_row(r: dict, wf: dict, roles: set[str], online: bool, kit_codes: dict[s
             "created_label": _fmt(r.get("created_at")), "actions": actions}
 
 
-def _finding_row(f: dict, roles: set[str], online: bool, fat_status: str) -> dict:
+def _finding_row(f: dict, roles: set[str], online: bool) -> dict:
     """Строка замечания FAT: раздел, градация (снимок), блокировка, статус; закрытие — РП, с причиной."""
     actions = []
     if online and _can_risk(roles) and f["status"] == "open":
@@ -241,7 +241,7 @@ def _fat_row(fat: dict, findings: list[dict], templates: dict[str, dict], wf: di
             "note": fat.get("note") or "", "created_label": _fmt(fat.get("created_at")),
             "finished_label": _fmt(fat.get("finished_at") or ""),
             "finished_by_name": people.get(fat.get("finished_by") or "", ""),
-            "findings": [_finding_row(f, roles, online, fat["status"])
+            "findings": [_finding_row(f, roles, online)
                          for f in sorted(my_findings, key=lambda x: x["seq"])],
             "counts": {"findings": len(my_findings),
                        "open": sum(1 for f in my_findings if f["status"] == "open"),
