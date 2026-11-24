@@ -471,6 +471,13 @@ def main():
         h.pump(0.3)
         h.go("help")
         h.shot(out / f"{theme}-40-glossary.png")
+        # Вкладка «Руководство» (issue #2): встроенное руководство пользователя — разделы слева, текст справа.
+        h.click(h.find("tabGuide"))
+        QTest.mouseMove(h.win, QPoint(700, 500))  # убрать мышь с вкладки, чтобы подсказка не закрывала заголовок
+        h.wait_idle()
+        h.shot(out / f"{theme}-40b-help-guide.png")
+        h.click(h.find("tabGlossary"))
+        h.wait_idle()
         h.backend.logout()
         h.wait_idle()
         # Изделия и паспорта (D-38): РП — карточка экземпляра «АТХ № 0001 (серия 2026)» (связи, паспорт, история);
