@@ -471,6 +471,7 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
             "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
             "suppliers": sups, "contracts": contracts, "delegations": [deleg["id"], pdeleg["id"]],
+            "people": dict(people),
             "purchase_orders": [o1["id"], o2["id"], o3["id"], o4["id"], o5["id"]], **prod}
 
 

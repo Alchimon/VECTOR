@@ -139,15 +139,21 @@ Item {
                            color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
                     ColumnLayout {
                         id: hrCatList
-                        Layout.fillWidth: true; spacing: 0
+                        Layout.fillWidth: true; spacing: 4
                         Repeater {
                             model: backend.hrCategoryCatalog
-                            delegate: CheckBox {
+                            delegate: ColumnLayout {
                                 required property var modelData
-                                property string code: modelData.code
-                                objectName: "hrCat_" + modelData.code
-                                text: modelData.label_ru + " (" + modelData.article + ")"
-                                checked: page.sel ? (page.sel.hr_categories || []).indexOf(modelData.code) >= 0 : false
+                                Layout.fillWidth: true; spacing: 0
+                                CheckBox {
+                                    property string code: modelData.code
+                                    objectName: "hrCat_" + modelData.code
+                                    text: modelData.label_ru
+                                    checked: page.sel ? (page.sel.hr_categories || []).indexOf(modelData.code) >= 0 : false
+                                }
+                                Text { text: modelData.article; color: Theme.textFaint; font.family: Theme.family
+                                       font.pixelSize: Theme.fsXs; wrapMode: Text.Wrap; Layout.fillWidth: true
+                                       leftPadding: 30 }
                             }
                         }
                     }
@@ -231,8 +237,9 @@ Item {
         onConfirmed: {
             var codes = []
             for (var i = 0; i < hrCatList.children.length; i++) {
-                var ch = hrCatList.children[i]
-                if (ch.code !== undefined && ch.checked) codes.push(ch.code)
+                var cell = hrCatList.children[i]
+                var box = cell.children && cell.children.length > 0 ? cell.children[0] : null
+                if (box && box.code !== undefined && box.checked) codes.push(box.code)
             }
             hrCmd.run("hr.category_set", { user_id: page.sel.id, categories: codes, reason: hrReason.text.trim() },
                       (page.sel.hr_categories_version || 0))
