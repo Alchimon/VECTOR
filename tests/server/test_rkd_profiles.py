@@ -7,7 +7,6 @@
 """
 from __future__ import annotations
 
-import pytest
 
 from tests.conftest import new_id
 from tests.server.test_rkd import add_version, make_rev, pull, ready_rev, rev_of, trans, upload  # noqa: F401

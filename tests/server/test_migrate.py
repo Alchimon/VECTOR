@@ -904,7 +904,6 @@ def test_v28_to_v29_adds_delivery_tables_with_guards(backend, tmp_path, clock, k
     assert rep.created_tables == [t.name for v in range(29, db.SCHEMA_VERSION + 1) for t in mg.ADDED_IN[v]]
     after = counts(eng, mg.tables_of_version(28))
     assert {k: v for k, v in after.items() if k != "schema_meta"} == {k: v for k, v in before.items() if k != "schema_meta"}
-    opp, ws, risk = dict.fromkeys(("id",)), dict.fromkeys(("id",)), dict.fromkeys(("id",))
     base_ws = dict(project_id=pid, kind="rkd", status="planned", version=1,
                    created_by=uid, created_at=now, updated_by=uid, updated_at=now)
 

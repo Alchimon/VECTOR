@@ -4,13 +4,12 @@
 Каждый тест закрепляет правило из server/purchasing.py (чистые правила — vector.core.consolidation); запускается
 на SQLite и на встроенном PostgreSQL. Кто есть кто: pr1 — закупка, wh1 — склад, rp1 — руководитель проекта.
 """
-from decimal import Decimal
 
 import pytest
 import sqlalchemy as sa
 
 from conftest import new_id
-from test_consolidation import _freeze_for, alloc, make_batch, make_need, pull
+from test_consolidation import alloc, make_batch, make_need, pull
 from test_purchasing import approved, draft, line, placed, pulled_order, receive, supplier  # noqa: F401
 from test_stock import calc_line, st  # noqa: F401
 from test_tasks_documents import proj  # noqa: F401

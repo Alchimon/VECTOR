@@ -10,7 +10,6 @@
 """
 from datetime import timedelta
 
-import pytest
 
 from conftest import new_id
 from test_production import OPS, Pd, approved_tp, ev, ops_of, pd, pull, release  # noqa: F401

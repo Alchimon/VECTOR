@@ -3,7 +3,6 @@
 import uuid
 from decimal import Decimal
 
-import pytest
 
 from vector.core import consolidation as cs
 

@@ -137,12 +137,11 @@ def test_review_cycle_return_keeps_label_and_writes_review(pd):
 
 
 def test_system_only_transitions_rejected(pd):
-    eng = pd["eng"]
     rev = ready_rev(pd)
     # «Отправлена» ставит только трансмиттал; «замечания заказчика» — только регистрация замечания.
     assert trans(pd["rp"], rev, "sent")["code"] == "use_system_command"
     # ревизия отправлена трансмитталом:
-    t = pd["rp"].ok("transmittal.create", {"id": new_id(), "project_id": pd["pid"], "recipient": "Заказчик",
+    pd["rp"].ok("transmittal.create", {"id": new_id(), "project_id": pd["pid"], "recipient": "Заказчик",
                                            "channel": "email", "items": [rev["id"]]})["transmittal"]
     rev = rev_of(pd, rev["id"])
     assert rev["status"] == "sent"

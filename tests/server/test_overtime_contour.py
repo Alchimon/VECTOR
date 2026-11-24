@@ -3,7 +3,6 @@
 """
 from datetime import date, datetime, timedelta, timezone
 
-import sqlalchemy as sa
 
 from conftest import new_id
 from vector.server import db

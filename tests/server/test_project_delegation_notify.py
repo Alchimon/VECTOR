@@ -13,7 +13,7 @@
 import sqlalchemy as sa
 
 from conftest import new_id
-from test_delegation import deleg, me
+from test_delegation import deleg
 from test_purchasing import _W, _remember_world, approver, draft, line, supplier  # noqa: F401
 from test_stock import st  # noqa: F401
 from test_tasks_documents import audit, proj  # noqa: F401
