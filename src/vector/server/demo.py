@@ -27,6 +27,13 @@ e.orlova; у m.lebedev вчерашний день завершён (см. _seed
 
 Производственный календарь (D-48): текущий год загружен из встроенного файла xmlcalendar.ru; «Смена наладчиков»
 календарь не учитывает (см. _seed_schedules).
+
+ПНР, испытания и доставка (D-67…D-69): шаблон FAT, запрос ПНР на площадке, идущий приёмочный FAT с замечаниями
+(одно блокирующее), форма и выписанный акт выполнения ПНР (см. _seed_delivery_pnr_fat).
+
+Сверхурочные по ТК РФ и нормы (D-72, D-74, D-75): учётный период — месяц, у k.pavlov — кадровая категория
+«ребёнок до трёх лет» и согласованная заявка с основанием из справочника; утверждённое предложение нормы по
+агрегированной выборке завершённых операций (см. _seed_overtime_contour).
 """
 from __future__ import annotations
 
@@ -468,6 +475,8 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     prod.update(_seed_worktime(cmd, login, people, svc, pid))
     prod.update(_seed_workday(cmd, login, svc, prod["asu_schedule_hour"]))
     prod.update(_seed_day_marks(cmd, login, svc))
+    prod.update(_seed_delivery_pnr_fat(cmd, login, svc, pid, kits))
+    prod.update(_seed_overtime_contour(cmd, login, people, svc, adm))
     return {"customers": custs, "project": pid, "tender_won": t_won, "tender_sub": t_sub, "kits": kits, "docs": docs,
             "warehouses": whs, "items": items, "need": need["id"], "reservations": [res_shu["id"], res_arm["id"]],
             "suppliers": sups, "contracts": contracts, "delegations": [deleg["id"], pdeleg["id"]],
@@ -844,3 +853,108 @@ def _seed_worktime(cmd, login, people, svc, pid) -> dict:
                 comment="Собран программой по 14 действиям за день — проверьте.",
                 summary={"actions": 14, "measured_minutes": 95, "lines": 3})
     return {"daily_reports": [r1["id"], r2["id"], r3["id"], r4["id"], r5["id"]]}
+
+
+def _seed_delivery_pnr_fat(cmd, login, svc, pid, kits) -> dict:
+    """ПНР, приёмочные испытания и документы доставки (этап 6 blueprint 52, D-67…D-69). Вымышлено.
+
+    * e.orlova (формы и чек-листы настраивает руководитель отдела, A-58/A-59): активный шаблон приёмочного FAT
+      шкафа управления (4 раздела, градации по умолчанию) и форма документа доставки «Акт выполнения ПНР»
+      с плейсхолдерами данных проекта/комплекта;
+    * a.smirnova: запрос ПНР на площадке по комплекту АТХ — «Назначена дата» (через две недели от установки,
+      нужно электропитание);
+    * a.smirnova: приёмочный (финальный) FAT по шаблону начат; в нём два открытых замечания — несущественное и
+      блокирующее: шлюз потока «Отгрузка» не откроется, пока блокирующие замечания не закрыты и итог не «успешен»
+      (D-68). Замечания атрибутируются к проекту, не к человеку.
+    * a.smirnova: по форме выписан «Акт выполнения ПНР» — текст отрендерен снимком; правка формы уже выписанные
+      документы не переписывает (D-69).
+    """
+    head, rp = login("e.orlova"), login("a.smirnova")
+    today = svc.now().date()
+    tpl = cmd(head, "checklist.create", {"id": str(uuid.uuid4()), "kind": "fat",
+                                         "name": "Приёмочные испытания шкафа управления (FAT)",
+                                         "sections": [
+                                             {"code": "visual", "title": "Внешний осмотр и комплектность"},
+                                             {"code": "wiring", "title": "Монтаж и маркировка цепей"},
+                                             {"code": "insulation", "title": "Испытание изоляции"},
+                                             {"code": "func", "title": "Функциональная проверка и ПЛК"}]})["checklist"]
+    pnr = cmd(rp, "pnr.create", {"id": str(uuid.uuid4()), "project_id": pid, "kit_id": kits["АТХ"], "kind": "site",
+                                 "title": "ПНР шкафов управления на котельной № 3", "need_power": True,
+                                 "planned_on": (today + timedelta(days=14)).isoformat(),
+                                 "note": "Доступ на площадку по пропускам, согласовано с заказчиком"})["pnr"]
+    pnr = cmd(rp, "pnr.set_status", {"id": pnr["id"], "to": "scheduled"}, pnr["version"])["pnr"]
+    fat = cmd(rp, "fat.create", {"id": str(uuid.uuid4()), "project_id": pid, "kit_id": kits["АТХ"], "kind": "final",
+                                 "template_id": tpl["id"],
+                                 "note": "Перед отгрузкой комплекта АТХ — шлюз потока «Отгрузка»"})["fat"]
+    cmd(rp, "fat.add_finding", {"id": str(uuid.uuid4()), "fat_id": fat["id"], "section_code": "wiring",
+                                "severity": "major",
+                                "text": "Часть цепей без маркировки наконечников — промаркировать до повторной "
+                                        "проверки"})
+    cmd(rp, "fat.add_finding", {"id": str(uuid.uuid4()), "fat_id": fat["id"], "section_code": "insulation",
+                                "severity": "critical",
+                                "text": "Мегаомметр не прошёл поверку (клеймо просрочено) — заменить прибор и "
+                                        "повторить испытание изоляции"})
+    form = cmd(head, "doc_template.create", {"id": str(uuid.uuid4()), "code": "ACT-PNR",
+                                             "title": "Акт выполнения пусконаладочных работ",
+                                             "body": "АКТ выполнения ПНР\nПроект {{project.code}} "
+                                                     "«{{project.title}}»\nЗаказчик: {{customer.name}}\n"
+                                                     "Комплект: {{kit.code}} — {{kit.title}}\n"
+                                                     "Площадка: {{site}}\nПредставитель заказчика: {{customer_rep}}\n"
+                                                     "Результат: работы выполнены в полном объёме, замечания — "
+                                                     "по ведомости."})["template"]
+    doc = cmd(rp, "delivery_doc.create", {"id": str(uuid.uuid4()), "project_id": pid, "kit_id": kits["АТХ"],
+                                          "template_id": form["id"],
+                                          "values": {"site": "Котельная № 3, Волгоград",
+                                                     "customer_rep": "Инженер АСУ ТП ООО «ТехМаш»"}})["doc"]
+    return {"checklist_templates": [tpl["id"]], "pnr_requests": [pnr["id"]], "fat_sessions": [fat["id"]],
+            "delivery_templates": [form["id"]], "delivery_docs": [doc["id"]]}
+
+
+def _seed_overtime_contour(cmd, login, people, svc, adm) -> dict:
+    """ТК РФ-контур сверхурочных и норма учётного периода (D-72, D-74, D-75, blueprint 51/52). Вымышлено.
+
+    * Администратор: учётный период компании — календарный месяц (D-52/D-75: норма периода считается по
+      производственному календарю РФ и показывается в «Рабочем времени» и в ведомости закрытия);
+    * Администратор: у k.pavlov кадровая категория «работник с ребёнком до трёх лет» (ст. 99 ч. 5, ст. 113 ч. 7,
+      ст. 259 ТК РФ) — привлечение только с письменного согласия и после разъяснения права отказаться;
+    * k.pavlov: предварительная заявка на сверхурочную работу (ближайший будущий рабочий день его графика
+      «Производство», 2 часа после смены, основание «ремонт механизмов» ст. 99 ч. 2 п. 2) с отметками о согласии
+      и разъяснении права отказа — без них заявку его категории сервер бы отклонил;
+    * e.orlova (вышестоящий руководитель — у «Производственного участка» свой руководитель не назначен):
+      согласовала заявку; решение с зафиксированными полномочиями и повторной проверкой категории в момент решения;
+    * m.lebedev предложил норму по агрегированной выборке завершённых операций «Сборка шкафа управления»
+      (диапазон сервер пересчитал сам в момент предложения); e.orlova её утвердила — решение принимает не автор
+      (D-72). Норма в техпроцессе меняется отдельной правкой черновика ТП.
+    """
+    from vector.core import prodcal as pc
+    from vector.core import schedule as sch
+    from vector.core import workday as wd
+    now = svc.now()
+    today = now.date()
+    cmd(adm, "overtime.period_set", {"mode": "month"})
+    cmd(adm, "hr.category_set", {"user_id": people["k.pavlov"], "categories": ["parent_child_under3"],
+                                 "reason": "Заявление работника и справка о рождении ребёнка (вх. № 41 от 03.11.2026)"})
+    # Ближайший будущий рабочий день по графику «Производство» (пн–сб, с учётом производственного календаря).
+    shop_sched = {**sch.BUILTIN, "start_time": "07:00", "end_time": "16:00", "weekdays": "1111110"}
+    cal = pc.effective((today.year - 1, today.year, today.year + 1), {}, [], [])
+    day = today + timedelta(days=1)
+    while wd.day_type(shop_sched, day, cal) not in ("workday", "short"):
+        day += timedelta(days=1)
+    start = now.replace(year=day.year, month=day.month, day=day.day, hour=16, minute=0, second=0, microsecond=0)
+    req = cmd(login("k.pavlov"), "overtime.request",
+              {"id": str(uuid.uuid4()), "work_date": day.isoformat(), "start_at": start.isoformat(),
+               "end_at": (start + timedelta(hours=2)).isoformat(), "minutes": 120,
+               "kind": "overtime", "mode": "planned",
+               "reason": "Замена наконечников по замечанию FAT — без остановки участка",
+               "ground": "repair_mechanisms", "consent_confirmed": True, "refusal_right_notified": True})
+    req = cmd(login("e.orlova"), "overtime.decide", {"id": req["overtime_request"]["id"], "decision": "approve",
+                                                     "comment": "Согласовано; согласие работника получено (вх. № 42)"},
+              req["overtime_request"]["version"])["overtime_request"]
+    # Норма трудоёмкости (D-72): выборка ≥ 2 завершённых операций есть у «Сборка шкафа управления» (наряды № 1 и № 2).
+    prop = cmd(login("m.lebedev"), "norm.propose",
+               {"id": str(uuid.uuid4()), "op_name": "Сборка шкафа управления", "work_center": "Участок сборки",
+                "proposed_min": "200",
+                "comment": "Фактический диапазон 120–190 мин по двум нарядам; текущая норма 240 мин завышена"})
+    prop = cmd(login("e.orlova"), "norm.decide", {"id": prop["proposal"]["id"], "resolution": "approved"},
+               prop["proposal"]["version"])["proposal"]
+    return {"overtime_requests": [req["id"]], "norm_proposals": [prop["id"]]}

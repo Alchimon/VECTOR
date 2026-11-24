@@ -1,4 +1,4 @@
-"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-24).
+"""Самопроверка тестового стенда ВЕКТОР: готов ли стенд к ручной проверке (docs/ops/test-pc.md, чек-лист П-1…П-28).
 
 Запускается ПОСЛЕ установки, при запущенном сервере стенда, Python-ом из окружения стенда:
 
@@ -305,6 +305,14 @@ def main(argv: list[str] | None = None) -> int:
     check_day_marks(rep, sessions)
     print("\n15. Недельные агрегаты по подразделениям без персональных действий (D-50, П-24)")
     check_weekly_metrics(rep, sessions)
+    print("\n16. Пусконаладка и приёмочные испытания: шаблон чек-листа, запрос ПНР, идущий FAT с замечаниями (D-67, D-68, П-25)")
+    check_pnr_fat(rep, sessions)
+    print("\n17. Документы доставки: формы с плейсхолдерами и выписанный документ (D-69, П-26)")
+    check_delivery_docs(rep, sessions)
+    print("\n18. Нормы трудоёмкости: агрегированный диапазон и ручное утверждение (D-72, П-27)")
+    check_norms(rep, sessions)
+    print("\n19. Сверхурочные по ТК РФ: категории, основание, решение; норма учётного периода (D-74, D-75, П-28)")
+    check_overtime_contour(rep, sessions, prod)
     return finish(rep, tmp)
 
 
@@ -515,8 +523,120 @@ def finish(rep: Report, tmp=None) -> int:
         print(f"ИТОГ: стенд работает; предупреждений {len(rep.warnings)} — часть сценариев на этих данных не проверить "
               "(см. выше).")
     else:
-        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-24; сценарии — test-pc.md § 6).")
+        print("ИТОГ: стенд готов к проверке (чек-лист владельца, П-1…П-28; сценарии — test-pc.md § 6).")
     return 0
+
+
+def check_pnr_fat(rep: Report, sessions: dict) -> None:
+    """Раздел 16 (D-67, D-68): активный шаблон чек-листа FAT, запрос ПНР на площадке со сроком, идущее приёмочное
+    испытание с открытыми замечаниями (одно блокирующее — шлюз потока «Отгрузка» закрыт, пока они не закрыты).
+    Только чтение (pull)."""
+    rp = sessions.get("a.smirnova")
+    if rp is None:
+        return
+    tpls = [t for t in rp.get_meta("checklist_templates") or [] if t.get("kind") == "fat" and t.get("active")]
+    if not tpls:
+        rep.warn("нет активного шаблона чек-листа FAT — " + FRESH_HINT)
+    else:
+        sections = tpls[0].get("sections") or []
+        rep.ok(f"активных шаблонов FAT: {len(tpls)} (например, «{tpls[0].get('name')}» — разделов {len(sections)})")
+    pnrs = rp.get_meta("pnr_requests") or []
+    if not pnrs:
+        rep.warn("запросов ПНР нет — " + FRESH_HINT)
+    else:
+        labels = {"requested": "Запрошена", "scheduled": "Назначена дата", "in_progress": "Выполняется",
+                  "done": "Выполнена", "cancelled": "Отменена"}
+        statuses = sorted({labels.get(x.get("status"), x.get("status") or "?") for x in pnrs})
+        rep.ok(f"запросов ПНР: {len(pnrs)} (на площадке: {sum(x.get('kind') == 'site' for x in pnrs)}); статусы: "
+               + ", ".join(statuses))
+    fats = rp.get_meta("fat_sessions") or []
+    findings = rp.get_meta("fat_findings") or []
+    going = [f for f in fats if f.get("status") == "in_progress"]
+    if not going:
+        rep.warn("нет идущего приёмочного испытания — " + FRESH_HINT)
+        return
+    open_f = [f for f in findings if f.get("status") == "open"]
+    blocking = sum(1 for f in open_f if f.get("blocking"))
+    rep.ok(f"идущих приёмочных испытаний (FAT): {len(going)}; открытых замечаний: {len(open_f)} "
+           f"(блокирующих {blocking}) — поток «Отгрузка» их ждёт")
+
+
+def check_delivery_docs(rep: Report, sessions: dict) -> None:
+    """Раздел 17 (D-69): активная форма документа доставки и выписанный по ней документ (текст — снимок с данными
+    проекта и комплекта). Только чтение (pull)."""
+    rp = sessions.get("a.smirnova")
+    if rp is None:
+        return
+    tpls = [t for t in rp.get_meta("delivery_doc_templates") or [] if t.get("active")]
+    docs = rp.get_meta("delivery_docs") or []
+    if not tpls:
+        rep.warn("нет активных форм документов доставки — " + FRESH_HINT)
+        return
+    if not docs:
+        rep.warn("формы есть, а выписанных документов нет — " + FRESH_HINT)
+        return
+    d0 = docs[0]
+    rep.ok(f"активных форм: {len(tpls)}; выписано документов: {len(docs)} "
+           f"(«{d0.get('template_title')}» — текст отрендерен снимком, правка формы его не перепишет)")
+
+
+def check_norms(rep: Report, sessions: dict) -> None:
+    """Раздел 18 (D-72): предложение нормы с агрегированным диапазоном (выборка ≥ 2 завершённых операций) и ручное
+    решение не-автора. Читает ведущий инженер (norm.read: РП/ГИП/руководитель/ведущий); только чтение (pull)."""
+    tech = sessions.get("m.lebedev")
+    if tech is None:
+        rep.warn("нет входа m.lebedev — предложения норм не проверить")
+        return
+    props = tech.get_meta("norm_proposals") or []
+    if not props:
+        rep.warn("предложений норм нет — " + FRESH_HINT)
+        return
+    if any(int(x.get("sample_size") or 0) < 2 for x in props):
+        rep.fail("есть предложение нормы с выборкой меньше двух операций — сообщите разработчику")
+        return
+    decided = [x for x in props if x.get("status") in ("approved", "rejected")]
+    p0 = props[0]
+    rep.ok(f"предложений норм: {len(props)} (решено: {len(decided)}); «{p0.get('op_name')}» "
+           f"({p0.get('work_center')}): выборка {p0.get('sample_size')}, факт {p0.get('min_min')}—"
+           f"{p0.get('max_min')} мин, предложено {p0.get('proposed_min')} мин — «{p0.get('status')}»")
+
+
+def check_overtime_contour(rep: Report, sessions: dict, prod: dict) -> None:
+    """Раздел 19 (D-74, D-75): учётный период задан и несёт норму по производственному календарю; у k.pavlov —
+    кадровая категория «ребёнок до трёх лет» и согласованная заявка с основанием из справочника и отметками
+    согласия. Только чтение (pull)."""
+    kp = prod.get("k.pavlov")
+    if kp is None:
+        rep.warn("нет входа k.pavlov — ТК-контур не проверить (учётки D-36 появляются на свежем стенде)")
+        return
+    cfg = kp.get_meta("overtime_period_config")
+    if not cfg:
+        rep.fail("учётный период компании не задан — регистрация сверхурочных заблокирована; обновите стенд")
+        return
+    norm = cfg.get("norm") or {}
+    modes = {"month": "календарный месяц", "quarter": "квартал", "year": "год"}
+    if norm.get("label"):
+        rep.ok(f"учётный период: {modes.get(cfg.get('mode'), cfg.get('mode'))}; {cfg.get('period_start')}—"
+               f"{cfg.get('period_end')}; норма по производственному календарю: {norm.get('label')}"
+               + ("" if norm.get("complete") else " (календарь покрывает период не полностью)"))
+    else:
+        rep.warn("в конфигурации периода нет нормы по календарю — обновите стенд (update.cmd): норма появилась в D-75")
+    hr = kp.get_meta("hr_categories") or {}
+    own = hr.get("own") or []
+    if "parent_child_under3" in own:
+        rep.ok("k.pavlov: кадровая категория «Работник с ребёнком до трёх лет» — привлечение только с согласия "
+               "(ст. 99 ч. 5, ст. 259 ТК РФ)")
+    else:
+        rep.warn("у k.pavlov нет демо-категории «ребёнок до трёх лет» — " + FRESH_HINT)
+    reqs = [r for r in kp.list_local("overtime_request") if r.get("user_id") == kp.user_id]
+    appr = [r for r in reqs if r.get("status") == "approved" and r.get("ground")]
+    if appr:
+        r0 = appr[0]
+        rep.ok(f"заявка k.pavlov согласована: {r0.get('work_date')}, {r0.get('minutes')} мин, основание "
+               f"«{r0.get('ground_label')}» ({r0.get('ground_article')}); согласие и разъяснение права отказа "
+               "зафиксированы")
+    else:
+        rep.warn("согласованной заявки k.pavlov с основанием ТК нет — " + FRESH_HINT)
 
 
 if __name__ == "__main__":
