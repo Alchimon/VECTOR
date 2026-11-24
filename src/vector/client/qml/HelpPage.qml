@@ -11,6 +11,9 @@ Item {
     id: page
     objectName: "helpPage"
     property var shell: null
+    property string tab: "glossary"          // "glossary" — сокращения и подсказки; "guide" — встроенное руководство
+    property int guideIdx: 0                 // выбранный раздел руководства
+    readonly property var guide: backend.helpSections || []
     // Строки справочника, подходящие под поиск (без учёта регистра и «ё/е»).
     readonly property var rows: {
         var q = search.text.trim().toLowerCase().replace(/ё/g, "е")
@@ -23,10 +26,21 @@ Item {
         anchors.fill: parent; anchors.margins: 28
         spacing: 16
         PageHeader {
-            title: "Сокращения и подсказки"
+            title: "Справка"
             subtitle: "Наведите мышь на кнопку, пункт меню, вкладку, метку статуса или подпись поля — появится подсказка."
         }
+        // Переключение: справочник сокращений ↔ встроенное руководство пользователя.
         RowLayout {
+            Layout.fillWidth: true; spacing: 8
+            VButton { objectName: "tabGlossary"; text: "Сокращения и подсказки"; iconName: "circle-help"
+                      kind: page.tab === "glossary" ? "primary" : "soft"; onClicked: page.tab = "glossary" }
+            VButton { objectName: "tabGuide"; text: "Руководство"; iconName: "file-text"
+                      kind: page.tab === "guide" ? "primary" : "soft"; onClicked: page.tab = "guide"
+                      tip: "Полное руководство пользователя встроено в программу и доступно без связи." }
+            Item { Layout.fillWidth: true }
+        }
+        RowLayout {
+            visible: page.tab === "glossary"
             Layout.fillWidth: true; Layout.fillHeight: true
             spacing: 16
 
@@ -100,7 +114,7 @@ Item {
                     }
                     SectionTitle { text: "Горячие клавиши"; iconName: "sliders-horizontal"; Layout.topMargin: 12 }
                     Repeater {
-                        model: [["F1", "Сокращения и подсказки (этот раздел)"], ["F5", "Обновить: отправить очередь и получить свежие данные"],
+                        model: [["F1", "Справка (этот раздел)"], ["F5", "Обновить: отправить очередь и получить свежие данные"],
                                 ["Ctrl+1", "Заказчики"], ["Ctrl+2", "Тендеры и ТКП"], ["Ctrl+3", "Проекты"], ["Ctrl+4", "Синхронизация"],
                                 ["Ctrl+5", "Склад"], ["Ctrl+6", "Закупка"], ["Ctrl+7", "Производство"], ["Ctrl+8", "Изделия и паспорта"], ["Ctrl+9", "Качество"], ["Ctrl+0", "Рабочее время"],
                                 ["Esc", "Закрыть форму без сохранения"]]
@@ -116,6 +130,76 @@ Item {
                         }
                     }
                     Item { Layout.fillHeight: true }
+                }
+            }
+        }
+
+        // ---- встроенное руководство пользователя (issue #2): разделы слева, текст справа; работает без связи
+        RowLayout {
+            visible: page.tab === "guide"
+            Layout.fillWidth: true; Layout.fillHeight: true
+            spacing: 16
+
+            VCard {
+                Layout.preferredWidth: 320; Layout.fillHeight: true
+                ColumnLayout {
+                    anchors.fill: parent; anchors.margins: 20
+                    spacing: 10
+                    SectionTitle { text: "Разделы (" + page.guide.length + ")"; iconName: "file-text" }
+                    ListView {
+                        id: guideList
+                        objectName: "guideSections"
+                        Layout.fillWidth: true; Layout.fillHeight: true
+                        clip: true; spacing: 2
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: ScrollBar {}
+                        model: page.guide
+                        delegate: Rectangle {
+                            required property var modelData
+                            required property int index
+                            width: ListView.view.width
+                            implicitHeight: gsRow.implicitHeight + 12
+                            radius: Theme.radiusS
+                            color: page.guideIdx === index ? Theme.surfaceAlt : (gsHover.hovered ? Theme.hover : "transparent")
+                            HoverHandler { id: gsHover }
+                            Accessible.role: Accessible.ListItem
+                            Accessible.name: modelData.title
+                            TapHandler { onTapped: page.guideIdx = index }
+                            Text {
+                                id: gsRow
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: 10; anchors.rightMargin: 10
+                                text: modelData.title
+                                color: page.guideIdx === index ? Theme.primary : Theme.text
+                                font.family: Theme.family; font.pixelSize: Theme.fs
+                                font.weight: page.guideIdx === index ? Font.DemiBold : Font.Normal
+                                wrapMode: Text.Wrap
+                            }
+                        }
+                    }
+                }
+            }
+
+            VCard {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                Flickable {
+                    id: guideBody
+                    anchors.fill: parent; anchors.margins: 24
+                    contentWidth: width
+                    contentHeight: guideText.implicitHeight
+                    clip: true; boundsBehavior: Flickable.StopAtBounds
+                    ScrollBar.vertical: ScrollBar {}
+                    Text {
+                        id: guideText
+                        objectName: "guideBody"
+                        width: guideBody.width
+                        text: page.guide.length > 0 ? page.guide[Math.min(page.guideIdx, page.guide.length - 1)].body : ""
+                        textFormat: Text.MarkdownText
+                        color: Theme.text
+                        font.family: Theme.family; font.pixelSize: Theme.fs
+                        wrapMode: Text.Wrap
+                        lineHeight: 1.25
+                    }
                 }
             }
         }

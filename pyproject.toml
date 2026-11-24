@@ -40,7 +40,7 @@ vector-client = "vector.client.app:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"vector.client" = ["qml/**/*", "assets/**/*"]
+"vector.client" = ["qml/**/*", "assets/**/*", "help/*.md"]
 "vector.core" = ["contracts_data/*.json", "prodcal_data/*.xml"]
 
 [tool.pytest.ini_options]

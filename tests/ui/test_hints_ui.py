@@ -71,7 +71,7 @@ def test_help_page_by_f1_lists_and_searches_glossary(ui, qml_warnings):  # noqa:
     QTest.keyClick(ui.win, Qt.Key.Key_F1)
     ui.wait_idle()
     assert ui.page() == "help"
-    assert ui.nav()["Сокращения и подсказки"] is True
+    assert ui.nav()["Справка"] is True
     lst = ui.find("glossaryList")
     total = lst.property("count")
     assert total == len(_v(ui.backend, "glossary")) and total > 50
@@ -87,6 +87,29 @@ def test_help_page_by_f1_lists_and_searches_glossary(ui, qml_warnings):  # noqa:
     assert lst.property("count") == 0
     assert qml_warnings == []
 
+
+def test_help_page_guide_tab(ui, qml_warnings):  # noqa: F811
+    """Встроенное руководство (issue #2): вкладка «Руководство» — разделы слева, текст справа, всё без связи."""
+    ui.login("k.pavlov")
+    ui.win.requestActivate()
+    ui.pump(0.2)
+    QTest.keyClick(ui.win, Qt.Key.Key_F1)
+    ui.wait_idle()
+    assert ui.page() == "help"
+    ui.click(ui.find("tabGuide"))
+    ui.wait_idle()
+    sections = ui.find("guideSections")
+    total = sections.property("count")
+    assert total >= 20, "руководство должно содержать 21+ раздел"
+    body = ui.find("guideBody")
+    assert "Сервер — главный" in body.property("text")          # раздел 1 открыт по умолчанию
+    assert "![" not in body.property("text")                    # снимки заменены подписями
+    # Выбор другого раздела меняет текст.
+    page = ui.find("helpPage")
+    page.setProperty("guideIdx", 3)                              # «4. Работа без связи»
+    ui.pump(0.2)
+    assert "очеред" in body.property("text").lower()
+    assert qml_warnings == []
 
 def test_role_selects_expand_abbreviations(ui):
     ui.login("admin")

@@ -142,7 +142,7 @@ Item {
                               badgeTone: backend.delegationsOverview.manage ? "warning" : "primary" }
                     // Оргструктура (D-44) — всем: справочник компании и «кто проверяет мои отчёты»; правит администратор.
                     NavItem { objectName: "navOrg"; text: "Оргструктура"; iconName: "network"; active: shellRoot.page === "org"; onClicked: shellRoot.go("org") }
-                    NavItem { objectName: "navHelp"; text: "Сокращения и подсказки"; iconName: "circle-help"; active: shellRoot.page === "help"; onClicked: shellRoot.go("help") }
+                    NavItem { objectName: "navHelp"; text: "Справка"; iconName: "circle-help"; active: shellRoot.page === "help"; onClicked: shellRoot.go("help") }
                     NavItem { text: "Администрирование"; iconName: "shield-check"; active: shellRoot.page === "admin"; onClicked: shellRoot.go("admin"); visible: backend.hint("admin.list_users", backend.permRevision) }
                     }
                 }

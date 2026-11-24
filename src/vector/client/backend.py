@@ -24,7 +24,7 @@ from vector import __version__
 from vector.core import stock
 from vector.core.contracts import Contracts
 
-from . import (calc_view, delegation_view, hints, lifecycle_view, notification_view, delivery_view, production_view, purchasing_view,
+from . import (calc_view, delegation_view, help_text, hints, lifecycle_view, notification_view, delivery_view, production_view, purchasing_view,
                org_view, prodcal_view, quality_view, rkd_view, stock_view, workday_view, worktime_view)
 from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
@@ -1575,6 +1575,11 @@ class Backend(QObject):
         """Справочник сокращений для окна «Сокращения и подсказки» (F1): [{abbr, full, note}] по алфавиту."""
         return hints.glossary_rows()
 
+    @Property("QVariantList", constant=True)
+    def helpSections(self) -> list:
+        """Разделы встроенного руководства пользователя («Справка» → «Руководство»): [{id, title, body}].
+        Текст упакован в клиент (help/user-guide.md, sync_help.py) и доступен полностью без связи."""
+        return help_text.guide_sections(help_text.load_guide())
     @Slot(str, int, result=bool)
     def hint(self, action: str, _revision: int = 0) -> bool:
         """Подсказка интерфейса по глобальным ролям. Правила с ролями проекта — true (решит сервер)."""
