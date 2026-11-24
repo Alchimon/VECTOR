@@ -225,9 +225,20 @@ def worktime_view(reports: list[dict], projects: list[dict], tasks: list[dict], 
     for closure in overtime_closures or []:
         row = dict(closure)
         row["user_name"] = people.get(row.get("user_id"), "Сотрудник")
-        row["total_label"] = wt.hours_label(int((row.get("snapshot") or {}).get("total_minutes") or 0))
+        snap = row.get("snapshot") or {}
+        row["total_label"] = wt.hours_label(int(snap.get("total_minutes") or 0))
+        norm = snap.get("norm") or {}
+        # D-75: норма периода в ведомости — «план» рядом с фактом; неполный календарь помечается честно.
+        row["norm_label"] = (norm.get("label") or "") + ("" if norm.get("complete", True) else " (календарь неполный)")
         row["hash_short"] = (row.get("content_sha256") or "")[:12]
         closure_rows.append(row)
+    # D-75: норма текущего учётного периода из снимка сервера (общая, 40-часовая неделя).
+    cfg_norm = (overtime_period_config or {}).get("norm") or {}
+    norm_label = ""
+    if cfg_norm.get("label"):
+        norm_label = "Норма периода: " + cfg_norm["label"] + " — по производственному календарю РФ (40 ч/неделя)"
+        if not cfg_norm.get("complete", True):
+            norm_label += "; календарь покрывает период не полностью — норма ориентировочная"
     weekly_units = [{**u, "hours_label": wt.hours_label(int(u.get("minutes") or 0))}
                     for u in weekly.get("units", [])]
     # D-74: ТК-контур — справочники оснований/категорий из снимка сервера, свои категории для подсказки формы.
@@ -251,6 +262,7 @@ def worktime_view(reports: list[dict], projects: list[dict], tasks: list[dict], 
         "period_manage": bool(period_manage),
         "overtime_period_label": {"month": "Календарный месяц", "quarter": "Календарный квартал",
                                   "year": "Календарный год"}.get((overtime_period_config or {}).get("mode"), "Не настроен"),
+        "overtime_norm_label": norm_label,
         "tabs": tabs if len(tabs) > 1 else [], "default_tab": "review" if reviewer and to_review else "mine",
         "mine": mine, "review": others, "reviewer": reviewer, "online": online, "as_of": as_of_label(last_pull),
         "today": t_iso, "today_label": wt.date_label(t_iso), "today_id": today_row["id"] if today_row else "",

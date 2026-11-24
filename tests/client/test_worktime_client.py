@@ -214,3 +214,30 @@ def test_hr_contour_exposed_to_view():
     # Без данных ТК-контура (старый сервер) — пустые безопасные значения.
     v = wv.worktime_view([], [], [], {}, {"user_id": "e"}, False, True, "", TODAY)
     assert (v["hr_manage"], v["hr_grounds"], v["hr_profiles"], v["own_hr_categories"]) == (False, [], [], [])
+
+
+def test_period_norm_labels_in_view():
+    """D-75: норма периода из снимка сервера — подпись в панели и в строке закрытой ведомости;
+    неполный календарь помечается честно, а не угадывается."""
+    cfg = {"mode": "month", "norm": {"minutes": 9540, "label": "159 ч", "complete": True}}
+    v = wv.worktime_view([], [], [], {}, {"user_id": "e"}, False, True, "", TODAY,
+                         overtime_period_config=cfg,
+                         overtime_closures=[{"id": "c", "user_id": "e", "revision": 1,
+                                             "snapshot": {"total_minutes": 120, "norm": {"label": "159 ч",
+                                                                                          "complete": True}},
+                                             "content_sha256": "ab" * 12}])
+    assert v["overtime_norm_label"].startswith("Норма периода: 159 ч")
+    assert "ориентировочная" not in v["overtime_norm_label"]
+    assert v["overtime_closures"][0]["norm_label"] == "159 ч"
+    cfg["norm"]["complete"] = False
+    v = wv.worktime_view([], [], [], {}, {"user_id": "e"}, False, True, "", TODAY, overtime_period_config=cfg,
+                         overtime_closures=[{"id": "c", "user_id": "e", "revision": 1,
+                                             "snapshot": {"total_minutes": 0, "norm": {"label": "167 ч",
+                                                                                        "complete": False}},
+                                             "content_sha256": "ab" * 12}])
+    assert "ориентировочная" in v["overtime_norm_label"]
+    assert v["overtime_closures"][0]["norm_label"] == "167 ч (календарь неполный)"
+    # Старый снимок сервера без нормы — пустые подписи, без ошибок.
+    v = wv.worktime_view([], [], [], {}, {"user_id": "e"}, False, True, "", TODAY,
+                         overtime_period_config={"mode": "month"})
+    assert v["overtime_norm_label"] == ""

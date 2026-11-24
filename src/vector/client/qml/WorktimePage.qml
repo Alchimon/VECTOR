@@ -58,6 +58,8 @@ MasterDetail {
                         ToolTip.visible: overtimeTitleHover.hovered; ToolTip.text: "ВЕКТОР фиксирует согласованные часы и причины; денежный расчёт выполняется в 1С."
                         HoverHandler { id: overtimeTitleHover } }
                     Text { text: "Учётный период: " + (page.wv.overtime_period_label || "Не настроен"); color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS }
+                    Text { visible: (page.wv.overtime_norm_label || "") !== ""; text: page.wv.overtime_norm_label || ""
+                           color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs; wrapMode: Text.Wrap; Layout.fillWidth: true }
                     VButton { objectName: "overtimeNew"; text: "Заявка"; iconName: "plus"; kind: "primary"; compact: true
                         tip: "Создать предварительную заявку или срочно зафиксировать завершённую работу с причиной. Требуется связь."
                         onClicked: overtimeForm.openFor() }
@@ -136,7 +138,7 @@ MasterDetail {
                         Text { Layout.fillWidth: true; text: "Закрытая ведомость · " + modelData.user_name + " · "
                                 + modelData.period_start + " — " + modelData.period_end + " · версия " + modelData.revision
                             color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap }
-                        Text { text: modelData.total_label + " · SHA-256 " + modelData.hash_short
+                        Text { text: modelData.total_label + (modelData.norm_label ? " из нормы " + modelData.norm_label : "") + " · SHA-256 " + modelData.hash_short
                             color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsXs }
                     }
                 }

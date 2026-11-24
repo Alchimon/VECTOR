@@ -44,6 +44,7 @@ import sqlalchemy as sa
 
 from vector.core import org as og
 from vector.core import overtime as ot
+from vector.core import prodcal as pc
 from vector.core import workday as wd
 from vector.core import worktime as wt
 from vector.core.errors import Conflict, Denied, Rejected
@@ -558,6 +559,20 @@ class WorktimeMixin:
                            {"year": work_date.year, "already_reserved_minutes": int(year_total),
                             "requested_minutes": minutes, "limit_minutes": ot.YEAR_LIMIT_MIN})
 
+    def _period_norm(self, conn, start: date, end: date) -> dict:
+        """Норма учётного периода (blueprint 51 «Предлагаемая модель», D-75): сумма нормальных часов 40-часовой
+        недели по действующему производственному календарю (загруженный год, иначе встроенный, поверх — ручные
+        правки). Год без календаря делает норму «неполной», а не угадываемой; индивидуальные отсутствия
+        (отпуск, болезнь, приём/увольнение) требуют кадровых данных и здесь не уменьшают норму."""
+        years = sorted({start.year, end.year})
+        loaded = self._calendar_loaded(conn)
+        covered = [y for y in years if y in loaded or pc.builtin(y) is not None]
+        minutes = wd.period_norm_minutes(start, end, self._calendar(conn, years))
+        return {"minutes": minutes, "label": wd.minutes_label(minutes), "weekly_minutes": 2400,
+                "complete": len(covered) == len(years), "years": years, "covered_years": covered,
+                "note": "По производственному календарю РФ (40-часовая неделя); индивидуальные отсутствия "
+                        "не учитываются — норма периода общая."}
+
     def _overtime_request_create(self, ctx, p, ev):
         """Создать предварительную заявку или срочную запись после факта: минуты и причину вводит сам сотрудник, никакие действия программы не выводятся автоматически."""
         only_keys(p, {"id", "work_date", "start_at", "end_at", "minutes", "kind", "mode", "reason",
@@ -749,6 +764,7 @@ class WorktimeMixin:
         snapshot = {"scope": "approved_extra_hours_only", "user_id": user_id,
                     "period": {"mode": mode, "start": start.isoformat(), "end": end.isoformat(),
                                "config_version": config_version},
+                    "norm": self._period_norm(ctx.conn, start, end),
                     "total_minutes": sum(totals.values()), "minutes_by_kind": totals, "entries": entries,
                     "supersedes_id": previous_id}
         body = canon(snapshot)
@@ -855,7 +871,11 @@ class WorktimeMixin:
                 "overtime_closures": self._pull_overtime_closures(conn, uid, now),
                 "hr_categories": self._pull_hr_categories(conn, uid, now),
                 "overtime_period_config": ({"mode": period_cfg["mode"], "version": period_cfg["version"],
-                                            "updated_at": iso(period_cfg["updated_at"])} if period_cfg else None),
+                                            "updated_at": iso(period_cfg["updated_at"]),
+                                            "period_start": self._overtime_period_bounds(now.date(), period_cfg["mode"])[0].isoformat(),
+                                            "period_end": self._overtime_period_bounds(now.date(), period_cfg["mode"])[1].isoformat(),
+                                            "norm": self._period_norm(conn, *self._overtime_period_bounds(now.date(), period_cfg["mode"]))}
+                                           if period_cfg else None),
                 "worktime_weekly_metrics": self._weekly_department_metrics(conn, uid, now, by_role)}
 
     def _weekly_department_metrics(self, conn, uid: str, now, by_role: bool) -> dict:

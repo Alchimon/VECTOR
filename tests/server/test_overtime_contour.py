@@ -166,3 +166,28 @@ def test_legacy_request_without_grounds_row(world):
     pulled = manager.query("pull")["result"]["overtime_requests"]
     legacy = next(x for x in pulled if x["id"] == rid)
     assert "ground" not in legacy
+
+
+def test_period_norm_in_pull_and_closure_snapshot(world):
+    """D-75: норма учётного периода — по производственному календарю (40 ч/неделя); год без календаря —
+    «неполная» норма, не угаданная; снимок закрытия фиксирует норму вместе с ведомостью."""
+    eng = world.login("eng1")
+    world.admin.ok("overtime.period_set", {"mode": "month"})
+    cfg = eng.query("pull")["result"]["overtime_period_config"]
+    assert cfg["period_start"] == "2026-11-01" and cfg["period_end"] == "2026-11-30"
+    norm = cfg["norm"]
+    # Ноябрь 2026: будних дней 21, минус праздник 4.11 (выходной) = 20 рабочих; 3.11 — предпраздничный,
+    # короче на час: 20 × 480 − 60 = 9540 минут = 159 ч.
+    assert norm["minutes"] == 9540 and norm["label"] == "159 ч" and norm["complete"] is True
+    assert norm["years"] == [2026] and norm["weekly_minutes"] == 2400
+    # Закрытие периода фиксирует норму в неизменяемом снимке (и возвращает её в результате команды).
+    closed = world.admin.ok("overtime.period_close", {"id": new_id(), "user_id": world.users["eng1"],
+                                                      "anchor_date": "2026-11-30", "reason": "Сверено"})
+    snap = closed["overtime_period_closure"]["snapshot"]
+    assert snap["norm"]["minutes"] == norm["minutes"] and snap["norm"]["complete"] is True
+    # Период в году без календаря (встроенные — 2024–2027): норма считается по правилу будней, но честно
+    # помечается неполной, а не выдаётся за точную.
+    future = world.admin.ok("overtime.period_close", {"id": new_id(), "user_id": world.users["eng1"],
+                                                      "anchor_date": "2028-06-15", "reason": "Сверено"})
+    norm28 = future["overtime_period_closure"]["snapshot"]["norm"]
+    assert norm28["complete"] is False and norm28["years"] == [2028] and norm28["minutes"] > 0
