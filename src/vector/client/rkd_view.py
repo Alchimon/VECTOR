@@ -7,9 +7,8 @@
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Optional
 
-from vector.core import rkd as rk
 
 # Тон чипа статуса ревизии (цвета — Theme в QML).
 _STATUS_TONE = {"in_work": "neutral", "ready_for_rp": "info", "returned_to_engineer": "danger",

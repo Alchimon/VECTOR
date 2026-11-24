@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Optional
+from typing import Optional
 
 # Порядок и ярлыки шести потоков проекта (D-56): ключ потока → имя секции workflows.
 STREAM_ORDER = ["contract", "rkd", "procurement", "production", "shipping", "site"]

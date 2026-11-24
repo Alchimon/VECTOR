@@ -21,7 +21,7 @@ import io
 import json
 import re
 import zipfile
-from typing import Optional
+from typing import Any, Optional
 
 from vector.core.delivery import canon
 

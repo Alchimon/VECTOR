@@ -72,7 +72,7 @@ MasterDetail {
                   text: "Утвердить"; kind: "primary"; iconName: "circle-check"; onClicked: approveForm.open() }
         VButton { objectName: "btnNewRevision"; visible: sel !== null && sel.status === "approved" && page.pv.is_technologist === true
                   enabled: page.pv.kit_options.some(k => sel && k.id === sel.kit_id)
-                  text: "Новая ревизия"; iconName: "copy"; onClicked: editor.openFor(sel, true) }
+                  text: "Новая ревизия ТП"; iconName: "copy"; onClicked: editor.openFor(sel, true) }
     }
 
     SectionTitle { text: "Реквизиты"; iconName: "info" }

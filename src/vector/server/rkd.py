@@ -14,7 +14,6 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import uuid
 from typing import Any, Optional
 
 import sqlalchemy as sa

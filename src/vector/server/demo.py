@@ -435,10 +435,10 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
 
     # D-62: профиль шифров ревизий демо-проекта (шаблон, пример и словарь статусов выдачи задаёт ЗАКАЗЧИК —
     # здесь вымышленные), ревизия документа АТХ-001 по шаблону со штампом выдачи (снимок словаря).
-    prof = cmd(rp, "docprofile.create", {"id": str(uuid.uuid4()), "project_id": pid, "name": "Схема заказчика «ТехМаш»",
-                                         "label_pattern": r"\d{2}", "label_example": "01",
-                                         "issue_statuses": [{"code": "IFC", "label_ru": "Для производства работ"},
-                                                            {"code": "CEF", "label_ru": "Для сведения"}]})["profile"]
+    cmd(rp, "docprofile.create", {"id": str(uuid.uuid4()), "project_id": pid, "name": "Схема заказчика «ТехМаш»",
+                                  "label_pattern": r"\d{2}", "label_example": "01",
+                                  "issue_statuses": [{"code": "IFC", "label_ru": "Для производства работ"},
+                                                     {"code": "CEF", "label_ru": "Для сведения"}]})
     rev = cmd(eng, "docrev.create", {"id": str(uuid.uuid4()), "document_id": docs["АТХ-001"], "label": "01",
                                      "doc_version_id": 3})["revision"]
     rev = cmd(eng, "docrev.transition", {"id": rev["id"], "to": "ready_for_rp"}, ev=rev["version"])["revision"]
@@ -447,7 +447,7 @@ def _seed(svc, admin_login: str, admin_password: str, demo_password: str) -> dic
     cmd(rp, "docrev.set_issue", {"id": rev["id"], "status_code": "IFC"})
     # Предпросмотр шифра перед следующей ревизией: «02» подходит под шаблон, «REV-2» — нет (онлайн-запрос,
     # в БД ничего не пишется).
-    preview = cmd(rp, "docprofile.preview", {"project_id": pid, "kit_id": kits["АТХ"], "label": "02"})
+    cmd(rp, "docprofile.preview", {"project_id": pid, "kit_id": kits["АТХ"], "label": "02"})
     # D-63: ревизия «01» отправлена заказчику трансмитталом — в той же транзакции собран неизменяемый
     # ZIP-пакет (манифест + точные версии файлов; хэш пакета в pull, скачивание — «пакет трансмиттала»).
     cmd(rp, "transmittal.create", {"id": str(uuid.uuid4()), "project_id": pid, "recipient": "ООО «ТехМаш», отдел АСУ",

@@ -156,6 +156,24 @@ def test_production_view_for_worker_and_master(world, plant):
     assert next(o for o in wo["operations"] if o["op_no"] == 10)["norm_label"] == "3 ч 00 мин"   # 90 мин × 2
 
 
+def test_wo_row_readiness_risks_formatted():
+    """Снимок готовности с риск-разрешением (D-61): карточка наряда показывает его с датой и причиной.
+
+    Регрессия: ветка с непустым readiness.risks использовала _date_ru без импорта — падала бы с NameError
+    на любом наряде, выпущенном по риск-разрешению (прогон линтером F821)."""
+    wo = {"id": "wo1", "doc_no": 7, "status": "released", "qty": 2, "tp_revision_no": 1,
+          "readiness": {"verdict": "ready_with_deviations", "verdict_label": "Готов с отклонениями",
+                        "readiness_ok": True,
+                        "risks": [{"label_ru": "Сборка по неутверждённой РКД", "due_on": "2026-12-01",
+                                   "reason": "Заказчик подтвердил письмом"}],
+                        "materials": [{"state": "short"}, {"state": "short"}]},
+          "materials_ready": True}
+    row = pv._wo_row(wo, [], True, False, True, {})
+    assert row["readiness_deviations"] == ["Сборка по неутверждённой РКД — до 01.12.2026: Заказчик подтвердил письмом",
+                                           "Материалы обеспечены не полностью (2 поз.)"]
+    assert row["readiness_label"] == "Готов с отклонениями" and row["readiness_tone"] == "warning"
+
+
 def test_clean_operations_and_problems():
     rows = [{"op_no": "10", "name": " Сборка ", "work_center": "", "norm_min": "1,5", "note": ""},
             {"op_no": "", "name": "", "work_center": "", "norm_min": "", "note": ""},       # пустая строка формы — пропуск

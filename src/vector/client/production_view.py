@@ -22,7 +22,7 @@ from typing import Any, Optional
 from vector.core import production as prod
 
 from .calc_view import fmt_decimal
-from .stock_view import as_of_label, qty_label
+from .stock_view import _date_ru, as_of_label, qty_label
 
 # Статусы проекта, в которых возможны ТП и наряды (как на сервере: PRODUCTION_PROJECT_STATUSES).
 PRODUCTION_PROJECT_STATUSES = ("rkd_in_progress", "rkd_issued", "production")
@@ -294,9 +294,6 @@ def production_view(tps: list[dict], specs: list[dict], wos: list[dict], ops: li
     tabs.append({"id": "orders", "label": "Наряды", "icon": "clipboard-list"})
     if tp_rows or "technologist" in roles or "dept_head" in roles:
         tabs.append({"id": "tps", "label": "Техпроцессы", "icon": "list-checks"})
-    # Предложения норм (D-72): ведущим инженерам (технологи), РП и руководителям отделов.
-    can_propose = bool(roles & {"lead_engineer", "rp", "dept_head"})
-    can_decide = bool(roles & {"lead_engineer", "dept_head"})
     return {
         "online": online, "as_of": as_of_label(last_pull), "tabs": tabs, "default_tab": tabs[0]["id"],
         "tps": tp_rows, "work_orders": wo_rows, "my_ops": my_ops,

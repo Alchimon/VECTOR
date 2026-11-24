@@ -171,7 +171,6 @@ class Harness:
     def scroll_detail_to(self, item):
         """Прокрутить карточку справа так, чтобы item оказался вверху видимой области (для скриншотов)."""
         from PySide6.QtCore import QPointF
-        from PySide6.QtQuick import QQuickItem
         p = item
         while p is not None and p.property("contentY") is None:
             p = p.parentItem()

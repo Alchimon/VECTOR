@@ -504,6 +504,7 @@ def verify_backup(path: Path, keys: KeySource) -> VerifyReport:
     header, recs = _records(path, keys)
     problems: list[str] = []
     current, dg, counts, hashes, end = None, None, {}, {}, None
+    n = 0  # строк текущей таблицы; используется, только когда current уже назначен (см. ниже)
     for r in recs:
         if r["type"] == "table":
             if current:
