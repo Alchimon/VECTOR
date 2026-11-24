@@ -134,6 +134,27 @@ Item {
                     }
                     VButton { text: "Выдать роль"; kind: "soft"; iconName: "plus"; onClicked: grant.open() }
                     Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
+                    SectionTitle { text: "Кадровые категории"; iconName: "id-card" }
+                    Text { text: "Допуск к сверхурочной работе и работе в выходные/праздники (ст. 99, 113 ТК РФ). Запрещающая категория блокирует подачу и согласование заявок."
+                           color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    ColumnLayout {
+                        id: hrCatList
+                        Layout.fillWidth: true; spacing: 0
+                        Repeater {
+                            model: backend.hrCategoryCatalog
+                            delegate: CheckBox {
+                                required property var modelData
+                                property string code: modelData.code
+                                objectName: "hrCat_" + modelData.code
+                                text: modelData.label_ru + " (" + modelData.article + ")"
+                                checked: page.sel ? (page.sel.hr_categories || []).indexOf(modelData.code) >= 0 : false
+                            }
+                        }
+                    }
+                    VButton { objectName: "hrCatSave"; text: "Сохранить категории"; iconName: "check"; kind: "soft"
+                        tip: "Правка версионируется, требует основания; сотрудник получит уведомление. Действует на новые заявки и на решения по ожидающим."
+                        onClicked: { hrForm.open() } }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: Theme.border }
                     SectionTitle { text: "Учётная запись"; iconName: "key-round" }
                     VButton { text: "Сбросить пароль"; iconName: "key-round"; Layout.fillWidth: true; onClicked: reset.open() }
                     VButton { text: "Завершить все сеансы"; iconName: "log-out"; Layout.fillWidth: true
@@ -198,6 +219,28 @@ Item {
         VField { id: aReason; label: "Основание"; required: true }
     }
     Cmd { id: aCmd; dialog: act; tag: "adm-act" }
+
+    // Кадровые категории ТК-контура (D-74): отмеченные коды + обязательное основание; сервер версионирует запись.
+    FormDialog {
+        id: hrForm
+        title: "Кадровые категории"
+        subtitle: page.sel ? page.sel.display_name + " — допуск к работе вне графика (ст. 99, 113 ТК РФ)" : ""
+        confirmText: "Сохранить категории"
+        canConfirm: hrReason.text.trim() !== ""
+        onOpened: hrReason.text = ""
+        onConfirmed: {
+            var codes = []
+            for (var i = 0; i < hrCatList.children.length; i++) {
+                var ch = hrCatList.children[i]
+                if (ch.code !== undefined && ch.checked) codes.push(ch.code)
+            }
+            hrCmd.run("hr.category_set", { user_id: page.sel.id, categories: codes, reason: hrReason.text.trim() },
+                      (page.sel.hr_categories_version || 0))
+        }
+        VField { id: hrReason; label: "Основание"; required: true; placeholder: "Приказ № …, заявление работника от …" }
+    }
+    Cmd { id: hrCmd; dialog: hrForm; tag: "adm-hr-cat"
+        onDone: function(r) { if (r.status === "accepted") page.reload() } }
 
     // Публикация настройки: новое значение + причина. Версия — та, что видел администратор (0 — не задавалась);
     // если её успели изменить, сервер вернёт конфликт и форма покажет причину.

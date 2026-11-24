@@ -71,7 +71,7 @@ from vector.core import money
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
 # v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
 #         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
-SCHEMA_VERSION = 39
+SCHEMA_VERSION = 40
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -1638,6 +1638,26 @@ overtime_period_closures = sa.Table("overtime_period_closures", metadata,
     sa.CheckConstraint("period_end >= period_start", name="range"),
     sa.CheckConstraint("revision > 0", name="revision"))
 
+# ---- ТК-контур сверхурочных (D-74, blueprint 51): кадровые категории и основание/согласия заявки ----
+# Категории работника (ст. 99 ч. 4–5, ст. 113 ч. 7, 259, 268 ТК РФ) назначает администратор; перечень кодов —
+# в vector.core.overtime, меняется только версией программы. Каждая правка — новая версия (история в аудите).
+hr_categories = sa.Table("hr_categories", metadata,
+    sa.Column("user_id", ID, sa.ForeignKey("users.id"), primary_key=True),
+    sa.Column("categories_json", T, nullable=False),
+    sa.Column("updated_by", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False))
+# Основание привлечения (справочник ст. 99/113) и отметки о согласии/разъяснении права отказа — неизменяемая
+# строка к заявке (как overtime_request_periods): категории заявителя фиксируются снимком на момент подачи,
+# а при решении руководителя действующие категории проверяются повторно.
+overtime_request_grounds = sa.Table("overtime_request_grounds", metadata,
+    sa.Column("request_id", ID, sa.ForeignKey("overtime_requests.id"), primary_key=True),
+    sa.Column("ground", U(32), nullable=False),
+    sa.Column("consent_confirmed", sa.Boolean, nullable=False),
+    sa.Column("refusal_right_notified", sa.Boolean, nullable=False),
+    sa.Column("categories_json", T, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False))
+
 # ---- производственный календарь (D-48, ответ владельца на A-52 п. 3) ----
 # Загруженный в базу календарь на год (xmlcalendar.ru из интернета или из файла; vector.core.prodcal). Загруженный год
 # важнее встроенного в программу. Повторная загрузка года заменяет его дни (версия растёт).
@@ -2248,7 +2268,8 @@ for _t, _err in ((calc_versions, 50003), (calc_version_lines, 50004), (project_c
                  (org_events, 50035), (workday_events, 50036), (workday_auto_finishes, 50037), (overtime_events, 50040), (overtime_request_periods, 50041), (overtime_period_closures, 50042),
                  (project_events, 50043), (project_closeouts, 50044), (document_reviews, 50045),
                  (document_comment_responses, 50046), (transmittal_items, 50047),
-                 (assembly_readiness_snapshots, 50048), (transmittal_packages, 50049)):
+                 (assembly_readiness_snapshots, 50048), (transmittal_packages, 50049),
+                 (overtime_request_grounds, 50050)):
     _immutable(_t, _err)
 
 for ddl in (_PG_FN, _PG_TRG, _PG_TRUNC):

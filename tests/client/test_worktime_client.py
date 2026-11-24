@@ -192,3 +192,25 @@ def test_program_assembles_missing_report_then_self_check_and_submit(world, proj
     rp.list_local = lambda t: [] if t == "daily_report" else orig(t)
     assert rp.assemble_missing_reports() == [] and rp.problem_count() == 0 and rp.pending_count() == 0
     assert rp.db.execute("SELECT COUNT(*) FROM outbox WHERE command='report.create' AND state='discarded'").fetchone()[0] == 1
+
+
+def test_hr_contour_exposed_to_view():
+    """D-74: справочники оснований/категорий и профили приходят в снимке; свои категории — подсказкой формы."""
+    hr = {"grounds": [{"code": "finish_urgent", "kinds": ["overtime"], "consent": True, "label_ru": "Закончить",
+                       "article": "ст. 99 ч. 2 п. 1 ТК РФ"},
+                      {"code": "emergency_state", "kinds": ["overtime"], "consent": False, "label_ru": "ЧС",
+                       "article": "ст. 99 ч. 3 п. 3 ТК РФ"}],
+          "category_catalog": [{"code": "minor", "label_ru": "Несовершеннолетний работник", "rule": "forbidden",
+                                "article": "ст. 99 ч. 4 ТК РФ"}],
+          "profiles": [{"user_id": "e", "categories": ["minor"], "category_labels": ["Несовершеннолетний работник"],
+                        "version": 2}],
+          "manage": True, "own": ["minor"]}
+    v = wv.worktime_view([], [], [], {}, {"user_id": "e"}, False, True, "", TODAY, hr_categories=hr)
+    assert v["hr_manage"] is True and v["own_hr_categories"] == ["minor"]
+    assert v["own_hr_category_labels"] == ["Несовершеннолетний работник"]
+    assert v["hr_grounds"][0]["consent_label"] == "требуется письменное согласие"
+    assert v["hr_grounds"][1]["consent_label"] == "согласие по закону не требуется"
+    assert v["hr_profiles"][0]["category_labels"] == ["Несовершеннолетний работник"]
+    # Без данных ТК-контура (старый сервер) — пустые безопасные значения.
+    v = wv.worktime_view([], [], [], {}, {"user_id": "e"}, False, True, "", TODAY)
+    assert (v["hr_manage"], v["hr_grounds"], v["hr_profiles"], v["own_hr_categories"]) == (False, [], [], [])

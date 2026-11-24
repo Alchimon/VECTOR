@@ -43,6 +43,7 @@ from typing import Any, Optional
 import sqlalchemy as sa
 
 from vector.core import org as og
+from vector.core import overtime as ot
 from vector.core import workday as wd
 from vector.core import worktime as wt
 from vector.core.errors import Conflict, Denied, Rejected
@@ -50,9 +51,9 @@ from vector.core.errors import Conflict, Denied, Rejected
 from .authz import active_delegated, project_member
 from . import db as _db
 from .db import (audit_log, daily_report_auto, daily_report_events, daily_report_line_sources, daily_report_lines,
-                 daily_reports, org_members, org_units, overtime_events, overtime_period_closures, overtime_period_config,
-                 overtime_request_periods, overtime_requests, projects, tasks,
-                 wo_operations, wo_timer_events, work_orders)
+                 daily_reports, hr_categories, org_members, org_units, overtime_events, overtime_period_closures,
+                 overtime_period_config, overtime_request_grounds, overtime_request_periods, overtime_requests,
+                 projects, tasks, users, wo_operations, wo_timer_events, work_orders)
 from .validation import canon, iso, only_keys, req_uuid
 
 # Подписи шагов журнала отчёта (история карточки).
@@ -98,10 +99,10 @@ def _activity_objects() -> dict[str, tuple]:
 
 
 def _w(fn, *a, **kw):
-    """Вызвать правило vector.core.worktime; WorktimeError → Rejected (ошибка ввода, с полем и замечаниями)."""
+    """Вызвать правило vector.core.*; ошибка правила → Rejected (ошибка ввода, с полем и замечаниями)."""
     try:
         return fn(*a, **kw)
-    except (wt.WorktimeError, wd.WorkdayError) as e:
+    except (wt.WorktimeError, wd.WorkdayError, ot.OvertimeError) as e:
         raise Rejected(e.code, e.message_ru, e.details)
 
 
@@ -400,6 +401,65 @@ class WorktimeMixin:
 
     # ------------------------------------------------------------ pull
     # ------------------------------------------------------------ заявки на часы вне обычного графика (A-55/A-56)
+    # ------------------------------------------------------------ ТК-контур (D-74): кадровые категории
+    def _hr_category_codes(self, conn, user_id: str) -> list[str]:
+        """Действующие категории работника из справочника ТК-контура (пусто — ограничений нет)."""
+        r = conn.execute(sa.select(hr_categories).where(hr_categories.c.user_id == user_id)).first()
+        if r is None:
+            return []
+        try:
+            return json.loads(r.categories_json)
+        except (TypeError, ValueError):
+            return []
+
+    def _hr_category_set(self, ctx, p, ev):
+        """Назначить/снять кадровые категории работника (ст. 99 ч. 4–5, 113 ч. 7 ТК РФ); только администратор."""
+        only_keys(p, {"user_id", "categories", "reason"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "hr.category_manage", ctx.now)
+        uid = req_uuid(p, "user_id")
+        target = self._require(ctx.conn, users, uid, "Сотрудник")
+        codes = _w(ot.parse_categories, p.get("categories"))
+        reason = _w(wd.parse_reason, p.get("reason"), True)
+        old = ctx.conn.execute(sa.select(hr_categories).where(hr_categories.c.user_id == uid)).first()
+        if old is not None:
+            self._check_version(dict(old._mapping), ev, lambda x: {"categories": json.loads(x["categories_json"]),
+                                                                   "version": x["version"]})
+        if old is None:
+            ctx.conn.execute(hr_categories.insert().values(user_id=uid, categories_json=canon(codes),
+                                                           updated_by=ctx.user_id, updated_at=ctx.now, version=1))
+            before, version = None, 1
+        else:
+            # Первичный ключ — user_id, поэтому обновление вручную (общий помощник работает по id).
+            n = ctx.conn.execute(hr_categories.update()
+                                 .where(hr_categories.c.user_id == uid, hr_categories.c.version == old.version)
+                                 .values(version=old.version + 1, categories_json=canon(codes),
+                                         updated_by=ctx.user_id, updated_at=ctx.now)).rowcount
+            if n != 1:
+                raise Conflict("version_conflict", "Запись изменена параллельно. Повторите после обновления.",
+                               {"current": None})
+            before, version = old.version, old.version + 1
+        ctx.log("hr_categories", uid, auth, before, version, {"categories": codes, "reason": reason})
+        # Прозрачность (A-54): работник видит, какие категории ему назначены и на каком основании.
+        self._notify(ctx, [uid], "hr_categories", "Кадровые категории обновлены",
+                     body="Категории допуска к работе вне графика: " + (", ".join(ot.category_labels(codes)) or "нет")
+                          + f". Основание: {reason}",
+                     object_type="hr_categories", object_id=uid)
+        return {"hr_categories": {"user_id": uid, "categories": codes, "version": version,
+                                  "employee": target["display_name"]}}
+
+    def _overtime_ground_row(self, conn, rid: str) -> Optional[dict]:
+        """Неизменяемое основание и отметки согласия заявки (D-74); у заявок до D-74 строки нет (дедовщина)."""
+        r = conn.execute(sa.select(overtime_request_grounds)
+                         .where(overtime_request_grounds.c.request_id == rid)).first()
+        if r is None:
+            return None
+        cats = json.loads(r.categories_json)
+        return {"ground": r.ground, "ground_label": ot.GROUNDS_BY_CODE.get(r.ground, {}).get("label_ru", r.ground),
+                "ground_article": ot.GROUNDS_BY_CODE.get(r.ground, {}).get("article", ""),
+                "consent_confirmed": bool(r.consent_confirmed),
+                "refusal_right_notified": bool(r.refusal_right_notified),
+                "categories": cats, "category_labels": ot.category_labels(cats)}
+
     @staticmethod
     def _overtime_period_bounds(day: date, mode: str) -> tuple[date, date]:
         """Календарные границы месяца, квартала или года; любой допустимый период не длиннее года."""
@@ -475,21 +535,33 @@ class WorktimeMixin:
             base.append(table.c.id != exclude_id)
         day_total = conn.execute(sa.select(sa.func.coalesce(sa.func.sum(table.c.minutes), 0)).where(
             *base, table.c.work_date == work_date)).scalar_one()
-        if int(day_total) + minutes > 4 * 60:
+        if int(day_total) + minutes > ot.DAY_LIMIT_MIN:
             raise Rejected("daily_overtime_limit", "Сверхурочная работа ограничена четырьмя часами в день.",
                            {"date": work_date.isoformat(), "already_reserved_minutes": int(day_total),
-                            "requested_minutes": minutes, "limit_minutes": 240})
+                            "requested_minutes": minutes, "limit_minutes": ot.DAY_LIMIT_MIN})
+        # Ст. 99 ч. 6: не более 4 часов в течение ДВУХ дней подряд — проверяем обе пары с соседними датами (D-74).
+        for neighbor in (work_date - timedelta(days=1), work_date + timedelta(days=1)):
+            pair = conn.execute(sa.select(sa.func.coalesce(sa.func.sum(table.c.minutes), 0)).where(
+                *base, table.c.work_date == neighbor)).scalar_one()
+            if int(day_total) + int(pair) + minutes > ot.TWO_DAY_LIMIT_MIN:
+                raise Rejected("two_day_overtime_limit",
+                               "Сверхурочная работа ограничена четырьмя часами в течение двух дней подряд "
+                               "(ст. 99 ч. 6 ТК РФ).",
+                               {"date": work_date.isoformat(), "neighbor": neighbor.isoformat(),
+                                "neighbor_minutes": int(pair), "date_minutes": int(day_total),
+                                "requested_minutes": minutes, "limit_minutes": ot.TWO_DAY_LIMIT_MIN})
         year_start, year_end = date(work_date.year, 1, 1), date(work_date.year, 12, 31)
         year_total = conn.execute(sa.select(sa.func.coalesce(sa.func.sum(table.c.minutes), 0)).where(
             *base, table.c.work_date >= year_start, table.c.work_date <= year_end)).scalar_one()
-        if int(year_total) + minutes > 120 * 60:
+        if int(year_total) + minutes > ot.YEAR_LIMIT_MIN:
             raise Rejected("annual_overtime_limit", "Годовой лимит сверхурочной работы — 120 часов; повышенный лимит не настроен.",
                            {"year": work_date.year, "already_reserved_minutes": int(year_total),
-                            "requested_minutes": minutes, "limit_minutes": 7200})
+                            "requested_minutes": minutes, "limit_minutes": ot.YEAR_LIMIT_MIN})
 
     def _overtime_request_create(self, ctx, p, ev):
         """Создать предварительную заявку или срочную запись после факта: минуты и причину вводит сам сотрудник, никакие действия программы не выводятся автоматически."""
-        only_keys(p, {"id", "work_date", "start_at", "end_at", "minutes", "kind", "mode", "reason"})
+        only_keys(p, {"id", "work_date", "start_at", "end_at", "minutes", "kind", "mode", "reason",
+                      "ground", "consent_confirmed", "refusal_right_notified"})
         auth = self.policy.check(ctx.conn, ctx.user_id, "worktime.own", ctx.now)
         rid = req_uuid(p, "id")
         self._ensure_new(ctx.conn, overtime_requests, rid)
@@ -524,6 +596,11 @@ class WorktimeMixin:
                            {"field": "kind", "day_type": day_type})
         if kind == "overtime":
             self._check_overtime_legal_limits(ctx.conn, ctx.user_id, work_date, minutes)
+        # ТК-контур (D-74): основание из справочника ст. 99/113, отметки согласия, кадровые категории заявителя.
+        my_categories = self._hr_category_codes(ctx.conn, ctx.user_id)
+        consent = p.get("consent_confirmed") is True
+        notice = p.get("refusal_right_notified") is True
+        _w(ot.validate_request, kind, p.get("ground"), my_categories, consent, notice)
         raw_start = p.get("start_at")
         try:
             local_start = raw_start if isinstance(raw_start, datetime) else datetime.fromisoformat(str(raw_start).replace("Z", "+00:00"))
@@ -541,7 +618,12 @@ class WorktimeMixin:
         ctx.conn.execute(overtime_requests.insert().values(**values))
         ctx.conn.execute(overtime_request_periods.insert().values(request_id=rid, mode=config["mode"],
             period_start=period_start, period_end=period_end, config_version=config["version"], created_at=ctx.now))
+        ctx.conn.execute(overtime_request_grounds.insert().values(
+            request_id=rid, ground=p.get("ground"), consent_confirmed=consent, refusal_right_notified=notice,
+            categories_json=canon(my_categories), created_at=ctx.now))
         self._overtime_event(ctx, rid, "created", {"mode": mode, "kind": kind, "minutes": minutes, "reason": reason,
+                                                   "ground": p.get("ground"), "consent_confirmed": consent,
+                                                   "refusal_right_notified": notice, "categories": my_categories,
                                                    "accounting_period": config["mode"],
                                                    "period_start": period_start.isoformat(),
                                                    "period_end": period_end.isoformat()}, auth)
@@ -552,7 +634,9 @@ class WorktimeMixin:
         self._notify(ctx, reviewers, "overtime_request", "Запрос на работу вне графика требует решения руководителя",
                      body=f"{work_date:%d.%m.%Y}: {minutes} мин.; причина: {reason}",
                      object_type="overtime_request", object_id=rid)
-        return {"overtime_request": self._vovertime(values, self._overtime_period_snapshot(ctx.conn, rid))}
+        out = self._vovertime(values, self._overtime_period_snapshot(ctx.conn, rid))
+        out.update(self._overtime_ground_row(ctx.conn, rid) or {})
+        return {"overtime_request": out}
 
     def _overtime_request_decide(self, ctx, p, ev):
         """Решение руководителя — отдельное действие с проверкой версии; ожидающую заявку нельзя незаметно изменить."""
@@ -577,6 +661,16 @@ class WorktimeMixin:
         if decision == "approve" and o["kind"] == "overtime":
             # Pending applications reserve capacity, and the same limits are rechecked at decision time.
             self._check_overtime_legal_limits(ctx.conn, o["user_id"], o["work_date"], int(o["minutes"]), o["id"])
+        if decision == "approve":
+            # ТК-контур (D-74): запрещающие категории действуют всегда и проверяются повторно в момент решения
+            # (категория могла быть назначена уже после подачи); заявки до D-74 — только запрещающие категории.
+            current = self._hr_category_codes(ctx.conn, o["user_id"])
+            grounds = self._overtime_ground_row(ctx.conn, o["id"])
+            if grounds is None:
+                _w(ot.validate_request, o["kind"], "emergency_state", current, True, True)
+            else:
+                _w(ot.validate_request, o["kind"], grounds["ground"], current,
+                   grounds["consent_confirmed"], grounds["refusal_right_notified"])
         status = "approved" if decision == "approve" else "rejected"
         n = self._update_versioned(ctx, overtime_requests, o, {"status": status, "decided_by": ctx.user_id,
             "decided_at": ctx.now, "decision_comment": comment, "authority": auth.describe()})
@@ -584,7 +678,11 @@ class WorktimeMixin:
         ctx.log("overtime_request", o["id"], auth, o["version"], n["version"], {"decision": status})
         self._notify(ctx, [o["user_id"]], "overtime_decided", f"Заявка на работу вне графика: {status}",
                      body=comment or "", object_type="overtime_request", object_id=o["id"])
-        return {"overtime_request": self._vovertime(n, self._overtime_period_snapshot(ctx.conn, o["id"]))}
+        out = self._vovertime(n, self._overtime_period_snapshot(ctx.conn, o["id"]))
+        grounds = self._overtime_ground_row(ctx.conn, o["id"])
+        if grounds is not None:
+            out.update(grounds)
+        return {"overtime_request": out}
 
     def _overtime_period_close(self, ctx, p, ev):
         """Close one employee's approved-extra-hours ledger; correction always creates a new immutable revision."""
@@ -687,6 +785,28 @@ class WorktimeMixin:
                         "created_at": iso(r.created_at), "snapshot": snap})
         return out
 
+    def _pull_hr_categories(self, conn, uid: str, now) -> dict:
+        """ТК-контур (D-74): свои категории и категории сотрудников видимого контура (проверяющие отчёты);
+
+        администратор (schedule.manage) видит всех. Плюс справочники оснований/категорий из core — они
+        версионируются программой, поэтому передаются в снимке, а не зашиваются в клиент.
+        """
+        by_role = self.policy.can(conn, uid, "report.review", now)
+        can_manage = self.policy.can(conn, uid, "schedule.manage", now)
+        visible = (lambda _author: True) if can_manage else (
+            self._review_scope(conn, uid, now, by_role) if by_role or self._is_org_head(conn, uid) else None)
+        profiles = []
+        for r in conn.execute(sa.select(hr_categories)).all():
+            if r.user_id != uid and not (visible is not None and visible(r.user_id)):
+                continue
+            cats = json.loads(r.categories_json)
+            profiles.append({"user_id": r.user_id, "categories": cats, "category_labels": ot.category_labels(cats),
+                             "version": r.version})
+        return {"profiles": profiles, "manage": bool(can_manage),
+                "own": self._hr_category_codes(conn, uid),
+                "grounds": [dict(g) for g in ot.GROUNDS],
+                "category_catalog": [dict(c) for c in ot.CATEGORIES]}
+
     def _pull_overtime(self, conn, uid: str, now) -> list[dict]:
         """Свои заявки и заявки, видимые проверяющим отчёты сотрудника; скрытые сведения об активности не выдаются."""
         by_role = self.policy.can(conn, uid, "report.review", now)
@@ -694,8 +814,16 @@ class WorktimeMixin:
         visible = (lambda _author: True) if can_manage else (
             self._review_scope(conn, uid, now, by_role) if by_role or self._is_org_head(conn, uid) else None)
         rows = conn.execute(sa.select(overtime_requests).order_by(overtime_requests.c.created_at.desc())).all()
-        return [self._vovertime(dict(r._mapping), self._overtime_period_snapshot(conn, r.id)) for r in rows
-                if r.user_id == uid or (visible is not None and visible(r.user_id))]
+        out = []
+        for r in rows:
+            if r.user_id != uid and not (visible is not None and visible(r.user_id)):
+                continue
+            v = self._vovertime(dict(r._mapping), self._overtime_period_snapshot(conn, r.id))
+            grounds = self._overtime_ground_row(conn, r.id)
+            if grounds is not None:  # D-74: основание, отметки согласия и снимок категорий заявителя
+                v.update(grounds)
+            out.append(v)
+        return out
 
     def _pull_worktime(self, conn, uid: str, now) -> dict:
         """Свои отчёты за PULL_DAYS дней; проверяющему — ещё и отправленные (не черновики и не на самопроверке) чужие:
@@ -725,6 +853,7 @@ class WorktimeMixin:
                 "worktime_activity": self._worktime_activity(conn, uid, now),
                 "overtime_requests": self._pull_overtime(conn, uid, now),
                 "overtime_closures": self._pull_overtime_closures(conn, uid, now),
+                "hr_categories": self._pull_hr_categories(conn, uid, now),
                 "overtime_period_config": ({"mode": period_cfg["mode"], "version": period_cfg["version"],
                                             "updated_at": iso(period_cfg["updated_at"])} if period_cfg else None),
                 "worktime_weekly_metrics": self._weekly_department_metrics(conn, uid, now, by_role)}

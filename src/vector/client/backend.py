@@ -1021,6 +1021,7 @@ class Backend(QObject):
             weekly_metrics=st.get("worktime_weekly_metrics") or {},
             overtime_requests=st.get("overtime_requests") or self._data.get("overtime_request", []),
             overtime_period_config=st.get("overtime_period_config") or {},
+            hr_categories=st.get("hr_categories") or {},
             period_manage=bool((st.get("workday_schedule") or {}).get("manage")),
             overtime_closures=st.get("overtime_closures") or []))
 
@@ -1061,6 +1062,12 @@ class Backend(QObject):
             r = self.client.submit_report(report_id, sc)
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, "report.submit", res))
+
+    @Property("QVariantList", constant=True)
+    def hrCategoryCatalog(self):
+        """Справочник кадровых категорий ТК-контура (D-74) — из ядра, версионируется программой."""
+        from vector.core import overtime as ot
+        return qml_safe([dict(c) for c in ot.CATEGORIES])
 
     @Slot(str, "QVariantMap")
     def overtimeRequest(self, tag: str, payload):

@@ -174,7 +174,8 @@ def worktime_view(reports: list[dict], projects: list[dict], tasks: list[dict], 
                   reviewer: bool, online: bool, last_pull: str, today: Optional[date] = None,
                   weekly_metrics: Optional[dict] = None, overtime_requests: Optional[list[dict]] = None,
                   overtime_period_config: Optional[dict] = None, period_manage: bool = False,
-                  overtime_closures: Optional[list[dict]] = None) -> dict[str, Any]:
+                  overtime_closures: Optional[list[dict]] = None,
+                  hr_categories: Optional[dict] = None) -> dict[str, Any]:
     """Раздел «Время»: свои отчёты, отчёты на проверку (руководителю отдела), варианты проектов и задач для строк."""
     today = today or date.today()
     me_id = me.get("user_id") or ""
@@ -229,7 +230,20 @@ def worktime_view(reports: list[dict], projects: list[dict], tasks: list[dict], 
         closure_rows.append(row)
     weekly_units = [{**u, "hours_label": wt.hours_label(int(u.get("minutes") or 0))}
                     for u in weekly.get("units", [])]
+    # D-74: ТК-контур — справочники оснований/категорий из снимка сервера, свои категории для подсказки формы.
+    hr = hr_categories or {}
+    hr_grounds = [{**g, "consent_label": ("требуется письменное согласие" if g.get("consent")
+                                          else "согласие по закону не требуется")}
+                  for g in hr.get("grounds") or []]
     return {
+        "hr_grounds": hr_grounds,
+        "hr_category_catalog": hr.get("category_catalog") or [],
+        "hr_profiles": hr.get("profiles") or [],
+        "hr_manage": bool(hr.get("manage")),
+        "own_hr_categories": hr.get("own") or [],
+        "own_hr_category_labels": (hr.get("profiles") and
+                                   next((p["category_labels"] for p in hr["profiles"]
+                                         if p["user_id"] == me_id), [])) or [],
         "weekly_metrics": {**weekly, "units": weekly_units},
         "overtime_requests": overtime_rows,
         "overtime_closures": closure_rows,

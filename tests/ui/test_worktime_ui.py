@@ -180,12 +180,17 @@ def test_overtime_period_and_request_form_submit_through_ui(ui, qml_warnings):  
     ui.find("overtimeEndAt").setProperty("text", "2026-12-01T20:00:00+03:00")
     ui.find("overtimeMinutes").setProperty("text", "120")
     ui.find("overtimeReason").setProperty("text", "Неотложная подготовка испытаний")
+    # D-74: основание обязательно — без выбора форма не активна; с согласием отклонить — активна.
+    assert form.property("canConfirm") is False
+    ui.find("overtimeGround").setProperty("currentIndex", 0)
+    ui.find("overtimeConsent").setProperty("checked", True)
     ui.wait_idle()
     assert form.property("canConfirm") is True
     _confirm(ui, form)
     assert form.property("visible") is False, form.property("error")
     rows = _wv(ui)["overtime_requests"]
     assert len(rows) == 1 and rows[0]["period"]["start"] == "2026-12-01"
+    assert rows[0]["ground"] == "finish_urgent" and rows[0]["consent_confirmed"] is True
     assert rows[0]["status_label"] == "Ожидает решения" and "amount" not in rows[0]
     request_id = rows[0]["id"]
     ui.backend.logout(); ui.wait_idle()

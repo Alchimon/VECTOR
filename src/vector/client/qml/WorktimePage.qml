@@ -103,6 +103,15 @@ MasterDetail {
                                         + (modelData.period ? " · период " + modelData.period.start + " — " + modelData.period.end : "")
                                         + (modelData.reason ? " · " + modelData.reason : "")
                                     color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                                Text { visible: !!modelData.ground
+                                       text: (modelData.ground_label || "") + (modelData.ground_article ? " (" + modelData.ground_article + ")" : "")
+                                       color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                                Row { visible: !!modelData.ground; spacing: 4
+                                    VChip { visible: modelData.consent_confirmed === true; text: "Согласие получено"; tone: "success" }
+                                    VChip { visible: modelData.refusal_right_notified === true; text: "Право отказа разъяснено"; tone: "success" }
+                                    Repeater { model: modelData.category_labels || []
+                                        delegate: VChip { required property var modelData; text: modelData; tone: "warning" } }
+                                }
                             }
                             VButton { objectName: "overtimeApprove_" + modelData.id; visible: page.wv.reviewer && !modelData.is_own && modelData.status === "pending"
                                 text: "Согласовать"; iconName: "circle-check"; kind: "primary"; compact: true
@@ -289,16 +298,29 @@ MasterDetail {
         subtitle: "Период: " + (page.wv.overtime_period_label || "не настроен") + ". Оплата рассчитывается в 1С."
         confirmText: "Отправить руководителю"
         confirmTip: "Предварительная заявка должна быть отправлена до начала работы; срочную работу можно внести после окончания."
+        // D-74: основание из справочника ст. 99/113; согласия — по основанию и своим кадровым категориям.
+        readonly property var groundModel: (page.wv.hr_grounds || []).filter(g => (g.kinds || []).indexOf(overtimeKind.current) >= 0)
+        readonly property var groundSel: (overtimeGround.currentIndex >= 0 && overtimeGround.currentIndex < groundModel.length)
+                                         ? groundModel[overtimeGround.currentIndex] : null
+        readonly property bool noticeNeeded: {
+            var own = page.wv.own_hr_categories || []
+            return (page.wv.hr_category_catalog || []).some(c => c.rule === "consent" && own.indexOf(c.code) >= 0)
+        }
+        readonly property bool consentNeeded: (groundSel !== null && groundSel.consent === true) || noticeNeeded
         canConfirm: (page.wv.overtime_period_config || {}).mode !== undefined
                      && /^\d{4}-\d{2}-\d{2}$/.test(overtimeDate.text.trim())
                      && overtimeStart.text.trim() !== "" && overtimeEnd.text.trim() !== ""
                      && /^\d+$/.test(overtimeMinutes.text.trim()) && Number(overtimeMinutes.text) > 0
                      && overtimeReason.text.trim() !== ""
+                     && groundSel !== null
+                     && (!consentNeeded || overtimeConsent.checked)
+                     && (!noticeNeeded || overtimeNotice.checked)
         function openFor() {
             error = ""; working = false
             overtimeDate.text = page.wv.today || ""
             overtimeStart.text = ""; overtimeEnd.text = ""; overtimeMinutes.text = ""
             overtimeReason.text = ""; overtimeMode.current = "planned"; overtimeKind.current = "overtime"
+            overtimeGround.currentIndex = -1; overtimeConsent.checked = false; overtimeNotice.checked = false
             open()
         }
         onConfirmed: {
@@ -306,7 +328,9 @@ MasterDetail {
             backend.overtimeRequest("overtime-request-create", {
                 work_date: overtimeDate.text.trim(), start_at: overtimeStart.text.trim(), end_at: overtimeEnd.text.trim(),
                 minutes: Number(overtimeMinutes.text), kind: overtimeKind.current, mode: overtimeMode.current,
-                reason: overtimeReason.text.trim()
+                reason: overtimeReason.text.trim(),
+                ground: groundSel ? groundSel.code : "",
+                consent_confirmed: overtimeConsent.checked, refusal_right_notified: overtimeNotice.checked
             })
         }
         VField { id: overtimeDate; objectName: "overtimeWorkDate"; label: "Местная дата начала"; placeholder: "ГГГГ-ММ-ДД"; required: true
@@ -324,6 +348,21 @@ MasterDetail {
         VSegmented { id: overtimeMode; objectName: "overtimeMode"; current: "planned"; onPicked: id => current = id
             model: [{ id: "planned", label: "Заранее", icon: "calendar-check", tip: "Получить решение руководителя до начала интервала." },
                     { id: "urgent_after", label: "Срочно — после факта", icon: "alarm-clock", tip: "Только после окончания; причина обязательна, затем нужно решение руководителя." }] }
+        VSelect { id: overtimeGround; objectName: "overtimeGround"; label: "Основание по ТК РФ"
+            textRole: "label_ru"; valueRole: "code"
+            model: overtimeForm.groundModel
+            hint: "Справочник по статьям 99 и 113 ТК РФ; варианты зависят от вида работы."
+            tip: "Основание фиксируется неизменяемо вместе с заявкой; свободный текст не принимается." }
+        Text { visible: overtimeForm.groundSel !== null
+               text: overtimeForm.groundSel ? overtimeForm.groundSel.article + " · " + overtimeForm.groundSel.consent_label : ""
+               color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+        Text { visible: (page.wv.own_hr_category_labels || []).length > 0
+               text: "Ваши кадровые категории: " + (page.wv.own_hr_category_labels || []).join(", ")
+               color: Theme.warning; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+        CheckBox { id: overtimeConsent; objectName: "overtimeConsent"; visible: overtimeForm.consentNeeded
+                   text: "Письменное согласие работника получено" }
+        CheckBox { id: overtimeNotice; objectName: "overtimeNotice"; visible: overtimeForm.noticeNeeded
+                   text: "Право отказаться от привлечения разъяснено" }
         VField { id: overtimeReason; objectName: "overtimeReason"; label: "Основание и причина"; required: true
             placeholder: "Неотложный выпуск комплекта документации"; hint: "Причина сохраняется в истории решения." }
         Connections { target: backend

@@ -18,7 +18,8 @@ def test_overtime_request_requires_reason_and_manager_decision_is_audited(world)
     rid = new_id()
     request = {"id": rid, "work_date": "2026-11-17", "start_at": "2026-11-17T01:00:00+03:00",
                "end_at": "2026-11-17T03:00:00+03:00", "minutes": 120, "kind": "overtime",
-               "mode": "planned", "reason": "Срочный выпуск чертежей"}
+               "mode": "planned", "reason": "Срочный выпуск чертежей",
+               "ground": "finish_urgent", "consent_confirmed": True}
     r = employee.ok("overtime.request", request)["overtime_request"]
     assert (r["status"], r["minutes"], "amount" in r, "rate" in r) == ("pending", 120, False, False)
     assert r["period"] == {"mode": "month", "start": "2026-11-01", "end": "2026-11-30", "config_version": 1}
@@ -33,6 +34,9 @@ def test_overtime_request_requires_reason_and_manager_decision_is_audited(world)
                         expected_version=2)["status"] == "denied"
     pulled = employee.query("pull")["result"]["overtime_requests"]
     assert [x["id"] for x in pulled] == [rid]
+    # D-74: основание и отметка о согласии приезжают в снимке; денег по-прежнему нет.
+    assert pulled[0]["ground"] == "finish_urgent" and pulled[0]["consent_confirmed"] is True
+    assert "ст. 99" in pulled[0]["ground_article"]
     assert [x["id"] for x in manager.query("pull")["result"]["overtime_requests"]] == [rid]
     assert world.login("rp1").query("pull")["result"]["overtime_requests"] == []
     with world.svc.engine.connect() as conn:
@@ -59,7 +63,8 @@ def test_company_must_select_accounting_period_before_requests(world):
     employee = world.login("eng1")
     payload = {"id": new_id(), "work_date": "2026-11-17", "start_at": "2026-11-17T18:00:00+03:00",
                "end_at": "2026-11-17T19:00:00+03:00", "minutes": 60, "kind": "overtime",
-               "mode": "planned", "reason": "Подготовка испытаний"}
+               "mode": "planned", "reason": "Подготовка испытаний",
+               "ground": "finish_urgent", "consent_confirmed": True}
     assert employee.cmd("overtime.request", payload)["code"] == "period_not_configured"
 
 
@@ -69,7 +74,8 @@ def test_daily_overtime_cap_rejects_excess_at_creation(world):
     employee = world.login("eng1")
     base = {"work_date": "2026-11-17", "start_at": "2026-11-17T18:00:00+03:00",
             "end_at": "2026-11-17T23:00:00+03:00", "minutes": 241, "kind": "overtime",
-            "mode": "planned", "reason": "Испытание дневного ограничения"}
+            "mode": "planned", "reason": "Испытание дневного ограничения",
+            "ground": "finish_urgent", "consent_confirmed": True}
     result = employee.cmd("overtime.request", {"id": new_id(), **base})
     assert result["code"] == "daily_overtime_limit"
 
@@ -91,9 +97,10 @@ def test_annual_overtime_cap_rejects_reservation(world):
     with world.svc.engine.begin() as conn:
         conn.execute(db.overtime_requests.insert(), rows)
     employee = world.login("eng1")
-    result = employee.cmd("overtime.request", {"id": new_id(), "work_date": "2026-12-17",
-        "start_at": "2026-12-17T18:00:00+03:00", "end_at": "2026-12-17T19:00:00+03:00", "minutes": 60,
-        "kind": "overtime", "mode": "planned", "reason": "Испытание годового ограничения"})
+    result = employee.cmd("overtime.request", {"id": new_id(), "work_date": "2026-12-18",
+        "start_at": "2026-12-18T18:00:00+03:00", "end_at": "2026-12-18T19:00:00+03:00", "minutes": 60,
+        "kind": "overtime", "mode": "planned", "reason": "Испытание годового ограничения",
+        "ground": "finish_urgent", "consent_confirmed": True})
     assert result["code"] == "annual_overtime_limit"
 
 
@@ -103,7 +110,8 @@ def test_period_close_is_blocked_by_pending_decision(world):
     employee = world.login("eng1")
     employee.ok("overtime.request", {"id": new_id(), "work_date": "2026-11-17",
         "start_at": "2026-11-17T18:00:00+03:00", "end_at": "2026-11-17T19:00:00+03:00", "minutes": 60,
-        "kind": "overtime", "mode": "planned", "reason": "Сверка перед выпуском"})
+        "kind": "overtime", "mode": "planned", "reason": "Сверка перед выпуском",
+        "ground": "finish_urgent", "consent_confirmed": True})
     result = world.admin.cmd("overtime.period_close", {"id": new_id(), "user_id": world.users["eng1"],
         "anchor_date": "2026-11-17", "reason": "Не закрывать до решения"})
     assert result["code"] == "pending_requests"
@@ -114,7 +122,8 @@ def test_urgent_overtime_requires_reason_and_must_be_finished(world):
     world.admin.ok("overtime.period_set", {"mode": "month"})
     employee = world.login("eng1")
     base = {"id": new_id(), "work_date": "2026-11-16", "start_at": "2026-11-16T17:00:00+03:00",
-            "end_at": "2026-11-16T19:00:00+03:00", "minutes": 120, "kind": "overtime", "mode": "urgent_after"}
+            "end_at": "2026-11-16T19:00:00+03:00", "minutes": 120, "kind": "overtime", "mode": "urgent_after",
+            "ground": "disaster_prevention"}
     assert employee.cmd("overtime.request", base)["code"] == "field_required"
     base["reason"] = "Немедленное устранение дефекта"
     assert employee.cmd("overtime.request", base)["code"] == "not_finished"

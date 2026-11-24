@@ -122,6 +122,8 @@ STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_
               "worktime_projects", "worktime_reviewer", "worktime_weekly_metrics",
               # D-43: свои действия и таймеры за последние дни — из них программа собирает дневной отчёт.
               "worktime_activity", "overtime_period_config", "overtime_requests", "overtime_closures",
+              # D-74: кадровые категории видимого контура и справочники оснований ТК (для формы заявки офлайн).
+              "hr_categories",
               # D-44: оргструктура — подразделения, сотрудники в них, последние изменения, моё подразделение и кто
               # проверяет мои отчёты (меняется только онлайн-командами администратора).
               "org_units", "org_members", "org_events", "org_me",

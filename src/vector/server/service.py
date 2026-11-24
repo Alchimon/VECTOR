@@ -244,6 +244,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "report.reopen": self._report_reopen, "report.review": self._report_review,
             "overtime.period_set": self._overtime_period_set, "overtime.period_close": self._overtime_period_close,
             "overtime.request": self._overtime_request_create, "overtime.decide": self._overtime_request_decide,
+            # ТК-контур сверхурочных: кадровые категории (worktime.py, D-74).
+            "hr.category_set": self._hr_category_set,
             # Оргструктура: подразделения и сотрудники в них (org.py, D-44).
             "org.unit_create": self._org_unit_create, "org.unit_update": self._org_unit_update,
             "org.unit_archive": self._org_unit_archive, "org.unit_restore": self._org_unit_restore,
@@ -1259,10 +1261,16 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         """Список учёток для администратора: состояние, блокировка, требование смены пароля, выдачи ролей с признаком
         «действует».
         """
+        from vector.core import overtime as ot
         out = []
+        cat_rows = {r["user_id"]: r for r in self._rows(conn, sa.select(db.hr_categories))}
         for u in self._rows(conn, sa.select(users).order_by(users.c.login)):
             grants = self._rows(conn, sa.select(role_grants).where(role_grants.c.user_id == u["id"]).order_by(role_grants.c.id))
+            cat_row = cat_rows.get(u["id"])
+            cats = json.loads(cat_row["categories_json"]) if cat_row else []
             out.append({"id": u["id"], "login": u["login"], "display_name": u["display_name"], "active": bool(u["active"]),
+                        "hr_categories": cats, "hr_category_labels": ot.category_labels(cats),
+                        "hr_categories_version": cat_row["version"] if cat_row else 0,
                         "must_change_password": bool(u["must_change_password"]),
                         "locked_until": iso(u["locked_until"]) if u["locked_until"] and u["locked_until"] > now else None,
                         "grants": [{"id": g["id"], "role": g["role"], "valid_until": iso(g["valid_until"]), "revoked_at": iso(g["revoked_at"]),
