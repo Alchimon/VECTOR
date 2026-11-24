@@ -30,7 +30,7 @@ client = [
   "cryptography>=42,<51",
   "keyring>=25,<26",
 ]
-dev = ["pytest>=8", "pgserver>=0.1.4", "packaging>=23"]
+dev = ["pytest>=8", "pgserver>=0.1.4", "packaging>=23", "ruff>=0.8"]
 
 [project.scripts]
 vector-server = "vector.server.cli:main"

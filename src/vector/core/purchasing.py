@@ -542,7 +542,7 @@ def check_inn(value: Any) -> Optional[str]:
 
     def check(coefs: list[int], upto: int) -> int:
         """Контрольная цифра по весам ФНС для первых upto цифр."""
-        return sum(c * x for c, x in zip(coefs, d[:upto])) % 11 % 10
+        return sum(c * x for c, x in zip(coefs, d[:upto], strict=True)) % 11 % 10
     if len(v) == 10:
         ok = check([2, 4, 10, 3, 5, 9, 4, 6, 8], 9) == d[9]
     else:

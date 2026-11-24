@@ -510,7 +510,7 @@ def assemble_report(day: date, activity: dict, member_projects: Iterable[str], n
     extra_note = []
     if est and remaining > 0 and room > 0:
         shares = _spread(remaining, [g["count"] for _, g in est])
-        for ((pid, tid), g), mins in zip(est, shares):
+        for ((pid, tid), g), mins in zip(est, shares, strict=True):
             text = "; ".join(f"{k} (×{v})" if v > 1 else k for k, v in g["items"].items())
             if mins <= 0:
                 extra_note.append(text)

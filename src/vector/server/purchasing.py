@@ -271,7 +271,7 @@ class PurchasingMixin:
         mode = terms["vat_mode"]
         core = self._core_lines(rows, taxes, links)
         lines, pairs = [], []
-        for r, c in zip(rows, core):
+        for r, c in zip(rows, core, strict=True):
             got = received.get((o["id"], r["line_id"]), Decimal(0))
             pairs.append((r["qty"], got))
             it = items.get(r["item_id"], {})

@@ -154,7 +154,7 @@ class LifecycleMixin:
         comp = self._composition_of(ctx.conn, wo)
         h = lc.canon_hash(comp)
         out = []
-        for iid, sn in zip(ids, serials):
+        for iid, sn in zip(ids, serials, strict=True):
             ctx.conn.execute(product_instances.insert().values(
                 id=iid, project_id=wo["project_id"], kit_id=wo["kit_id"], work_order_id=wo["id"], series=series,
                 serial_no=sn, serial_key=sn.casefold(), status="registered", version=1, created_by=ctx.user_id,

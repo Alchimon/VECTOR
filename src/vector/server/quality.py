@@ -834,7 +834,7 @@ class QualityMixin:
         items = json.loads(o["items_json"])
         res = _q(qa.parse_eco_results, items, p.get("results"))
         out = []
-        for it, r in zip(items, res):
+        for it, r in zip(items, res, strict=True):
             if it["kind"] == "document":
                 v = ctx.conn.execute(sa.select(document_versions).where(document_versions.c.document_id == it["document_id"],
                                                                         document_versions.c.version_no == r["to_version"])).first()

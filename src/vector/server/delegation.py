@@ -364,7 +364,7 @@ class DelegationMixin:
         """
         own = [r for _, r in active_grants(conn, uid, now)]
         delegated = []
-        for gid, role, did, holder in active_delegated(conn, uid, now):
+        for _gid, role, did, holder in active_delegated(conn, uid, now):
             d = self._get(conn, role_delegations, did)
             delegated.append({"role": role, "delegation_id": did, "from_user_id": holder,
                               "valid_until": d["valid_until"].isoformat() if d else None})
@@ -378,7 +378,7 @@ class DelegationMixin:
         proj_delegated = []
         for pid in sorted(pids):
             pr = self._get(conn, projects, pid)
-            for aid, role, did, holder in active_delegated_project(conn, uid, pid, now):
+            for _aid, role, did, holder in active_delegated_project(conn, uid, pid, now):
                 d = self._get(conn, role_delegations, did)
                 proj_delegated.append({"role": role, "project_id": pid, "project_code": pr["code"] if pr else None,
                                        "delegation_id": did, "from_user_id": holder,

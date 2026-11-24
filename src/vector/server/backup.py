@@ -592,7 +592,7 @@ def restore_backup(path: Path, keys: KeySource, target: sa.Engine, batch: int = 
                 current, cols = r["name"], r["columns"]
             elif r["type"] == "row":
                 vals = [_dec(x) for x in r["v"]]
-                buf.append(dict(zip(cols, vals)))
+                buf.append(dict(zip(cols, vals, strict=True)))
                 buf_bytes += sum(len(v) for v in vals if isinstance(v, (bytes, bytearray, memoryview)))
                 if len(buf) >= batch or buf_bytes >= batch_bytes:
                     flush(conn)
