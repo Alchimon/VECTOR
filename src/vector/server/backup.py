@@ -634,7 +634,8 @@ def _reset_sequences(conn) -> None:
     for t in db.metadata.sorted_tables:
         pk = list(t.primary_key.columns)
         if len(pk) == 1 and pk[0].autoincrement is True:
-            conn.execute(sa.text(f"SELECT setval(pg_get_serial_sequence('{t.name}', '{pk[0].name}'), "
+            # Имена таблиц/колонок — из метаданных схемы программы (не из ввода пользователя).
+            conn.execute(sa.text(f"SELECT setval(pg_get_serial_sequence('{t.name}', '{pk[0].name}'), "  # noqa: S608
                                  f"COALESCE((SELECT MAX({pk[0].name}) FROM {t.name}), 0) + 1, false)"))
 
 

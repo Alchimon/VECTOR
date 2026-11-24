@@ -875,7 +875,7 @@ class SyncClient:
         for tpl in urls or pc.URLS:
             url = tpl.format(year=year)
             try:
-                req = urllib.request.Request(url, headers={"User-Agent": "VECTOR production calendar"})
+                req = urllib.request.Request(url, headers={"User-Agent": "VECTOR production calendar"})  # noqa: S310 — адреса из списка программы
                 with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — адреса из списка программы
                     raw = resp.read(pc.MAX_XML + 1)
                 text = raw.decode("utf-8-sig")

@@ -36,7 +36,7 @@ class ServerConfig:
     * warnings — предупреждения, которые сервер печатает при старте (например, «SQLite только для пилота»).
     """
     db_url: str
-    host: str = "0.0.0.0"
+    host: str = "0.0.0.0"  # noqa: S104 — on-prem сервер принимает клиентов из ЛВС; защита — TLS и аутентификация
     port: int = 8443
     tls_cert: Path | None = None
     tls_key: Path | None = None
@@ -111,7 +111,8 @@ def load_config(path: Path) -> ServerConfig:
     if backend == "sqlite":
         warnings.append("SQLite допустим только для тестов и пилота на одном рабочем месте; для работы — PostgreSQL или MS SQL.")
     srv = data.get("server", {})
-    cfg = ServerConfig(db_url=url, host=srv.get("host", "0.0.0.0"), port=int(srv.get("port", 8443)),
+    cfg = ServerConfig(db_url=url, host=srv.get("host", "0.0.0.0"),  # noqa: S104 — см. выше
+                       port=int(srv.get("port", 8443)),
                        tls_cert=rel(srv["tls_cert"]) if srv.get("tls_cert") else None,
                        tls_key=rel(srv["tls_key"]) if srv.get("tls_key") else None,
                        dev_insecure_localhost=bool(srv.get("dev_insecure_localhost", False)), warnings=warnings)

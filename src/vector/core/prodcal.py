@@ -100,7 +100,9 @@ def parse_xml(text: Any, year: Optional[int] = None) -> dict[str, Any]:
         raise CalendarError("unsafe_xml", "Файл календаря содержит объявления типа документа или сущностей — "
                                           "такие файлы не принимаются (защита от вредоносного XML).", {"field": "xml"})
     try:
-        root = ET.fromstring(text.lstrip("\ufeff").strip())
+        # DOCTYPE/ENTITY отклонены выше (внешние сущности и «миллиард смехов» недостижимы), ET внешние
+        # сущности не разрешает — defusedxml не требуется.
+        root = ET.fromstring(text.lstrip("\ufeff").strip())  # noqa: S314
     except ET.ParseError as e:
         raise CalendarError("invalid_xml", f"Это не XML производственного календаря: {e}.", {"field": "xml"})
     if root.tag != "calendar":
