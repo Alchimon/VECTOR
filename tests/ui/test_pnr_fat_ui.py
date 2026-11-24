@@ -71,14 +71,20 @@ def _doc_template(ui):
     return tid
 
 
-def test_block_empty_state_and_gate(ui):
+def test_block_seeded_demo_state(ui):
+    """Демо-данные (D-76): запрос ПНР «Назначена дата», идущий FAT с открытым блокирующим замечанием и
+    выписанный акт уже в блоке; шлюз отгрузки закрыт (испытание не завершено); шаблон FAT активен."""
     _open_project(ui)
     v = _block(ui)
-    assert v["pnr"] == [] and v["fats"] == [] and v["docs"] == []
-    # Шлюз: финального FAT нет — баннер блокировки с причиной.
-    assert v["shipping_gate"]["blocked"] is True and "финального" in v["shipping_gate"]["reason"]
-    # Кнопка «Начать FAT» недоступна без шаблона (подсказка в списке шаблонов пуста).
-    assert v["fat_templates"] == []
+    assert len(v["pnr"]) == 1 and v["pnr"][0]["status"] == "scheduled"
+    assert v["pnr"][0]["kind_label"] == "ПНР на площадке" and v["pnr"][0]["need_power"] is True
+    assert len(v["fats"]) == 1 and v["fats"][0]["status"] == "in_progress"
+    assert v["fats"][0]["counts"]["open_blocking"] == 1
+    assert len(v["docs"]) == 1 and "Акт выполнения пусконаладочных работ" in v["docs"][0]["template_title"]
+    # Шлюз: идёт финальный FAT — баннер блокировки с причиной.
+    assert v["shipping_gate"]["blocked"] is True and "ещё идёт" in v["shipping_gate"]["reason"]
+    # Активный шаблон из демо — «Начать FAT» доступно.
+    assert v["fat_templates"]
 
 
 def test_pnr_create_and_status_flow(ui):
@@ -88,13 +94,14 @@ def test_pnr_create_and_status_flow(ui):
                                 "need_power": True, "planned_on": "2026-12-01"})
     assert r.status == "accepted", r
     v = _block(ui)
-    assert len(v["pnr"]) == 1
-    row = v["pnr"][0]
+    rows = [x for x in v["pnr"] if x["title"] == "Наладка шкафа АВР"]   # рядом — демо-запрос (D-76)
+    assert len(rows) == 1
+    row = rows[0]
     assert row["status"] == "requested" and row["need_power"] is True and row["kind_label"] == "Внутренняя наладка"
     # РП ведёт статус: назначить дату → выполнена.
     _cmd(ui, "pnr.set_status", {"id": row["id"], "to": "scheduled"})
     v = _block(ui)
-    row = v["pnr"][0]
+    row = next(x for x in v["pnr"] if x["id"] == row["id"])
     assert row["status"] == "scheduled"
     labels = {a["to"]: a for a in row["actions"]}
     assert "in_progress" in labels and "cancelled" in labels
@@ -111,36 +118,36 @@ def test_fat_findings_gate_and_doc(ui):
     fat_id = str(uuid.uuid4())
     r = _cmd(ui, "fat.create", {"id": fat_id, "project_id": pid, "kind": "final", "template_id": tpl})
     assert r.status == "accepted", r
-    fat = next(f for f in _block(ui)["fats"] if f["id"] == fat_id)
     v = _block(ui)
-    assert v["fats"][0]["status"] == "in_progress"
-    assert v["fats"][0]["template_name"] == "FAT (типовой)"
-    assert v["fats"][0]["section_options"] and v["fats"][0]["severity_options"]
+    fat = next(f for f in v["fats"] if f["id"] == fat_id)
+    assert fat["status"] == "in_progress"
+    assert fat["template_name"] == "FAT (типовой)"
+    assert fat["section_options"] and fat["severity_options"]
     _cmd(ui, "fat.add_finding", {"id": str(uuid.uuid4()), "fat_id": fat["id"], "section_code": "power",
                                  "severity": "crit", "text": "Индикация аварии не срабатывает"})
     v = _block(ui)
-    frow = v["fats"][0]
+    frow = next(f for f in v["fats"] if f["id"] == fat_id)
     assert frow["counts"]["open_blocking"] == 1
     fnd = frow["findings"][0]
     assert fnd["blocking"] is True and fnd["severity_label"] == "Блокирующее" and fnd["status_label"] == "Открыто"
     # Завершаем неуспешно (с причиной); шлюз: неуспешный финальный — блок.
     _cmd(ui, "fat.finish", {"id": fat["id"], "result": "failed", "reason": "есть блокирующие замечания"})
     v = _block(ui)
-    assert v["fats"][0]["status"] == "failed"
+    assert next(f for f in v["fats"] if f["id"] == fat_id)["status"] == "failed"
     assert v["shipping_gate"]["blocked"] is True and "блокирующ" in v["shipping_gate"]["reason"]
     # Итог неизменяем: кнопок итога у завершённого нет.
-    assert v["fats"][0]["actions"] == []
+    assert next(f for f in v["fats"] if f["id"] == fat_id)["actions"] == []
     # Закрытие замечания с причиной; итог не переписывается — шлюз всё ещё блок (теперь из-за «неуспешен»).
     _cmd(ui, "fat.close_finding", {"id": fnd["id"], "reason": "Заменён модуль индикации"})
     v = _block(ui)
-    assert v["fats"][0]["findings"][0]["status"] == "closed"
+    assert next(f for f in v["fats"] if f["id"] == fat_id)["findings"][0]["status"] == "closed"
     assert v["shipping_gate"]["blocked"] is True and "неуспешен" in v["shipping_gate"]["reason"]
     # Новое успешное финальное испытание — шлюз открыт.
     fat2_id = str(uuid.uuid4())
     r = _cmd(ui, "fat.create", {"id": fat2_id, "project_id": pid, "kind": "final", "template_id": tpl})
     assert r.status == "accepted", r
     fat2 = next(f for f in _block(ui)["fats"] if f["id"] == fat2_id)
-    assert fat2["seq"] == 2
+    assert fat2["seq"] == 3                       # seq 1 — демо-FAT (D-76), seq 2 — первая сессия этого теста
     _cmd(ui, "fat.finish", {"id": fat2["id"], "result": "passed"})
     v = _block(ui)
     assert v["shipping_gate"]["blocked"] is False and v["shipping_gate"]["reason"] == ""
@@ -150,9 +157,10 @@ def test_fat_findings_gate_and_doc(ui):
                                          "template_id": doc_tpl, "values": {"truck": "МАЗ В001АА"}})
     assert r.status == "accepted", r
     v = _block(ui)
-    assert len(v["docs"]) == 1
-    doc = v["docs"][0]
-    assert doc["template_code"] == "TOR12" and "МАЗ В001АА" in doc["rendered"]
+    docs = [d for d in v["docs"] if d["template_code"] == "TOR12"]   # рядом — демо-акт (D-76)
+    assert len(docs) == 1
+    doc = docs[0]
+    assert "МАЗ В001АА" in doc["rendered"]
     assert "{{truck}}" not in doc["rendered"]
 
 
@@ -167,5 +175,5 @@ def test_offline_disables_actions(ui):
     v = _block(ui)
     assert not v["can_manage"]
     assert all(f["actions"] == [] and f["can_add_finding"] is False for f in v["fats"])
-    # Чтение офлайн работает: сессии и шлюз видны из снимка.
-    assert len(v["fats"]) == 1 and v["shipping_gate"]["blocked"] is True
+    # Чтение офлайн работает: сессии (демо-FAT и созданная выше) и шлюз видны из снимка.
+    assert len(v["fats"]) == 2 and v["shipping_gate"]["blocked"] is True

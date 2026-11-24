@@ -32,7 +32,9 @@ def test_norm_propose_stats_and_approval(ui, qml_warnings):  # noqa: F811
     ui.login("m.lebedev")
     pane = _pane(ui)
     nv = pane.property("normsView")
-    assert nv["rows"] == [] and nv["can_propose"] is True
+    assert nv["can_propose"] is True
+    # Демо-данные (D-76): уже есть утверждённое предложение этого же пользователя — оно не мешает новому.
+    assert len(nv["rows"]) == 1 and nv["rows"][0]["status"] == "approved"
     # Статистика: «Сборка шкафа управления» завершена в нарядах № 1 (190 мин: 60+40+90 без обеда) и № 2 (120 мин).
     dlg = _popup(ui, "normStatsForm")
     _call(dlg, "openFor")
@@ -58,24 +60,25 @@ def test_norm_propose_stats_and_approval(ui, qml_warnings):  # noqa: F811
     ui.wait_idle()
     assert not form.property("visible"), form.property("error")
     nv = pane.property("normsView")
-    assert len(nv["rows"]) == 1
-    row = nv["rows"][0]
-    assert row["status"] == "proposed" and row["proposed_label"] == "210 мин"
+    row = next(r for r in nv["rows"] if r["status"] == "proposed")
+    assert row["proposed_label"] == "210 мин"
     assert row["author_name"] == "Лебедев Максим" and row["can_decide"] is False   # автор сам не решает
     # Руководитель отдела: видит предложение, утверждает (не автор), уведомление автору.
     ui.login("e.orlova")
     pane = _pane(ui)
     nv = pane.property("normsView")
-    assert len(nv["rows"]) == 1 and nv["rows"][0]["can_decide"] is True
+    proposed = [r for r in nv["rows"] if r["status"] == "proposed"]
+    assert len(proposed) == 1 and proposed[0]["can_decide"] is True
     decide = _popup(ui, "normDecideForm")
-    _call(decide, "openFor", nv["rows"][0], "approved")
+    _call(decide, "openFor", proposed[0], "approved")
     ui.wait_idle()
     assert decide.property("title") == "Утвердить норму"
     QMetaObject.invokeMethod(decide, "confirmed")
     ui.wait_idle()
     assert not decide.property("visible"), decide.property("error")
     nv = pane.property("normsView")
-    assert nv["rows"][0]["status"] == "approved" and "Орлова Елена" in nv["rows"][0]["decision_label"]
+    row = next(r for r in nv["rows"] if r["id"] == proposed[0]["id"])
+    assert row["status"] == "approved" and "Орлова Елена" in row["decision_label"]
     # Норма в ТП не изменилась автоматически (ручное утверждение — решение, не подмена работы технолога).
     tps = _v(ui.backend, "productionOverview")["tps"]
     op10 = next(o for t in tps if t["status"] == "approved" for o in t["operations"] if o["op_no"] == 10)
@@ -101,14 +104,14 @@ def test_norm_reject_needs_reason_and_self_decision_blocked(ui, qml_warnings):  
     assert not form.property("visible"), form.property("error")
     # Свой предложения не решает: кнопок решения у автора нет, а сервер ответит self_decision.
     nv = pane.property("normsView")
-    prop = nv["rows"][0]
+    prop = next(r for r in nv["rows"] if r["status"] == "proposed")
     assert prop["can_decide"] is False
     r = ui.backend.client.execute("norm.decide", {"id": prop["id"], "resolution": "approved"})
     assert r.status == "rejected" and r.response.get("code") == "self_decision"
     # Руководитель отдела: «Отклонить» без причины — кнопка неактивна; с причиной — отклонено.
     ui.login("e.orlova")
     pane = _pane(ui)
-    prop = pane.property("normsView")["rows"][0]
+    prop = next(r for r in pane.property("normsView")["rows"] if r["status"] == "proposed")
     decide = _popup(ui, "normDecideForm")
     _call(decide, "openFor", prop, "rejected")
     ui.wait_idle()
@@ -119,7 +122,7 @@ def test_norm_reject_needs_reason_and_self_decision_blocked(ui, qml_warnings):  
     QMetaObject.invokeMethod(decide, "confirmed")
     ui.wait_idle()
     assert not decide.property("visible"), decide.property("error")
-    row = pane.property("normsView")["rows"][0]
+    row = next(r for r in pane.property("normsView")["rows"] if r["id"] == prop["id"])
     assert row["status"] == "rejected" and row["decision_reason"] == "Норма 210 из прошлого решения точнее"
     # Уведомление автору предложения.
     ui.login("m.lebedev")

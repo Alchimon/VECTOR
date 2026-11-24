@@ -28,8 +28,9 @@ def test_analytics_shows_streams_and_facts(ui):
     assert kinds == ["contract", "rkd", "procurement", "production", "shipping", "site"]
     started = [s for s in v["streams"] if s["actual_start"] != ""]
     assert started, "в демо-проекте потоки уже двигались — фактические даты должны быть из журнала событий"
-    # Сводка этапа 6 присутствует (в демо может быть пустой, но структура есть).
+    # Сводка этапа 6 присутствует; в демо уже есть ПНР/FAT/документ (D-76) — дальше меряем дельту.
     assert set(v["facts"]) >= {"pnr", "fat", "findings", "delivery_docs"}
+    base_facts = v["facts"]
     # Шаблон FAT и одно испытание через клиент — сводка обновится снимком.
     svc = ui.svc
     r = svc.handle({"type": "login", "login": "e.orlova", "password": "Демо-пароль-2026",
@@ -47,8 +48,9 @@ def test_analytics_shows_streams_and_facts(ui):
     ui.wait_idle()
     assert r.status == "accepted", r
     v = _analytics(ui)
-    assert v["facts"]["fat"]["final"] == 1 and v["facts"]["fat"]["total"] == 1
-    assert v["facts"]["findings"]["total"] == 0
+    assert v["facts"]["fat"]["final"] == base_facts["fat"]["final"] + 1
+    assert v["facts"]["fat"]["total"] == base_facts["fat"]["total"] + 1
+    assert v["facts"]["findings"]["total"] == base_facts["findings"]["total"]
 
 
 def test_analytics_offline_readonly(ui):

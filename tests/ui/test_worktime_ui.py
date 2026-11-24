@@ -165,7 +165,13 @@ def test_overtime_period_and_request_form_submit_through_ui(ui, qml_warnings):  
     ui.go("worktime")
     panel = ui.find("overtimePanel")
     assert panel.isVisible()
-    assert _wv(ui)["overtime_period_label"] == "Не настроен"
+    # D-76: период уже задан демо-данными (календарный месяц) — виден сразу, вместе с нормой по календарю;
+    # администратор может сменить режим через UI (квартал — и обратно месяц, чтобы заявка ниже была в декабре).
+    assert _wv(ui)["overtime_period_label"] == "Календарный месяц"
+    assert "Норма периода" in (_wv(ui)["overtime_norm_label"] or "")
+    ui.backend.setOvertimePeriod("overtime-period-set", "quarter", 0)
+    ui.wait_idle()
+    assert _wv(ui)["overtime_period_label"] == "Календарный квартал"
     ui.backend.setOvertimePeriod("overtime-period-set", "month", 0)
     ui.wait_idle()
     assert _wv(ui)["overtime_period_label"] == "Календарный месяц"

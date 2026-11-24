@@ -896,7 +896,7 @@ def _seed_delivery_pnr_fat(cmd, login, svc, pid, kits) -> dict:
                                         "повторить испытание изоляции"})
     form = cmd(head, "doc_template.create", {"id": str(uuid.uuid4()), "code": "ACT-PNR",
                                              "title": "Акт выполнения пусконаладочных работ",
-                                             "body": "АКТ выполнения ПНР\nПроект {{project.code}} "
+                                             "body": "Акт выполнения пусконаладочных работ (ПНР)\nПроект {{project.code}} "
                                                      "«{{project.title}}»\nЗаказчик: {{customer.name}}\n"
                                                      "Комплект: {{kit.code}} — {{kit.title}}\n"
                                                      "Площадка: {{site}}\nПредставитель заказчика: {{customer_rep}}\n"
