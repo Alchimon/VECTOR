@@ -171,25 +171,28 @@ MasterDetail {
     Repeater {
         model: normsView.rows
         delegate: VCard {
+            id: normCard
             required property var modelData
             objectName: "normRow"
-            Layout.fillWidth: true
-            RowLayout { Layout.fillWidth: true; spacing: 10
+            Layout.fillWidth: true; implicitHeight: normRowContent.implicitHeight + 20
+            RowLayout { id: normRowContent
+                anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 10
+                spacing: 10
                 ColumnLayout { spacing: 2; Layout.fillWidth: true
-                    Text { text: modelData.title + "  →  норма " + modelData.proposed_label; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                    Text { text: modelData.range_label; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                    Text { visible: modelData.comment !== ""; text: modelData.comment; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                    Text { text: "Предложил(а) " + modelData.author_name + ", " + modelData.created_label
-                                 + (modelData.decision_label !== "" ? "  ·  " + modelData.decision_label : "")
-                                 + (modelData.decision_reason !== "" ? " — " + modelData.decision_reason : "")
+                    Text { text: normCard.modelData.title + "  →  норма " + normCard.modelData.proposed_label; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    Text { text: normCard.modelData.range_label; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    Text { visible: normCard.modelData.comment !== ""; text: normCard.modelData.comment; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    Text { text: "Предложил(а) " + normCard.modelData.author_name + ", " + normCard.modelData.created_label
+                                 + (normCard.modelData.decision_label !== "" ? "  ·  " + normCard.modelData.decision_label : "")
+                                 + (normCard.modelData.decision_reason !== "" ? " — " + normCard.modelData.decision_reason : "")
                            color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs; wrapMode: Text.Wrap; Layout.fillWidth: true }
                 }
-                VChip { text: modelData.status_label; tone: modelData.status_tone }
-                ColumnLayout { visible: modelData.can_decide === true; spacing: 4
+                VChip { text: normCard.modelData.status_label; tone: normCard.modelData.status_tone }
+                ColumnLayout { visible: normCard.modelData.can_decide === true; spacing: 4
                     VButton { objectName: "btnNormApprove"; text: "Утвердить"; compact: true; kind: "primary"; iconName: "check"
-                              onClicked: decideForm.openFor(modelData, "approved") }
+                              onClicked: decideForm.openFor(normCard.modelData, "approved") }
                     VButton { objectName: "btnNormReject"; text: "Отклонить"; compact: true; kind: "danger"; iconName: "x"
-                              onClicked: decideForm.openFor(modelData, "rejected") }
+                              onClicked: decideForm.openFor(normCard.modelData, "rejected") }
                 }
             }
         }
@@ -331,16 +334,23 @@ MasterDetail {
                      iconName: "timer"; title: "Данных пока нет"; text: "Завершённых операций с зафиксированным временем ещё нет." }
         Repeater {
             model: statsDialog.rows
-            delegate: VCard { required property var modelData
+            delegate: VCard {
+                id: statCard
+                required property var modelData
                 objectName: "normStatRow"
-                Layout.fillWidth: true
-                ColumnLayout { spacing: 2; Layout.fillWidth: true
-                    Text { text: modelData.op_name + (modelData.work_center !== "" ? "  ·  " + modelData.work_center : "")
+                Layout.fillWidth: true; implicitHeight: statCol.implicitHeight + 16
+                // «240.0000» → «240», «45.5» → «45,5» (минуты из JSON-снимка сервера).
+                function fmt(x) { var t = String(x === undefined || x === null ? "" : x).replace(".", ",");
+                                  return t.indexOf(",") >= 0 ? t.replace(/0+$/, "").replace(/,$/, "") : t }
+                ColumnLayout { id: statCol
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 8
+                    spacing: 2
+                    Text { text: statCard.modelData.op_name + (statCard.modelData.work_center !== "" ? "  ·  " + statCard.modelData.work_center : "")
                            color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; font.weight: Font.DemiBold; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                    Text { text: "факт " + String(modelData.min_min).replace(".", ",") + "–" + String(modelData.max_min).replace(".", ",") + " мин"
-                                 + " · медиана " + String(modelData.median_min).replace(".", ",") + " · выборка " + modelData.sample_size
-                                 + (modelData.current_norms && modelData.current_norms.length > 0
-                                    ? " · действующие нормы: " + modelData.current_norms.map(x => String(x).replace(".", ",") + " мин").join(", ")
+                    Text { text: "факт " + statCard.fmt(statCard.modelData.min_min) + "–" + statCard.fmt(statCard.modelData.max_min) + " мин"
+                                 + " · медиана " + statCard.fmt(statCard.modelData.median_min) + " · выборка " + statCard.modelData.sample_size
+                                 + (statCard.modelData.current_norms && statCard.modelData.current_norms.length > 0
+                                    ? " · действующие нормы: " + statCard.modelData.current_norms.map(x => statCard.fmt(x) + " мин").join(", ")
                                     : " · действующей нормы нет")
                            color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; wrapMode: Text.Wrap; Layout.fillWidth: true }
                 }

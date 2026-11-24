@@ -636,6 +636,85 @@ def main():
         h.shot(out / f"{theme}-63-worktime-day-mark.png")
         h.backend.logout()
         h.wait_idle()
+        # ---------- Этапы 3–7 blueprint 52: РКД, потоки, ПНР/FAT, аналитика, нормы (D-64…D-73) ----------
+        # Данные для снимков: шаблон FAT (начальник сервисной службы — e.orlova, A-58), предварительное
+        # испытание и запрос ПНР по демо-проекту, предложение нормы от ведущего инженера (выборка — завершённые
+        # операции «Сборка шкафа управления» нарядов № 1 и № 2).
+
+        def _svc(login, command, payload, ev=None):
+            """Команда на сервере стенда от имени демо-пользователя (подготовка данных для снимков)."""
+            tok = h.svc.handle({"type": "login", "login": login, "password": PWD, "device_id": "shots"}, "x")["token"]
+            if command == "__pull__":
+                return h.svc.handle({"type": "query", "token": tok, "query": "pull"}, "x")["result"]
+            msg = {"type": "command", "token": tok, "operation_id": str(uuid.uuid4()), "command": command,
+                   "payload": payload}
+            if ev is not None:
+                msg["expected_version"] = ev
+            r = h.svc.handle(msg, "x")
+            assert r["status"] == "accepted", (command, r)
+            return r["result"]
+
+        pid = h.ids["project"]
+        tpl = _svc("e.orlova", "checklist.create",
+                   {"id": str(uuid.uuid4()), "kind": "fat", "name": "FAT: шкафы управления",
+                    "sections": [{"code": "gen", "title": "Общие проверки"}, {"code": "el", "title": "Электрика"}]})
+        _svc("p.volkov", "fat.create", {"id": str(uuid.uuid4()), "project_id": pid, "kind": "preliminary",
+                                        "template_id": tpl["checklist"]["id"],
+                                        "note": "Предварительное испытание на стенде"})
+        _svc("p.volkov", "pnr.create", {"id": str(uuid.uuid4()), "project_id": pid, "kind": "site",
+                                        "title": "ПНР на площадке котельной № 3", "need_power": True,
+                                        "planned_on": "2026-12-20"})
+        _svc("m.lebedev", "norm.propose", {"id": str(uuid.uuid4()), "op_name": "Сборка шкафа управления",
+                                           "work_center": "Участок сборки", "proposed_min": "210",
+                                           "comment": "По факту нарядов № 1 и № 2"})
+        h.login("a.smirnova")
+        h.go("projects", pid)
+        h.wait_idle()
+        # Потоки и риск-разрешения проекта (D-65).
+        t = next(i for i in h.items("text") if i.isVisible() and str(i.property("text") or "").startswith("Потоки и риски"))
+        h.scroll_detail_to(t)
+        h.shot(out / f"{theme}-64-project-flow.png")
+        # ПНР, испытания (FAT) и документы доставки (D-70).
+        h.backend.syncNow()
+        h.wait_idle()
+        t = next(i for i in h.items("text") if i.isVisible() and str(i.property("text") or "").startswith("ПНР, испытания и доставка"))
+        h.scroll_detail_to(t)
+        h.shot(out / f"{theme}-65-project-pnr-fat.png")
+        # Аналитика проекта: план/факт потоков, сводка испытаний (D-71).
+        t = next(i for i in h.items("text") if i.isVisible() and str(i.property("text") or "").startswith("Аналитика проекта"))
+        h.scroll_detail_to(t)
+        h.shot(out / f"{theme}-66-project-analytics.png")
+        # РКД комплекта (D-64): бизнес-ревизии, замечания, трансмитталы.
+        kw = h.kit_work(h.ids["kits"]["АТХ"], "tasks")
+        kw.setProperty("tab", "rkd")
+        h.wait_idle()
+        h.scroll_detail_to(kw)
+        h.shot(out / f"{theme}-67-kit-rkd.png")
+        h.backend.logout()
+        h.wait_idle()
+        # Нормы трудоёмкости (D-72): предложение в карточке наряда № 1 и статистика операций (агрегат).
+        h.login("e.orlova")
+        h.go("production")
+        h.find("productionPage").setProperty("tab", "orders")
+        h.wait_idle()
+        wp = next(i for i in h.items("all") if i.isVisible())
+        wp.setProperty("selectedId", h.ids["work_orders"][0])
+        h.wait_idle()
+        t = next(i for i in h.items("text") if i.isVisible() and str(i.property("text") or "") == "Нормы трудоёмкости")
+        h.scroll_detail_to(t)
+        h.shot(out / f"{theme}-68-work-order-norms.png")
+        sd = next(o for o in h.win.findChildren(QObject) if o.objectName() == "normStatsForm")
+        QMetaObject.invokeMethod(sd, "openFor")
+        h.wait_idle()
+        h.shot(out / f"{theme}-69-norm-stats.png")
+        sd.setProperty("visible", False)
+        h.wait_idle()
+        # Сводная аналитика портфеля (D-73): раздел «Аналитика» — сроки потоков, lead-time закупок, замены, рекламации.
+        h.go("analytics")
+        h.wait_idle()
+        h.shot(out / f"{theme}-70-portfolio-analytics.png")
+        h.backend.logout()
+        h.wait_idle()
         h.login("admin")
         h.go("org", h.ids["org_units"][2])
         sp = next(o for o in h.win.findChildren(QObject) if o.objectName() == "schedulesPopup")

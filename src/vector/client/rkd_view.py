@@ -97,7 +97,7 @@ def revision_rows(kit_id: str, documents: list[dict], revisions: list[dict], com
         open_comments = sum(1 for c in c_rows if c.get("status") == "open")
         issue = issue_by_rev.get(rev["id"])
         out.append({**{k: rev[k] for k in ("id", "document_id", "seq", "label", "status", "status_label",
-                                           "version", "note")},
+                                           "version", "note") or ""},
                     "doc_code": doc["code"], "doc_title": doc["title"], "doc_version_id": rev["doc_version_id"],
                     "tone": _STATUS_TONE.get(rev["status"], "neutral"),
                     "issue_code": issue["status_code"] if issue else "",

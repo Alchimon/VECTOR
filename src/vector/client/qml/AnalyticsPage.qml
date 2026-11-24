@@ -35,19 +35,21 @@ Item {
                 Layout.fillWidth: true; spacing: 8
                 Repeater {
                     model: page.v.project_rows || []
-                    delegate: VCard { required property var modelData
-                        Layout.preferredWidth: 210
-                        ColumnLayout { spacing: 2
-                            Text { text: modelData.label; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS }
-                            Text { text: String(modelData.count); color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsXl; font.weight: Font.Bold }
+                    delegate: VCard {
+                        required property var modelData
+                        width: 200; height: 64
+                        ColumnLayout { anchors.fill: parent; anchors.margins: 10; spacing: 0
+                            Text { text: modelData.label; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS; elide: Text.ElideRight; Layout.fillWidth: true }
+                            Text { text: String(modelData.count); color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsL; font.weight: Font.Bold }
                         }
                     }
                 }
-                VCard { Layout.preferredWidth: 210
-                    ColumnLayout { spacing: 2
+                VCard {
+                    width: 200; height: 64
+                    ColumnLayout { anchors.fill: parent; anchors.margins: 12; spacing: 0
                         Text { text: "Активные риски"; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS }
                         Text { text: String(page.v.active_risks || 0); color: page.v.active_risks > 0 ? Theme.warning : Theme.text
-                               font.family: Theme.family; font.pixelSize: Theme.fsXl; font.weight: Font.Bold }
+                               font.family: Theme.family; font.pixelSize: Theme.fsL; font.weight: Font.Bold }
                     }
                 }
             }
@@ -55,27 +57,36 @@ Item {
             SectionTitle { text: "Потоки"; iconName: "network" }
             Repeater {
                 model: page.v.streams || []
-                delegate: VCard { required property var modelData
-                    Layout.fillWidth: true
-                    RowLayout { Layout.fillWidth: true; spacing: 10
-                        Text { text: modelData.label; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs
-                               font.weight: Font.DemiBold; Layout.preferredWidth: 220; elide: Text.ElideRight }
-                        Text { text: "завершено: " + modelData.terminal; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsS }
+                delegate: VCard {
+                    id: sCard
+                    required property var modelData
+                    Layout.fillWidth: true; implicitHeight: sRow.implicitHeight + 14
+                    RowLayout {
+                        id: sRow
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter; anchors.margins: 10
+                        spacing: 10
+                        Text { text: sCard.modelData.label; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs
+                               font.weight: Font.DemiBold; Layout.preferredWidth: 210; elide: Text.ElideRight }
+                        VChip { text: "завершено: " + sCard.modelData.terminal; tone: sCard.modelData.terminal > 0 ? "success" : "neutral" }
                         Item { Layout.fillWidth: true }
-                        Text { text: modelData.plan_n > 0 ? "план (медиана): " + modelData.plan_median + " дн. (по " + modelData.plan_n + ")" : "плановые даты не заданы"
+                        Text { text: sCard.modelData.plan_n > 0 ? "план (медиана): " + sCard.modelData.plan_median + " дн. · по " + sCard.modelData.plan_n : "плановые даты не заданы"
                                color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS }
-                        Text { text: modelData.fact_n > 0 ? "факт (медиана): " + modelData.fact_median + " дн. (по " + modelData.fact_n + ")" : "факта пока нет"
+                        Text { text: sCard.modelData.fact_n > 0 ? "факт (медиана): " + sCard.modelData.fact_median + " дн. · по " + sCard.modelData.fact_n : "факта пока нет"
                                color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsS }
                     }
                 }
             }
 
             SectionTitle { text: "Закупки"; iconName: "shopping-cart" }
-            VCard { Layout.fillWidth: true
-                ColumnLayout { spacing: 2; Layout.fillWidth: true
+            VCard {
+                Layout.fillWidth: true; implicitHeight: pCol.implicitHeight + 20
+                ColumnLayout {
+                    id: pCol
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 10
+                    spacing: 4
                     Text { text: "Размещённых и закрытых заказов: " + (page.proc.placed_total || 0)
                                  + "  ·  lead-time (размещён → закрыт), медиана: " + (page.proc.lead_median || "—")
-                                 + " дн." + (page.proc.lead_n > 0 ? " (по " + page.proc.lead_n + ")" : " (закрытых заказов нет)")
+                                 + " дн." + (page.proc.lead_n > 0 ? " (по " + page.proc.lead_n + " заказам)" : " (закрытых заказов пока нет)")
                            color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; wrapMode: Text.Wrap; Layout.fillWidth: true }
                     Text { text: (page.proc.late_count > 0
                                   ? "Опоздали к ожидаемой дате: " + page.proc.late_count + " (медиана опоздания " + page.proc.late_median + " дн.)"
@@ -86,8 +97,12 @@ Item {
             }
 
             SectionTitle { text: "Производство и качество"; iconName: "factory" }
-            VCard { Layout.fillWidth: true
-                ColumnLayout { spacing: 2; Layout.fillWidth: true
+            VCard {
+                Layout.fillWidth: true; implicitHeight: qCol.implicitHeight + 20
+                ColumnLayout {
+                    id: qCol
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 10
+                    spacing: 4
                     Text { text: "Нарядов: " + (page.prod.work_orders || 0) + "  ·  замен в составе: " + (page.prod.substitutions || 0)
                                  + "  ·  рекламаций: " + (page.v.claims_total || 0)
                            color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs; wrapMode: Text.Wrap; Layout.fillWidth: true }
