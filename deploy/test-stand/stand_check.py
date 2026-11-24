@@ -596,9 +596,17 @@ def check_norms(rep: Report, sessions: dict) -> None:
         return
     decided = [x for x in props if x.get("status") in ("approved", "rejected")]
     p0 = props[0]
+
+    def _num(x) -> str:
+        """Денежный JSON «200.0000» → «200», «120.5» → «120.5» (строка — как есть)."""
+        try:
+            f = float(x)
+        except (TypeError, ValueError):
+            return str(x)
+        return str(int(f)) if f == int(f) else str(f)
     rep.ok(f"предложений норм: {len(props)} (решено: {len(decided)}); «{p0.get('op_name')}» "
-           f"({p0.get('work_center')}): выборка {p0.get('sample_size')}, факт {p0.get('min_min')}—"
-           f"{p0.get('max_min')} мин, предложено {p0.get('proposed_min')} мин — «{p0.get('status')}»")
+           f"({p0.get('work_center')}): выборка {p0.get('sample_size')}, факт {_num(p0.get('min_min'))}—"
+           f"{_num(p0.get('max_min'))} мин, предложено {_num(p0.get('proposed_min'))} мин — «{p0.get('status')}»")
 
 
 def check_overtime_contour(rep: Report, sessions: dict, prod: dict) -> None:
