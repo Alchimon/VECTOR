@@ -47,6 +47,10 @@ class ServerConfig:
     # режим демо/стенда (все выпущенные модули доступны). Оба поля задаются вместе.
     license_file: Path | None = None
     license_public_key: Path | None = None
+    # Целостность поставки (D-85, ФСТЭК): манифест SHA-256 файлов поставки (tools/make_manifest.py);
+    # корень поставки — по умолчанию папка манифеста. Проверяется `vector-server check`.
+    package_manifest: Path | None = None
+    package_root: Path | None = None
     security: SecurityPolicy = field(default_factory=SecurityPolicy)
     warnings: list[str] = field(default_factory=list)
 
@@ -129,12 +133,25 @@ def load_config(path: Path) -> ServerConfig:
         if not license_public_key.is_file():
             raise ConfigError(f"Публичный ключ вендора не найден: {license_public_key}")
 
+    pkg = data.get("package", {})
+    package_manifest = package_root = None
+    if pkg:
+        if not pkg.get("manifest"):
+            raise ConfigError("Разделу [package] нужен manifest — путь к MANIFEST.sha256 (tools/make_manifest.py).")
+        package_manifest = rel(pkg["manifest"])
+        package_root = rel(pkg["root"]) if pkg.get("root") else package_manifest.resolve().parent
+        if not package_manifest.is_file():
+            raise ConfigError(f"Манифест поставки не найден: {package_manifest}")
+        if not package_root.is_dir():
+            raise ConfigError(f"Корень поставки не найден: {package_root}")
+
     cfg = ServerConfig(db_url=url, host=srv.get("host", "0.0.0.0"),  # noqa: S104 — см. выше
                        port=int(srv.get("port", 8443)),
                        tls_cert=rel(srv["tls_cert"]) if srv.get("tls_cert") else None,
                        tls_key=rel(srv["tls_key"]) if srv.get("tls_key") else None,
                        dev_insecure_localhost=bool(srv.get("dev_insecure_localhost", False)), warnings=warnings,
-                       license_file=license_file, license_public_key=license_public_key)
+                       license_file=license_file, license_public_key=license_public_key,
+                       package_manifest=package_manifest, package_root=package_root)
     if cfg.dev_insecure_localhost:
         if cfg.host not in ("127.0.0.1", "::1", "localhost"):
             raise ConfigError("Режим без TLS разрешён только при host = 127.0.0.1 (разработка).")

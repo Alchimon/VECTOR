@@ -164,6 +164,32 @@ def cmd_genkey(args):
     print(f"Ключ создан: {args.path} (отпечаток {fp}). Храните копию ключа отдельно от резервных копий — без него восстановление невозможно.")
 
 
+def check_package_manifest(manifest: Path, root: Path) -> list[str]:
+    """Сверить файлы поставки с манифестом SHA-256 (D-85). Возвращает список нарушений (пусто — всё цело).
+    Изменённый или отсутствующий файл — нарушение; файлы вне манифеста (журналы, копии) — не нарушение."""
+    import hashlib
+    problems = []
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            want, rel = line.split("  ", 1)
+        except ValueError:
+            problems.append(f"строка манифеста не читается: {line[:60]!r}")
+            continue
+        f = (root / rel).resolve()
+        if root.resolve() not in f.parents and f != root.resolve():   # путь из манифеста не должен уводить вне корня
+            problems.append(f"путь вне корня поставки: {rel}")
+            continue
+        if not f.is_file():
+            problems.append(f"нет файла: {rel}")
+            continue
+        got = hashlib.sha256(f.read_bytes()).hexdigest()
+        if got != want:
+            problems.append(f"изменён: {rel}")
+    return problems
+
+
 def cmd_check(args):
     """vector-server check — проверить конфигурацию, подключение к БД и совместимость версии схемы (ничего не меняет).
     """
@@ -173,6 +199,15 @@ def cmd_check(args):
         print("Предупреждение:", w)
     v = db.check_schema(db.make_engine(cfg.db_url))
     print(f"Схема БД: v{v} — совместима")
+    if cfg.package_manifest is not None:
+        problems = check_package_manifest(cfg.package_manifest, cfg.package_root)
+        if problems:
+            print(f"ЦЕЛОСТНОСТЬ ПОСТАВКИ НАРУШЕНА ({len(problems)}):")
+            for p in problems:
+                print("  -", p)
+            print("Обновите установку по инструкции (docs/ops/install.md § 9) или восстановите из копии.")
+            raise SystemExit(2)
+        print("Целостность поставки: OK (манифест SHA-256)")
 
 
 def cmd_migrate(args):

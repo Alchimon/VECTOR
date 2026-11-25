@@ -8,6 +8,7 @@ import time
 
 import httpx
 import pytest
+from pathlib import Path
 
 from conftest import PWD
 
@@ -322,3 +323,26 @@ def test_relative_paths_resolve_from_config_folder(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)          # запускаем «не из той папки»
     cfg = load_config(d / "server.toml")
     assert cfg.db_url == "sqlite:///x.sqlite" and cfg.backup_dir == d / "backups"
+
+
+def test_package_manifest_check(tmp_path):
+    """Целостность поставки (D-85): манифест SHA-256 — целое проходит; изменённый/отсутствующий файл — отказ."""
+    from vector.server.cli import check_package_manifest
+    import subprocess as sp
+    root = tmp_path / "pkg"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "a.py").write_text("print('a')\n", encoding="utf-8")
+    (root / "readme.txt").write_text("hello\n", encoding="utf-8")
+    man = tmp_path / "MANIFEST.sha256"
+    r = sp.run([sys.executable, "tools/make_manifest.py", str(root), "--out", str(man)],
+               cwd=Path(__file__).resolve().parent.parent.parent, capture_output=True, text=True)
+    assert r.returncode == 0 and man.exists(), r.stderr
+    assert check_package_manifest(man, root) == []
+    # Лишний файл (журнал работы) — не нарушение.
+    (root / "server.log").write_text("x")
+    assert check_package_manifest(man, root) == []
+    # Изменённый и отсутствующий — нарушения.
+    (root / "src" / "a.py").write_text("print('b')\n", encoding="utf-8")
+    (root / "readme.txt").unlink()
+    problems = check_package_manifest(man, root)
+    assert any("изменён" in p for p in problems) and any("нет файла" in p for p in problems)

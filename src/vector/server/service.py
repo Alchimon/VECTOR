@@ -346,6 +346,22 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             self._license_cache = (today, modules_core.evaluate(self._license, today))
         return self._license_cache[1]
 
+    def _license_block(self, conn, now) -> dict:
+        """Блок лицензии для pull: состояние модулей + занятые именные места (D-85, мягкий контроль A-64).
+
+        Место = пользователь с хотя бы одним живым сеансом. Превышение не блокирует работу (не выкидываем людей
+        посреди смены): администратор видит превышение в «О программе», каждый вход сверх мест — в журнале."""
+        block = modules_core.license_block(self.license_status())
+        lic = self._license
+        if lic is not None and lic.seats is not None:
+            in_use = conn.execute(
+                sa.select(sa.func.count(sa.distinct(sessions.c.user_id)))
+                .where(sessions.c.revoked_at.is_(None), sessions.c.expires_at > now)).scalar() or 0
+            block["seats"] = lic.seats
+            block["seats_in_use"] = in_use
+            block["seats_exceeded"] = in_use > lic.seats
+        return block
+
     def _license_denied(self, command: str) -> Optional[dict]:
         """Отказ команды по лицензии или None. Модуль вне лицензии — изменения запрещены; подписка истекла —
         «только чтение»: чтение/печать/выгрузка (query) доступны всегда, изменения — после продления. Данные
@@ -436,6 +452,16 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             conn.execute(sessions.insert().values(token_hash=th, user_id=u["id"], device_id=device, client_addr=addr,
                                                   issued_at=now, last_seen_at=now, expires_at=exp))
             self._audit(conn, now, u["id"], device, addr, None, "auth.login", "user", u["id"], None, None, None, "accepted", {})
+            lic = self._license
+            if lic is not None and lic.seats is not None:
+                in_use = conn.execute(
+                    sa.select(sa.func.count(sa.distinct(sessions.c.user_id)))
+                    .where(sessions.c.revoked_at.is_(None), sessions.c.expires_at > now)).scalar() or 0
+                if in_use > lic.seats:
+                    # Мягко (A-64): вход разрешён, превышение зафиксировано — администратор видит его в pull
+                    # и «О программе»; событие в журнале — основание для разговора о расширении лицензии.
+                    self._audit(conn, now, u["id"], device, addr, None, "license.seats_exceeded", "user", u["id"],
+                                None, None, None, "accepted", {"seats": lic.seats, "in_use": in_use})
             return {"status": "accepted", "token": token, "user_id": u["id"], "display_name": u["display_name"],
                     "login": u["login"], "must_change_password": bool(u["must_change_password"]), "expires_at": iso(exp),
                     "idle_timeout_minutes": self.sec.session_idle_minutes,
@@ -1232,7 +1258,7 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         out: dict[str, Any] = {"server_time": iso(now), "customers": [], "tenders": [], "tkp": [], "projects": [], "kits": [], "assignments": [], "people": [],
                                # Лицензия установки — всем (D-81): клиент прячет разделы вне лицензии и показывает
                                # блок «О программе»; ворота — на сервере (_license_denied), это лишь подсказка.
-                               "license": modules_core.license_block(self.license_status())}
+                               "license": self._license_block(conn, now)}
         if can("customer.read"):
             out["customers"] = [self.v_customer(o) for o in self._rows(conn, sa.select(customers).order_by(customers.c.name))]
         if can("tender.read"):

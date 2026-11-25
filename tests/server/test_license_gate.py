@@ -17,12 +17,13 @@ from vector.core.contracts import Contracts
 from vector.server.service import Service
 
 
-def lic(kind="subscription", valid_until="2026-12-31", modules=("pdm",), grace_days=14, support_until="2026-12-31"):
+def lic(kind="subscription", valid_until="2026-12-31", modules=("pdm",), grace_days=14, support_until="2026-12-31",
+        seats=None):
     """Объект лицензии напрямую (разбор файла и подпись покрыты в tests/core/test_modules.py)."""
     return M.License(license_id="L-2026-T1", customer="ООО «Испытатель»", issued_at=date(2026, 1, 1), kind=kind,
                      valid_until=date.fromisoformat(valid_until) if valid_until else None,
                      support_until=date.fromisoformat(support_until) if support_until else None,
-                     modules=frozenset(modules), seats=None, grace_days=grace_days, key_id="test")
+                     modules=frozenset(modules), seats=seats, grace_days=grace_days, key_id="test")
 
 
 @pytest.fixture
@@ -102,3 +103,35 @@ class TestLicenseGate:
         assert by_id["pdm"]["state"] == "active"
         assert by_id["supply"]["state"] == "not_licensed"
         assert by_id["schema"]["state"] == "planned"                   # модули экосистемы — «в разработке»
+
+
+class TestSeats:
+    """Именные места (D-85, A-64): превышение не блокирует работу — администратор видит его, входы сверх мест
+    фиксируются в журнале как license.seats_exceeded."""
+
+    def test_seats_in_pull_and_soft_exceed(self, svc, clock, engine, fast_policy):
+        from vector.core.contracts import Contracts
+        w = World(Service(engine, contracts=Contracts.load(), clock=clock, sec=fast_policy,
+                          vendor_license=lic(modules=("pdm",), seats=2)), clock)
+        r = w.login("admin").query("pull")["result"]["license"]
+        assert r["seats"] == 2
+        # World уже создал пользователей (каждый make_user — сеансы смены пароля) — места заняты; но входы
+        # не блокируются: ниже логинимся ещё, работа продолжается.
+        clock.advance(seconds=61)
+        w.login("rp1")
+        clock.advance(seconds=61)
+        w.login("gip1")
+        clock.advance(seconds=61)
+        r = w.login("head1").query("pull")["result"]["license"]
+        assert r["seats_in_use"] > 2 and r["seats_exceeded"] is True
+        # Журнал: превышение зафиксировано (минимум дважды — gip1 и head1); тест смотрит журнал напрямую.
+        import sqlalchemy as sa
+        from vector.server.db import audit_log
+        with w.svc.engine.connect() as conn:
+            n = conn.execute(sa.select(sa.func.count()).select_from(audit_log)
+                             .where(audit_log.c.command == "license.seats_exceeded")).scalar()
+        assert n >= 2
+
+    def test_no_seats_field_without_limit(self, lworld):
+        r = _pull(lworld.admin)["license"]
+        assert "seats" not in r                                       # лицензия без ограничения мест

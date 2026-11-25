@@ -231,6 +231,10 @@ Item {
                         KeyValue { visible: backend.licenseInfo.mode === "licensed"; k: "Лицензия"; v: (backend.licenseInfo.kind_label_ru || "")
                                      + (backend.licenseInfo.valid_until ? " до " + backend.licenseInfo.valid_until : "") }
                         KeyValue { objectName: "aboutSupport"; k: "Поддержка"; v: backend.licenseInfo.support_label_ru || "" }
+                        KeyValue { objectName: "aboutSeats"; visible: (backend.licenseInfo.seats || 0) > 0
+                                   k: "Именные места"
+                                   v: (backend.licenseInfo.seats || 0) + " (в работе: " + (backend.licenseInfo.seats_in_use || 0) + ")"
+                                      + (backend.licenseInfo.seats_exceeded ? " — мест не хватает: свяжитесь с поставщиком, работа не блокируется" : "") }
                         Text {
                             Layout.fillWidth: true; wrapMode: Text.Wrap
                             text: "Истёкшая подписка не блокирует данные: раздел переходит в режим «только чтение» — смотреть, печатать и выгружать можно всегда."
