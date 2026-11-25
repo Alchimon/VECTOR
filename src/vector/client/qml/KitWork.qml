@@ -87,6 +87,14 @@ ColumnLayout {
             text: kw.tab === "tasks" ? "Новая задача" : "Новый документ"; kind: "soft"; compact: true; iconName: "plus"
             onClicked: kw.tab === "tasks" ? taskForm.openNew() : docForm.openNew()
         }
+        // Офисные документы ВЕКТОР (Ф1.4): таблица и текст — сразу с пустым файлом, редактируются в редакторе.
+        Row {
+            visible: kw.tab === "documents"; spacing: 4
+            VButton { text: "+ Таблица"; kind: "ghost"; compact: true; iconName: "layers"
+                      Accessible.name: "Новая таблица ВЕКТОР"; onClicked: docForm.openOffice("sheet") }
+            VButton { text: "+ Текст"; kind: "ghost"; compact: true; iconName: "file-text"
+                      Accessible.name: "Новый текстовый документ ВЕКТОР"; onClicked: docForm.openOffice("doc") }
+        }
     }
 
     // ================================================================== расчёт (С3)
@@ -190,6 +198,14 @@ ColumnLayout {
                                elide: Text.ElideRight; Layout.fillWidth: true } }
                     VChip { visible: modelData.pending; text: "Не отправлено"; tone: "warning"; iconName: "clock" }
                     VChip { text: modelData.current_label; tone: modelData.current_version_no > 0 ? "info" : "neutral" }
+                    VButton {   // Открыть в редакторе ВЕКТОР (только .vsheetx/.vdocx; онлайн — файл скачивается)
+                        text: "Редактор"; compact: true; kind: "soft"; iconName: "pencil"
+                        visible: { var v = modelData.versions; v.length > 0 && /\.(vsheetx|vdocx)$/.test(v[0].file_name || "") }
+                        enabled: backend.online && modelData.version > 0
+                        Accessible.name: "Открыть в редакторе ВЕКТОР"
+                        Accessible.description: !backend.online ? "Редактор открывает файл с сервера — нужна связь." : ""
+                        onClicked: officeEd.openFor(modelData, modelData.current_version_no)
+                    }
                     VButton { kind: "ghost"; compact: true; iconName: "pencil"; Accessible.name: "Изменить карточку документа"
                               enabled: modelData.version > 0; onClicked: docForm.openEdit(modelData) }
                     VButton {
@@ -305,13 +321,18 @@ ColumnLayout {
         id: docForm
         property string editId: ""
         property int editVersion: 0
-        title: editId ? "Изменить карточку документа" : "Новый документ"
-        subtitle: "Обозначение уникально в пределах проекта. Файл загружается отдельно — кнопкой «Новая версия»."
+        property string docKind: "file"          // file | sheet | doc (создание офисного документа Ф1.4)
+        title: editId ? "Изменить карточку документа" : (docKind === "file" ? "Новый документ" : "Новый офисный документ")
+        subtitle: docKind === "file" ? "Обозначение уникально в пределах проекта. Файл загружается отдельно — кнопкой «Новая версия»."
+                                     : "Документ ВЕКТОР создаётся с пустым файлом — сразу откройте в редакторе."
         canConfirm: dCode.text.trim() !== "" && dTitle.text.trim() !== ""
-        function openNew() { editId = ""; editVersion = 0; dCode.text = kw.kit ? kw.kit.code + "-" : ""; dTitle.text = ""; open() }
-        function openEdit(d) { editId = d.id; editVersion = d.version; dCode.text = d.code; dTitle.text = d.title; open() }
+        function openNew() { editId = ""; editVersion = 0; docKind = "file"; dCode.text = kw.kit ? kw.kit.code + "-" : ""; dTitle.text = ""; open() }
+        function openOffice(kind) { editId = ""; editVersion = 0; docKind = kind; dCode.text = kw.kit ? kw.kit.code + "-" : ""; dTitle.text = ""; open() }
+        function openEdit(d) { editId = d.id; editVersion = d.version; docKind = "file"; dCode.text = d.code; dTitle.text = d.title; open() }
         onConfirmed: editId ? dCmd.run("document.update", { id: editId, code: dCode.text.trim(), title: dTitle.text.trim() }, editVersion)
-                            : dCmd.run("document.create", { id: backend.newId(), kit_id: kw.kit.id, code: dCode.text.trim(), title: dTitle.text.trim() })
+                            : (docKind === "file"
+                               ? dCmd.run("document.create", { id: backend.newId(), kit_id: kw.kit.id, code: dCode.text.trim(), title: dTitle.text.trim() })
+                               : dCmd.run("office_doc.create", { id: backend.newId(), kit_id: kw.kit.id, code: dCode.text.trim(), title: dTitle.text.trim(), kind: docKind }))
         VField { id: dCode; label: "Обозначение"; required: true; placeholder: "АТХ-001" }
         VField { id: dTitle; label: "Наименование"; required: true; placeholder: "Схема автоматизации" }
     }
@@ -352,6 +373,9 @@ ColumnLayout {
         fileMode: FileDialog.OpenFile
         onAccepted: vPath.text = selectedFile.toString()
     }
+
+    // Редактор офисных документов (Ф1.4): таблицы .vsheetx и текст .vdocx, сохранение новой версией.
+    OfficeEditor { id: officeEd }
 
     // Скачивание: «Сохранить как» с именем файла, под которым автор загрузил версию.
     property string _dlDoc: ""

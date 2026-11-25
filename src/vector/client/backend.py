@@ -12,11 +12,12 @@ import platform
 import re
 import threading
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 from PySide6.QtCore import Property, QObject, QSettings, QTimer, QUrl, Signal, Slot
 
@@ -24,8 +25,25 @@ from vector import __version__
 from vector.core import stock
 from vector.core.contracts import Contracts
 
-from . import (calc_view, delegation_view, help_text, hints, lifecycle_view, notification_view, delivery_view, production_view, purchasing_view,
-               org_view, prodcal_view, quality_view, rkd_view, stock_view, workday_view, worktime_view)
+from . import (
+    calc_view,
+    delegation_view,
+    delivery_view,
+    help_text,
+    hints,
+    lifecycle_view,
+    notification_view,
+    office_view,
+    org_view,
+    prodcal_view,
+    production_view,
+    purchasing_view,
+    quality_view,
+    rkd_view,
+    stock_view,
+    workday_view,
+    worktime_view,
+)
 from .sync import STOCK_META, SyncClient
 from .transport import HttpTransport
 from .vault import KeyringStore, MemoryStore, VaultError
@@ -100,7 +118,7 @@ def _clean_lines(lines) -> list[dict]:
     return out
 
 
-def _int_or_none(v: Any) -> Optional[int]:
+def _int_or_none(v: Any) -> int | None:
     """Целое из поля формы или QML-числа: 5, 5.0, «5», « 5 » → 5; иначе (пусто, 5.5, «abc», True) — None."""
     if isinstance(v, bool) or v is None:
         return None
@@ -127,7 +145,7 @@ def _plain(v: Any) -> Any:
     return v
 
 
-def _plain_amount(v) -> Optional[str]:
+def _plain_amount(v) -> str | None:
     """Сумма из поля формы в виде для сервера: без пробелов, запятая → точка; пусто → None (не указано)."""
     if v is None:
         return None
@@ -197,7 +215,7 @@ class Backend(QObject):
     queryDone = Signal(str, "QVariant")
     _deliver = Signal(int, object)
 
-    def __init__(self, client_factory: Optional[Callable[[str, str], SyncClient]] = None, settings: Optional[QSettings] = None,
+    def __init__(self, client_factory: Callable[[str, str], SyncClient] | None = None, settings: QSettings | None = None,
                  auto_timers: bool = True):
         """client_factory и settings подменяются в тестах; auto_timers=False отключает фоновую синхронизацию (в боевом
         режиме — каждые 20 с).
@@ -210,7 +228,7 @@ class Backend(QObject):
         self._callbacks: dict[int, Callable[[Any], None]] = {}
         self._seq = 0
         self._deliver.connect(self._on_deliver)
-        self.client: Optional[SyncClient] = None
+        self.client: SyncClient | None = None
         self._screen = "login"
         self._busy = False
         self._online = False
@@ -251,12 +269,14 @@ class Backend(QObject):
         self._calendar_tried: dict = {}
         self._calendarFetched.connect(self._calendar_fetched)
         # Наибольший id уведомления, о котором уже сказали (None — ещё не было снимка после входа, D-35).
-        self._notify_seen: Optional[int] = None
+        self._notify_seen: int | None = None
         # Склад: снимок остатков/резервов/журнала/потребностей на момент последнего обновления (meta кэша).
         self._stock: dict = {}
         # Метаданные версий документов (номер, имя файла, размер, SHA-256) из зашифрованного кэша клиента.
         # Сами файлы в кэш не попадают: их скачивают по явной команде пользователя.
         self._doc_versions: list = []
+        # Рабочая копия открытого офисного документа (редактор Ф1.4): представление + модель ядра.
+        self._office: dict | None = None
         # Расчёт: зафиксированные версии комплектов и ревизии проектного итога (неизменяемые, из meta кэша).
         self._calc_versions: list = []
         self._calc_revisions: list = []
@@ -685,7 +705,7 @@ class Backend(QObject):
         """Раздел «Уведомления»: свои уведомления (новые сверху), число непрочитанных, можно ли отметить."""
         return qml_safe(notification_view.notifications_view(
             self._stock.get("notifications") or [], self._people, self._online and self._session_mode == "online",
-            datetime.now(timezone.utc)))
+            datetime.now(UTC)))
 
     @Slot(str, str, result="QVariantMap")
     def transferDonors(self, item_id: str, to_project_id: str) -> dict:
@@ -1215,7 +1235,7 @@ class Backend(QObject):
 
     def _now(self) -> datetime:
         """Сейчас для таймера рабочего дня — часы клиента (те же, что у очереди нажатий; в тестах — подставные)."""
-        return self.client.now() if self.client else datetime.now(timezone.utc)
+        return self.client.now() if self.client else datetime.now(UTC)
 
     @Slot(bool)
     def setWorkdayPromptAuto(self, on: bool):
@@ -1351,7 +1371,7 @@ class Backend(QObject):
         return qml_safe(org_view.org_view(
             st.get("org_units") or [], st.get("org_members") or [], st.get("org_events") or [],
             st.get("org_me") or {}, self._people, self._online and self._session_mode == "online",
-            datetime.now(timezone.utc), self._org_query, st.get("work_schedules") or [],
+            datetime.now(UTC), self._org_query, st.get("work_schedules") or [],
             st.get("work_schedule_links") or [], bool((st.get("workday_schedule") or {}).get("manage"))))
 
     @Slot(str)
@@ -1589,7 +1609,8 @@ class Backend(QObject):
         (точность Excel), запись атомарна (обрыв не оставляет частичный файл). Локальная операция —
         работает и без связи.
         """
-        from vector.core import calc as core_calc, xlsx
+        from vector.core import calc as core_calc
+        from vector.core import xlsx
         dest = Path(QUrl(dest_url).toLocalFile() if "://" in dest_url else dest_url)
         if dest.suffix.lower() != ".xlsx":
             dest = dest.with_suffix(".xlsx")
@@ -1613,7 +1634,8 @@ class Backend(QObject):
         показывается предпросмотром, и только после подтверждения пользователя позиции попадают в редактор.
         Локальная операция — работает и без связи.
         """
-        from vector.core import calc as core_calc, xlsx
+        from vector.core import calc as core_calc
+        from vector.core import xlsx
         path = Path(QUrl(file_url).toLocalFile() if "://" in file_url else file_url)
 
         def job():
@@ -1985,9 +2007,7 @@ class Backend(QObject):
             self.toast.emit("success", ok_text or "Готово: " + self.contracts.label(command).lower() + ".")
         elif st == "queued":
             self.toast.emit("info", r["message_ru"])
-        elif st == "conflict":
-            self.toast.emit("warning", r["message_ru"])
-        elif st in ("refused_offline", "blocked", "unknown_outcome"):
+        elif st == "conflict" or st in ("refused_offline", "blocked", "unknown_outcome"):
             self.toast.emit("warning", r["message_ru"])
         else:
             self.toast.emit("error", r.get("message_ru") or "Действие не выполнено.")
@@ -2057,6 +2077,103 @@ class Backend(QObject):
         v = next((v for v in self._doc_versions if v.get("document_id") == document_id and v.get("version_no") == version_no), None)
         return v.get("file_name", "") if v else ""
 
+    # ------------------------------------------------------------ офисный редактор (Ф1.4, D-95)
+    # Рабочая копия документа живёт в потоке заданий (_run): загрузка версии → модель → представление;
+    # правки ячеек/абзацев — синхронные слоты к копии; «Сохранить» — сериализация + add_document_version.
+    # Копия НЕ потокобезопасна по одному document_id за раз — окно редактора одно (модальное).
+
+    def _office_tmp(self, document_id: str) -> Path:
+        """Временный файл скачанной версии (рядом с кэшем клиента; удаляется после чтения)."""
+        import tempfile
+        return Path(tempfile.mkdtemp(prefix="vector-office-")) / f"{document_id}.bin"
+
+    @Slot(str, int, str)
+    def officeLoad(self, tag: str, document_id: str, version_no: int):
+        """Скачать версию офисного документа и открыть в редакторе. Результат — queryDone(tag, …) с
+        представлением ({kind, name, rows/cols/cells | rows:[para]}), либо отказ с понятным текстом."""
+        def job():
+            dest = self._office_tmp(document_id)
+            try:
+                r = self.client.download_document_version(document_id, version_no, dest)
+            finally:
+                pass
+            if r.status != "accepted":
+                return {"status": r.status, "message_ru": r.message_ru}
+            data = dest.read_bytes()
+            dest.unlink(missing_ok=True)
+            try:
+                if self._doc_kind(document_id) == "doc":
+                    from vector.office.vdocx import read_vdocx
+                    doc = read_vdocx(data)
+                    return {"status": "accepted", "kind": "doc", "document_id": document_id, "title": doc.title,
+                            "rows": office_view.doc_to_view(doc)}
+                from vector.office.vsheetx import read_vsheetx
+                wb = read_vsheetx(data)
+                return {"status": "accepted", "kind": "sheet", "document_id": document_id, "workbook": wb,
+                        "view": office_view.sheet_to_view(wb)}
+            except (ValueError, KeyError, OSError) as e:      # битый/чужой файл — честный отказ редактора
+                return {"status": "rejected", "message_ru": f"Файл не читается как документ ВЕКТОР: {e}"}
+        self._run(job, lambda res: self._office_loaded(tag, res))
+
+    def _doc_kind(self, document_id: str) -> str:
+        """Вид офисного документа по имени файла текущей версии (.vsheetx/.vdocx) из кэша."""
+        v = next((v for v in self._doc_versions if v.get("document_id") == document_id), None)
+        fn = (v or {}).get("file_name", "")
+        return "doc" if fn.endswith(".vdocx") else "sheet"
+
+    def _office_loaded(self, tag: str, res: dict):
+        if res.get("status") != "accepted":
+            self._command_done(tag, res)                       # форма покажет отказ
+            return
+        res["dirty"] = False
+        self._office = res                                     # рабочая копия: представление + модель (wb/rows)
+        self.queryDone.emit(tag, qml_safe({k: v for k, v in res.items() if k not in ("workbook",)}))
+
+    @Slot(str, str, result="QVariantMap")
+    def officeEditCell(self, addr: str, text: str) -> dict:
+        """Правка ячейки таблицы в рабочей копии (с пересчётом формул). Синхронно — правка локальна и быстрая."""
+        st = self._office
+        if not st or st.get("kind") != "sheet":
+            return qml_safe({"status": "rejected", "message_ru": "Нет открытой таблицы."})
+        cell = office_view.view_set_cell(st["workbook"], addr, text)
+        st["view"]["cells"][addr] = cell
+        st["dirty"] = True
+        return qml_safe(cell)
+
+    @Slot(int, str, str, result="QVariantMap")
+    def officeEditPara(self, idx: int, text: str, style: str) -> dict:
+        """Правка абзаца текста в рабочей копии (idx — строка представления, только block=para)."""
+        st = self._office
+        if not st or st.get("kind") != "doc":
+            return qml_safe({"status": "rejected", "message_ru": "Нет открытого текстового документа."})
+        rows = st["rows"]
+        if not (0 <= idx < len(rows)) or rows[idx].get("block") != "para":
+            return qml_safe({"status": "rejected", "message_ru": "Строка не редактируется (таблица в документе)."})
+        rows[idx]["text"], rows[idx]["style"] = text, style
+        st["dirty"] = True
+        return qml_safe(rows[idx])
+
+    @Slot(str, int)
+    def officeSave(self, tag: str, expected_version: int):
+        """Сохранить рабочую копию новой версией документа (онлайн; конфликт версий — честный, не сливаем)."""
+        st = self._office
+        doc_id = st.get("document_id") if st else None
+        if not doc_id:
+            self._command_done(tag, {"status": "rejected", "message_ru": "Нет открытого офисного документа."})
+            return
+        def job():
+            fname = next((v.get("file_name") for v in self._doc_versions
+                          if v.get("document_id") == doc_id), None) or f"doc.{'vdocx' if st['kind'] == 'doc' else 'vsheetx'}"
+            if st["kind"] == "sheet":
+                from vector.office.vsheetx import write_vsheetx
+                data = write_vsheetx(st["workbook"])
+            else:
+                from vector.office.vdocx import write_vdocx
+                data = write_vdocx(office_view.doc_from_view(st.get("title", ""), st["rows"]))
+            r = self.client.add_document_version(doc_id, data, fname, "Правка в редакторе ВЕКТОР", expected_version)
+            return {"result": r.__dict__, "snap": self._snapshot(False)}
+        self._run(job, lambda res: self._file_done(tag, res, "Документ сохранён новой версией."))
+
     @Slot(result=str)
     def newId(self) -> str:
         """Новый UUID для создаваемого объекта: id выдаёт клиент, чтобы объект, созданный офлайн, сохранил его на
@@ -2078,7 +2195,7 @@ class Backend(QObject):
             return "Только цифры, не более 4 знаков после запятой."
         if -d.as_tuple().exponent > 4:
             return "Не более 4 знаков после запятой."
-        if abs(d) >= Decimal("100000000000000"):
+        if abs(d) >= Decimal(100000000000000):
             return "Слишком большая сумма."
         return ""
 
@@ -2162,7 +2279,7 @@ class Backend(QObject):
         self._run(lambda: self.client.query("users"), done)
 
 
-def format_size(n: Optional[int]) -> str:
+def format_size(n: int | None) -> str:
     """Размер файла по-русски: 1 536 → «1,5 КБ». Неизвестный размер — «—», а не «0 Б»."""
     if n is None:
         return "—"
@@ -2173,7 +2290,7 @@ def format_size(n: Optional[int]) -> str:
     return (f"{int(v)} {units[i]}" if i == 0 else f"{v:.1f} {units[i]}".replace(".", ","))
 
 
-def format_money(amount: Optional[str], currency: Optional[str]) -> str:
+def format_money(amount: str | None, currency: str | None) -> str:
     """Отображение суммы: десятичная строка → группы разрядов; неизвестно ≠ 0."""
     if amount is None:
         return "Сумма не указана"
