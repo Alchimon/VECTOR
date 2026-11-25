@@ -16,7 +16,7 @@ import QtQuick.Layouts
 Item {
     id: page
     property var shell
-    property string tab: "balances"          // balances | reservations | transit | adjustments | journal | refs
+    property string tab: "balances"          // balances | reservations | transit | adjustments | proposals | journal | refs
     property string selectedId: ""
     property string search: ""
     readonly property var ov: backend.stockOverview
@@ -52,6 +52,7 @@ Item {
                     { id: "reservations", label: "Резервы (" + (ov.summary ? ov.summary.active_reservations : 0) + ")", icon: "bookmark" },
                     { id: "transit", label: "В пути (" + (ov.summary ? ov.summary.in_transit : 0) + ")", icon: "truck" },
                     { id: "adjustments", label: "Корректировки (" + (ov.summary ? ov.summary.adjust_pending : 0) + ")", icon: "clipboard-check" },
+                    { id: "proposals", label: "Предложения (" + (ov.summary ? ov.summary.proposals_open : 0) + ")", icon: "arrow-left-right" },
                     { id: "journal", label: "Журнал движений", icon: "history" },
                     { id: "refs", label: "Справочники", icon: "settings" },
                     { id: "directory", label: "Аналоги и пересчёт", icon: "arrow-left-right" }]
@@ -266,6 +267,27 @@ Item {
             }
             EmptyState { anchors.centerIn: parent; visible: adjList.count === 0; iconName: "clipboard-check"; title: "Корректировок нет"
                          text: "Здесь появятся корректировки остатка по акту (инвентаризация). Корректировку создаёт склад с карточки позиции, в учёт она попадает только после подписи руководителя отдела." }
+        }
+
+        // ================================================================ Предложения перемещения (D-78)
+        VCard {
+            visible: page.tab === "proposals"
+            Layout.fillWidth: true; Layout.fillHeight: true
+            ListView {
+                id: propList
+                objectName: "stockProposals"
+                anchors.fill: parent; anchors.margins: 14
+                clip: true; spacing: 6
+                model: page.tab === "proposals" ? (ov.proposals || []) : []
+                ScrollBar.vertical: ScrollBar {}
+                delegate: ProposalRow { width: ListView.view.width; t: modelData
+                    onAcceptRequested: propDecideForm.openFor(modelData, "accept")
+                    onOrderRequested: propDecideForm.openFor(modelData, "order")
+                    onRejectRequested: propDecideForm.openFor(modelData, "reject")
+                    onWithdrawRequested: propWithdrawForm.openFor(modelData) }
+            }
+            EmptyState { anchors.centerIn: parent; visible: propList.count === 0; iconName: "arrow-left-right"; title: "Предложений нет"
+                         text: "Здесь появятся предложения переместить позицию из другого проекта (С4). Предложение — не резерв и не движение: оно ждёт решения склада или закупки." }
         }
 
         // ================================================================ Справочники
@@ -626,6 +648,46 @@ Item {
         VField { id: adjCanReason; objectName: "adjCanReason"; label: "Почему отменяем"; required: true; placeholder: "Ошибка в основании, пересчитаем …" }
     }
     Cmd { id: cAdjCancel; dialog: adjCancelForm }
+
+    // Решение по предложению перемещения (D-78): склад перебрасывает резерв (accept), закупка решает «закупим»
+    // (order), любая сторона отказывает с причиной (reject). Только при связи: сервер проверяет остатки в моменте.
+    FormDialog {
+        id: propDecideForm
+        objectName: "propDecideForm"
+        property var prop: null
+        property string decision: ""
+        title: ({ accept: "Перебросить резерв по предложению", order: "Решение «закупим»",
+                  reject: "Отказать в перемещении" })[decision] || "Решение по предложению"
+        subtitle: prop ? prop.item_code + " · " + prop.warehouse_code + ": " + prop.from_label + " → " + prop.to_label
+                         + "  ·  " + prop.qty_label + (decision === "accept"
+                            ? ". Резервы проекта-донора будут сняты (старшие сначала), недостающее — из свободного; резерв получателя появится сразу."
+                            : "") : ""
+        confirmText: ({ accept: "Перебросить резерв", order: "Подтвердить закупку", reject: "Отказать" })[decision] || "Подтвердить"
+        confirmKind: decision === "reject" ? "danger" : "primary"
+        canConfirm: prop !== null && (decision !== "reject" || pdNote.text.trim() !== "")
+        function openFor(x, d) { prop = x; decision = d; pdNote.text = ""; open() }
+        onConfirmed: cPropDecide.run("proposal.decide", { id: prop.id, decision: decision, note: pdNote.text.trim() }, prop.version)
+        Banner { visible: propDecideForm.decision === "order"; tone: "info"
+                 text: "Сам заказ поставщику создаётся отдельно на странице «Закупка» — это решение только закрывает предложение." }
+        VField { id: pdNote; objectName: "pdNote"; label: propDecideForm.decision === "reject" ? "Причина отказа" : "Комментарий (по желанию)"
+                 required: propDecideForm.decision === "reject"; placeholder: "Комментарий к решению" }
+    }
+    Cmd { id: cPropDecide; dialog: propDecideForm }
+
+    // Отзыв своего предложения автором (D-78) — в очереди, работает и без связи.
+    FormDialog {
+        id: propWithdrawForm
+        objectName: "propWithdrawForm"
+        property var prop: null
+        title: "Отозвать предложение"
+        subtitle: prop ? prop.item_code + " · " + prop.qty_label + " — предложение останется в истории как отозванное." : ""
+        confirmText: "Отозвать"; confirmKind: "danger"
+        canConfirm: pwReason.text.trim() !== ""
+        function openFor(x) { prop = x; pwReason.text = ""; open() }
+        onConfirmed: cPropWithdraw.run("proposal.withdraw", { id: prop.id, reason: pwReason.text.trim() }, prop.version)
+        VField { id: pwReason; objectName: "pwReason"; label: "Почему отзываем"; required: true; placeholder: "Уже не нужно, ошибка в количестве …" }
+    }
+    Cmd { id: cPropWithdraw; dialog: propWithdrawForm }
 
     // Акт об утрате (D-31): не пришло ничего. Прихода нет, отправителю не возвращается — количество списывается
     // актом. Причина обязательна; подпись приёмщика — как в акте недостачи (настройка stock.act_signature).

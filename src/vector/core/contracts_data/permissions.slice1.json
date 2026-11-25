@@ -1,5 +1,5 @@
 {
- "contract": "permissions-slice1-v38",
+ "contract": "permissions-slice1-v39",
  "notes": [
   "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
   "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -897,6 +897,58 @@
    ],
    "assumption": "A-61",
    "note": "Отменяет автор неподписанной корректировки (проверка авторства — в сервере)."
+  },
+  "proposal.propose": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    },
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-62",
+   "note": "Предлагает закупка или участник проекта-получателя (С4 шаг 3: «инженер/закупка»). Проект — to_project_id запроса."
+  },
+  "proposal.withdraw": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    },
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-62",
+   "note": "Отзывает автор своё предложение до решения (проверка авторства — в сервере)."
+  },
+  "proposal.decide": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    },
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-62",
+   "note": "Совместное решение (С4 шаг 4): accept — склад (проверяется как stock.reserve), order — закупка (как po.create), reject — любая из сторон. Решение одно; вторая сторона и автор — уведомлением."
   },
   "need.generate": {
    "any_of": [

@@ -92,6 +92,9 @@ MasterDetail {
                               text: "Зарезервировать"; compact: true; kind: "soft"; iconName: "bookmark"
                               onClicked: lineReserve.openFor(modelData) }
                     // Ручное сопоставление — закупка, при связи; при резервах — по настройке компании (D-26).
+                    VButton { objectName: "btnPropose"; visible: nv.can_propose === true && !!modelData.item_id && Number(modelData.reserve_open_label.split(" ")[0].replace(",", ".")) > 0
+                              text: "Предложить перемещение"; compact: true; kind: "ghost"; iconName: "arrow-left-right"
+                              onClicked: propForm.openFor(modelData) }
                     VButton { objectName: "btnMatch"; visible: nv.can_match === true && modelData.can_rematch === true
                               text: modelData.item_id ? "Изменить" : "Сопоставить"; compact: true
                               kind: modelData.item_id ? "ghost" : "soft"; iconName: "link"
@@ -148,6 +151,51 @@ MasterDetail {
         VField { id: lrReason; objectName: "lrReason"; label: "Основание резерва"; required: true; placeholder: "Под монтаж …" }
     }
     Cmd { id: cLine; dialog: lineReserve }
+
+    // ---------- предложить перемещение из другого проекта (D-78, С4 шаг 3, очередь офлайн)
+    // Предложение — не резерв, не заказ, не движение: оно ждёт решения склада или закупки (страница «Склад» →
+    // «Предложения»). Источники (резервы других проектов и свободное по складам) показаны по снимку «на момент …».
+    FormDialog {
+        id: propForm
+        objectName: "propForm"
+        property var line: null
+        property var src: line !== null && page.sel !== null ? backend.transferDonors(line.item_id, page.sel.project_id) : ({ donors: [], free: [] })
+        property int srcKind: 0          // 0 — из проекта-донора, 1 — из свободного остатка
+        function qtyOk() { const t = pfQty.text.trim(); const n = Number(t.replace(",", ".")); return t !== "" && isFinite(n) && n > 0 }
+        title: "Предложить перемещение"
+        subtitle: line ? (line.item_label || "") + "  ·  строка " + line.pos + " потребности проекта " + (page.sel ? page.sel.project_code : "") : ""
+        confirmText: "Предложить перемещение"
+        canConfirm: line !== null && (propForm.srcKind === 1 ? propForm.src.free.length > 0 : propForm.src.donors.length > 0)
+                    && propForm.qtyOk() && pfReason.text.trim() !== ""
+        function openFor(l) { line = l; srcKind = 0; pfWh.currentIndex = 0; pfQty.text = ""; pfReason.text = ""; open() }
+        onConfirmed: cProp.run("proposal.propose",
+            Object.assign({ id: backend.newId(), item_id: line.item_id, to_project_id: page.sel.project_id,
+                            need_id: page.sel.id, need_line_id: line.line_id,
+                            qty: backend.normalizeQty(pfQty.text), reason: pfReason.text.trim() },
+                          propForm.srcKind === 1
+                            ? { warehouse_id: propForm.src.free[pfWh.currentIndex].warehouse_id, from_project_id: null }
+                            : { warehouse_id: propForm.src.donors[pfWh.currentIndex].warehouse_id,
+                                from_project_id: propForm.src.donors[pfWh.currentIndex].project_id }))
+        Banner { tone: "info"; text: "Предложение — не резерв и не движение: оно встанет в очередь и будет видно складу и закупке на странице «Склад» → «Предложения». Решение принимают они при связи." }
+        VSegmented { model: [{ id: "donor", label: "Из резерва проекта", icon: "bookmark" },
+                             { id: "free", label: "Из свободного остатка", icon: "layers" }]
+                     current: propForm.srcKind === 1 ? "free" : "donor"
+                     onPicked: id => propForm.srcKind = (id === "free" ? 1 : 0) }
+        Banner { visible: propForm.srcKind === 0 && propForm.src.donors.length === 0; tone: "warning"
+                 text: "Действующих резервов других проектов по этой позиции в снимке нет — выберите «Из свободного остатка» или обновите снимок." }
+        VSelect { id: pfWh; objectName: "pfWh"; label: propForm.srcKind === 0 ? "Склад и проект-донор" : "Склад"
+                  model: (propForm.srcKind === 1 ? propForm.src.free : propForm.src.donors)
+                         .map(x => ({ label: propForm.srcKind === 1
+                              ? x.warehouse_code + "  ·  свободно " + x.available
+                              : x.warehouse_code + "  ·  " + x.project_code + "  ·  зарезервировано " + x.remaining,
+                              value: x.warehouse_id })) }
+        VField { id: pfQty; objectName: "pfQty"; label: "Количество" + (propForm.line && propForm.line.item_unit ? ", " + propForm.line.item_unit : "")
+                 required: true; placeholder: "0"
+                 error: pfQty.text !== "" && !propForm.qtyOk() ? "Введите количество больше нуля, например 12 или 12,5" : "" }
+        VField { id: pfReason; objectName: "pfReason"; label: "Почему просим"; required: true
+                 placeholder: "В нашем проекте не хватает до конца недели, у донора лежит в резерве …" }
+    }
+    Cmd { id: cProp; dialog: propForm }
 
     // ---------- ручное сопоставление строки с номенклатурой (A-25, D-24..D-26, A-27)
     FormDialog {

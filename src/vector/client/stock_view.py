@@ -89,7 +89,8 @@ def _state(on_hand: Decimal, reserved: Decimal) -> tuple[str, str, str]:
 
 def overview(warehouses: list, items: list, balances: list, reservations: list, movements: list, projects: list,
              people: dict, last_pull: str, online: bool, roles: list, transfers: Optional[list] = None,
-             config: Optional[list] = None, adjustments: Optional[list] = None, me_id: Optional[str] = None) -> dict:
+             config: Optional[list] = None, adjustments: Optional[list] = None, me_id: Optional[str] = None,
+             proposals: Optional[list] = None) -> dict:
     """Экран «Склад»: позиции с остатками по складам, резервы, перемещения «в пути», журнал, подсказки действий.
 
     transfers — перемещения из pull (D-29): все «в пути» и недавние закрытые. Количество «в пути» не входит ни в
@@ -234,6 +235,36 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
                                               and a["requested_by"] != me_id),
                          "can_cancel_row": bool(online and is_wh and a["status"] == "pending"
                                                 and a["requested_by"] == me_id)})
+    # Предложения перемещения между проектами (D-78): открытые (proposed) сверху, затем решённые. Предложение —
+    # не резерв и не движение; решение: склад перебрасывает резерв (accept), закупка решает «закупим» (order),
+    # любая сторона отказывает (reject), автор отзывает до решения (withdraw, в очереди — можно и без связи).
+    is_pr = "procurement" in roles
+    prop_open = sorted((x for x in proposals or [] if x["status"] == "proposed"),
+                       key=lambda x: x.get("created_at") or "")
+    prop_rest = sorted((x for x in proposals or [] if x["status"] != "proposed"),
+                       key=lambda x: x.get("created_at") or "", reverse=True)
+    prop_rows = []
+    for x in prop_open + prop_rest:
+        i = it.get(x["item_id"], {})
+        unit = i.get("unit", "")
+        open_row = x["status"] == "proposed"
+        prop_rows.append({**x, "item_code": i.get("code", "?"), "item_name": i.get("name", ""), "unit": unit,
+            "warehouse_code": wh.get(x["warehouse_id"], {}).get("code", "?"),
+            "qty_label": qty_label(x["qty"], unit),
+            "from_label": pr.get(x["from_project_id"], {}).get("code", "проект скрыт") if x["from_project_id"]
+                          else "свободный остаток",
+            "to_label": pr.get(x["to_project_id"], {}).get("code", "проект скрыт"),
+            "status_tone": {"proposed": "warning", "accepted": "success", "order": "info",
+                            "rejected": "danger", "withdrawn": "neutral"}.get(x["status"], "neutral"),
+            "author": people.get(x.get("created_by") or "", ""),
+            "decider": people.get(x.get("decided_by") or "", ""),
+            "created_label": (x.get("created_at") or "").replace("T", " ")[:16],
+            "decided_label": (x.get("decided_at") or "").replace("T", " ")[:16],
+            # accept/order/reject — только при связи (online_required); отозвать можно и без связи (очередь).
+            "can_accept": bool(open_row and online and is_wh),
+            "can_order": bool(open_row and online and is_pr),
+            "can_reject": bool(open_row and online and (is_wh or is_pr)),
+            "can_withdraw": bool(open_row and x["created_by"] == me_id)})
     active_wh = sum(1 for w in warehouses if w.get("active", True) and not w.get("_pending"))
     return {"as_of": as_of_label(last_pull), "online": online, "items": rows,
             "warehouses": [{**w, "pending": bool(w.get("_pending")),
@@ -247,10 +278,14 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
                         "active_reservations": sum(1 for r in res_rows if r["status"] == "active"),
                         "in_transit": sum(1 for t in tr_rows if t["status"] == "in_transit"),
                         "movements": len(mv_rows),
-                        "adjust_pending": len(adj_pending)},
+                        "adjust_pending": len(adj_pending),
+                        "proposals_open": len(prop_open)},
+            "proposals": prop_rows,
             "adjustments": adj_rows,
             # Корректировка: создаёт склад при связи; подписывает руководитель отдела при связи (D-77).
             "can_adjust": is_wh and online, "can_sign_adjust": online and "dept_head" in roles,
+            # Предложить перемещение может закупка (офлайн-очередь, D-78); участники проекта — через сервер.
+            "can_propose": is_pr,
             # Подсказки: проводки и резервы — склад и только при связи (online_required); справочники — офлайн тоже.
             "can_post": is_wh and online, "can_edit_refs": is_wh or "procurement" in roles,
             # Перемещать есть куда, только если действующих (уже отправленных на сервер) складов не меньше двух.
@@ -414,6 +449,8 @@ def needs_view(needs: list, candidates: list, items: list, last_pull: str, onlin
     return {"as_of": as_of_label(last_pull), "online": online, "needs": out, "candidates": candidates,
             "can_generate": "procurement" in roles and online, "can_reserve": "warehouse" in roles and online,
             "can_match": "procurement" in roles and online,
+            # «Предложить перемещение» из другого проекта (С4 шаг 3, D-78): очередь офлайн — связи не нужно.
+            "can_propose": "procurement" in roles,
             "sees_stock": "warehouse" in roles or "procurement" in roles}
 
 

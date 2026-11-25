@@ -34,6 +34,12 @@ def _call(obj, method, *args):
     QMetaObject.invokeMethod(obj, method, *[Q_ARG("QVariant", a) for a in args])
 
 
+def _popup_in(root, name):
+    """Всплывающее окно по objectName ВНУТРИ данной страницы — после перелогина в дереве могут остаться
+    одноимённые формы уже закрытой страницы (поиск по всему окну находит мёртвый экземпляр)."""
+    return next(o for o in root.findChildren(QObject) if o.objectName() == name)
+
+
 def _item(ui, code):
     """Строка позиции из обзора склада по коду."""
     return next(i for i in _v(_stock_page(ui), "ov")["items"] if i["code"] == code)
@@ -539,3 +545,119 @@ def test_adjustment_create_sign_and_cancel_flow(ui):
     ui.wait_idle()
     assert all(r["status"] != "pending" for r in _v(page, "ov")["adjustments"])
     assert _v(page, "ov")["summary"]["adjust_pending"] == 0
+
+
+def test_transfer_proposal_flow(ui):
+    """Предложение перемещения (D-78): закупка предлагает из строки потребности (форма со снимком источников),
+    склад видит на вкладке «Предложения» и перебрасывает резерв; автор отзывает своё второе предложение."""
+    # Закупка формирует потребность ЭМ и предлагает переместить ЩР-1 из свободного остатка СК-2 (1 шт на складе,
+    # нужно 2 — строка открыта).
+    ui.login("s.morozov")
+    ui.go("procurement")
+    pp = next(i for i in ui.items("nv") if i.isVisible())
+    gen = _popup_in(pp, "genForm")
+    QMetaObject.invokeMethod(gen, "open")
+    ui.wait_idle()
+    QMetaObject.invokeMethod(gen, "confirmed")
+    ui.wait_idle()
+    nv = _v(pp, "nv")
+    em = next(n for n in nv["needs"] if n["kit_code"] == "ЭМ")
+    shr = next(ln for ln in em["lines"] if ln["code"] == "ЩР-1")
+    assert shr["open_label"] == "2 шт" and shr["available_label"] == "1 шт"   # одна есть, вторая — вопрос
+    assert nv["can_propose"] is True
+    pp.setProperty("selectedId", em["id"])
+    ui.wait_idle()
+    pf = _popup_in(pp, "propForm")
+    _call(pf, "openFor", shr)
+    ui.wait_idle()
+    assert pf.property("src")["donors"] == []                                  # резервов ЩР-1 нет — только свободное
+    assert len(pf.property("src")["free"]) == 1
+    assert pf.property("canConfirm") is False                                  # переключатель ещё на «доноре», их нет
+    # Переключаем «Из свободного остатка» (сегмент в форме делает то же самое через onPicked).
+    pf.setProperty("srcKind", 1)
+    _popup_in(pp, "pfQty").setProperty("text", "1")
+    ui.wait_idle()
+    assert pf.property("canConfirm") is False                                  # причина обязательна
+    _popup_in(pp, "pfReason").setProperty("text", "В ПАЗ цеха № 5 щит уже едет, а нам нужен сейчас")
+    ui.wait_idle()
+    assert pf.property("canConfirm") is True
+    QMetaObject.invokeMethod(pf, "confirmed")
+    ui.wait_idle()
+
+    # Склад: вкладка «Предложения» — открытое предложение, решение «Перебросить резерв».
+    ui.login("i.belova")
+    ui.go("stock")
+    page = _stock_page(ui)
+    page.setProperty("tab", "proposals")
+    ui.wait_idle()
+    ov = _v(page, "ov")
+    assert ov["summary"]["proposals_open"] == 1
+    row = ov["proposals"][0]
+    assert (row["status"], row["item_code"], row["from_label"], row["qty_label"]) == \
+        ("proposed", "ЩР-1", "свободный остаток", "1 шт")
+    assert row["can_accept"] is True and row["can_reject"] is True and row["can_order"] is False
+    dec = _popup_in(page, "propDecideForm")
+    _call(dec, "openFor", row, "accept")
+    ui.wait_idle()
+    assert dec.property("canConfirm") is True                                  # комментарий при accept необязателен
+    QMetaObject.invokeMethod(dec, "confirmed")
+    ui.wait_idle()
+    ov = _v(page, "ov")
+    assert ov["summary"]["proposals_open"] == 0
+    assert ov["proposals"][0]["status"] == "accepted" and ov["proposals"][0]["status_label"] == "Резерв переброшен"
+    # Резерв ЩР-1 под демо-проект появился на СК-2.
+    res = [r for r in ov["reservations"] if r["item_code"] == "ЩР-1"]
+    assert len(res) == 1 and res[0]["qty_label"] == "1 шт"
+
+    # Второе предложение (по ХМТ-200, без строки потребности — поля опциональны) — склад отказывает с причиной.
+    ui.login("s.morozov")
+    ui.go("stock")
+    page0 = _stock_page(ui)
+    page0.setProperty("tab", "proposals")
+    ui.wait_idle()
+    first = _v(page0, "ov")["proposals"][0]
+    hmt = next(i for i in _v(page0, "ov")["items"] if i["code"] == "ХМТ-200")
+    wh2 = next(w for w in _v(page0, "ov")["warehouses"] if w["code"] == "СК-2")
+    ui.backend.execute("t", "proposal.propose", {"id": ui.backend.newId(), "warehouse_id": wh2["id"],
+                                                 "item_id": hmt["id"], "to_project_id": first["to_project_id"],
+                                                 "qty": "50", "reason": "Хомуты нужны на ПАЗ раньше поставки"}, 0)
+    ui.wait_idle()
+    ui.login("i.belova")
+    ui.go("stock")
+    page = _stock_page(ui)
+    page.setProperty("tab", "proposals")
+    ui.wait_idle()
+    row = next(r for r in _v(page, "ov")["proposals"] if r["status"] == "proposed")
+    assert row["item_code"] == "ХМТ-200" and row["can_accept"] is True
+    dec = _popup_in(page, "propDecideForm")
+    _call(dec, "openFor", row, "reject")
+    ui.wait_idle()
+    assert dec.property("canConfirm") is False                                 # без причины отказать нельзя
+    _popup_in(page, "pdNote").setProperty("text", "Хомуты уже идут отдельным заказом")
+    ui.wait_idle()
+    assert dec.property("canConfirm") is True
+    QMetaObject.invokeMethod(dec, "confirmed")
+    ui.wait_idle()
+    assert {r["status"] for r in _v(page, "ov")["proposals"]} == {"accepted", "rejected"}
+
+    # Автор (закупка) отзывает своё третье предложение — из своего представления склада.
+    ui.login("s.morozov")
+    ui.go("stock")
+    page = _stock_page(ui)
+    page.setProperty("tab", "proposals")
+    ui.wait_idle()
+    ui.backend.execute("t", "proposal.propose", {"id": ui.backend.newId(), "warehouse_id": wh2["id"],
+                                                 "item_id": hmt["id"], "to_project_id": first["to_project_id"],
+                                                 "qty": "10", "reason": "Проверка отзыва"}, 0)
+    ui.wait_idle()
+    row = next(r for r in _v(page, "ov")["proposals"] if r["status"] == "proposed")
+    assert row["can_withdraw"] is True and row["can_accept"] is False          # закупка резерв не перебрасывает
+    wd = _popup_in(page, "propWithdrawForm")
+    _call(wd, "openFor", row)
+    ui.wait_idle()
+    assert wd.property("canConfirm") is False
+    _popup_in(page, "pwReason").setProperty("text", "Дубль, предложение уже решено раньше")
+    ui.wait_idle()
+    QMetaObject.invokeMethod(wd, "confirmed")
+    ui.wait_idle()
+    assert all(r["status"] != "proposed" for r in _v(page, "ov")["proposals"])

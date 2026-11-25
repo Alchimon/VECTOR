@@ -56,6 +56,7 @@ from .db import (calc_version_lines, calc_versions, item_aliases, kits, procurem
                  procurement_need_line_match_units, procurement_need_line_matches, procurement_need_lines,
                  procurement_needs, projects, purchase_order_lines, purchase_orders, unit_conversions, signatures,
                  stock_adjustments, stock_balances, stock_item_packs, stock_items, stock_movements, stock_reservations,
+                 stock_transfer_proposals,
                  stock_shipment_losses, stock_shipment_terms, stock_shipments, stock_transfer_acts,
                  stock_transfers, users, warehouses, work_order_issues)
 from . import security
@@ -1047,57 +1048,8 @@ class StockMixin:
         reason = req_str(p, "reason", 2000)
         need_id = line_id = None
         if p.get("need_id") is not None or p.get("need_line_id") is not None:
-            need = self._require(ctx.conn, procurement_needs, req_uuid(p, "need_id"), "Потребность")
             line_id = req_uuid(p, "need_line_id")
-            ln = ctx.conn.execute(sa.select(procurement_need_lines).where(
-                procurement_need_lines.c.need_id == need["id"], procurement_need_lines.c.line_id == line_id)).first()
-            if ln is None:
-                raise Rejected("not_found", "Строка потребности не найдена.", {"field": "need_line_id"})
-            if need["project_id"] != pr["id"]:
-                raise Rejected("need_mismatch", "Потребность относится к другому проекту.")
-            m = self._line_matches(ctx.conn, need["id"]).get(line_id)
-            line_item = m["item_id"] if m else ln.item_id
-            factor = m["factor"] if m else Decimal(1)
-            if line_item is None:
-                raise Rejected("need_line_unmatched", "Строка потребности не сопоставлена с номенклатурой — резерв под неё "
-                               "невозможен. " + (ln.match_note or ""))
-            if line_item != it["id"]:
-                raise Rejected("need_mismatch", "Строка потребности относится к другой позиции номенклатуры.")
-            # Покрытие считается в единицах позиции: количество строки × зафиксированный коэффициент (A-27).
-            open_qty = stock.convert_qty(ln.qty, factor) - self._need_line_covered(ctx.conn, need["id"], line_id)
-            # Минус уже идущее по закупке (D-60): непоставленные остатки распределений действующих пакетов и
-            # строк заказов по этой строке — иначе склад зарезервировал бы то, что уже заказано (и наоборот,
-            # консолидация не даёт распределить зарезервированное — _coverage в consolidation.py).
-            allocs = [dict(r._mapping) for r in ctx.conn.execute(
-                sa.select(procurement_allocations).select_from(
-                    procurement_allocations
-                    .join(procurement_batch_lines,
-                          procurement_batch_lines.c.id == procurement_allocations.c.batch_line_id)
-                    .join(procurement_batches, procurement_batches.c.id == procurement_batch_lines.c.batch_id))
-                .where(procurement_allocations.c.need_id == need["id"],
-                       procurement_allocations.c.need_line_id == line_id,
-                       procurement_batches.c.status.in_(cs.COVERING_BATCH_STATUSES)))]
-            if allocs:
-                delivered_a = self._delivered_by_allocation(ctx.conn, [a["id"] for a in allocs])
-                outstanding = sum((a["qty"] - delivered_a.get(a["id"], Decimal(0)) for a in allocs), Decimal(0))
-                open_qty -= stock.convert_qty(max(outstanding, Decimal(0)), factor)
-            po_rows = [dict(r._mapping) for r in ctx.conn.execute(
-                sa.select(purchase_order_lines).join(purchase_orders,
-                                                     purchase_orders.c.id == purchase_order_lines.c.order_id)
-                .where(purchase_order_lines.c.need_id == need["id"],
-                       purchase_order_lines.c.need_line_id == line_id,
-                       purchase_orders.c.status.in_(cs.COVERING_ORDER_STATUSES)))]
-            if po_rows:
-                received = self._received_by_line(ctx.conn)
-                open_qty -= sum((max(r["qty"] - received.get((r["order_id"], r["line_id"]), Decimal(0)),
-                                     Decimal(0)) for r in po_rows), Decimal(0))
-            if qty > open_qty:
-                # Резерв «про запас» сверх потребности — отдельное решение, а не побочный эффект (A-23).
-                raise Rejected("exceeds_need", f"По строке потребности осталось покрыть "
-                               f"{money.to_json(max(open_qty, Decimal(0)))} с учётом уже идущего по закупке "
-                               f"(пакеты и заказы), а резервируется {money.to_json(qty)}.",
-                               {"open": money.to_json(max(open_qty, Decimal(0))), "requested": money.to_json(qty)})
-            need_id = need["id"]
+            need_id = self._check_need_line_open(ctx, req_uuid(p, "need_id"), line_id, it, pr, qty)
         row, b = self._load_balance(ctx.conn, w["id"], it["id"])
         try:
             nb = stock.reserve(b, qty)
@@ -1113,6 +1065,64 @@ class StockMixin:
                  "need_id": need_id, "need_line_id": line_id, "reason": reason, "balance_after": nb.to_json()})
         return {"reservation": self.v_reservation(self._get(ctx.conn, stock_reservations, rid)),
                 "balance": {"warehouse_id": w["id"], "item_id": it["id"], **nb.to_json()}}
+
+    def _check_need_line_open(self, ctx, need_id: str, line_id: str, it: dict, pr: dict, qty: Decimal) -> str:
+        """Проверить, что по строке потребности можно зарезервировать qty позиции it для проекта pr:
+        потребность того же проекта, строка существует и сопоставлена с этой позицией, qty не больше
+        непокрытого остатка строки с учётом уже идущего по закупке (пакеты и заказы, D-60). Возвращает need_id.
+
+        Общая часть stock.reserve и принятия предложения перемещения (D-78) — правила покрытия одни и те же.
+        """
+        need = self._require(ctx.conn, procurement_needs, need_id, "Потребность")
+        ln = ctx.conn.execute(sa.select(procurement_need_lines).where(
+            procurement_need_lines.c.need_id == need["id"], procurement_need_lines.c.line_id == line_id)).first()
+        if ln is None:
+            raise Rejected("not_found", "Строка потребности не найдена.", {"field": "need_line_id"})
+        if need["project_id"] != pr["id"]:
+            raise Rejected("need_mismatch", "Потребность относится к другому проекту.")
+        m = self._line_matches(ctx.conn, need["id"]).get(line_id)
+        line_item = m["item_id"] if m else ln.item_id
+        factor = m["factor"] if m else Decimal(1)
+        if line_item is None:
+            raise Rejected("need_line_unmatched", "Строка потребности не сопоставлена с номенклатурой — резерв под неё "
+                           "невозможен. " + (ln.match_note or ""))
+        if line_item != it["id"]:
+            raise Rejected("need_mismatch", "Строка потребности относится к другой позиции номенклатуры.")
+        # Покрытие считается в единицах позиции: количество строки × зафиксированный коэффициент (A-27).
+        open_qty = stock.convert_qty(ln.qty, factor) - self._need_line_covered(ctx.conn, need["id"], line_id)
+        # Минус уже идущее по закупке (D-60): непоставленные остатки распределений действующих пакетов и
+        # строк заказов по этой строке — иначе склад зарезервировал бы то, что уже заказано (и наоборот,
+        # консолидация не даёт распределить зарезервированное — _coverage в consolidation.py).
+        allocs = [dict(r._mapping) for r in ctx.conn.execute(
+            sa.select(procurement_allocations).select_from(
+                procurement_allocations
+                .join(procurement_batch_lines,
+                      procurement_batch_lines.c.id == procurement_allocations.c.batch_line_id)
+                .join(procurement_batches, procurement_batches.c.id == procurement_batch_lines.c.batch_id))
+            .where(procurement_allocations.c.need_id == need["id"],
+                   procurement_allocations.c.need_line_id == line_id,
+                   procurement_batches.c.status.in_(cs.COVERING_BATCH_STATUSES)))]
+        if allocs:
+            delivered_a = self._delivered_by_allocation(ctx.conn, [a["id"] for a in allocs])
+            outstanding = sum((a["qty"] - delivered_a.get(a["id"], Decimal(0)) for a in allocs), Decimal(0))
+            open_qty -= stock.convert_qty(max(outstanding, Decimal(0)), factor)
+        po_rows = [dict(r._mapping) for r in ctx.conn.execute(
+            sa.select(purchase_order_lines).join(purchase_orders,
+                                                 purchase_orders.c.id == purchase_order_lines.c.order_id)
+            .where(purchase_order_lines.c.need_id == need["id"],
+                   purchase_order_lines.c.need_line_id == line_id,
+                   purchase_orders.c.status.in_(cs.COVERING_ORDER_STATUSES)))]
+        if po_rows:
+            received = self._received_by_line(ctx.conn)
+            open_qty -= sum((max(r["qty"] - received.get((r["order_id"], r["line_id"]), Decimal(0)),
+                                 Decimal(0)) for r in po_rows), Decimal(0))
+        if qty > open_qty:
+            # Резерв «про запас» сверх потребности — отдельное решение, а не побочный эффект (A-23).
+            raise Rejected("exceeds_need", f"По строке потребности осталось покрыть "
+                           f"{money.to_json(max(open_qty, Decimal(0)))} с учётом уже идущего по закупке "
+                           f"(пакеты и заказы), а резервируется {money.to_json(qty)}.",
+                           {"open": money.to_json(max(open_qty, Decimal(0))), "requested": money.to_json(qty)})
+        return need["id"]
 
     def _stock_release(self, ctx, p, ev):
         """stock.release {id, reason} + версия — снять действующий резерв: неизрасходованная часть возвращается в
@@ -1294,6 +1304,219 @@ class StockMixin:
         ctx.log("stock_adjustment", o["id"], auth, o["version"], n["version"],
                 {"cancelled": True, "cancel_reason": cancel_reason})
         return {"adjustment": self.v_adjustment(n)}
+
+    # ------------------------------------------------------------ предложения перемещения между проектами (D-78)
+    @staticmethod
+    def v_proposal(o: dict) -> dict:
+        """Предложение перемещения (D-78) для клиента: позиция, склад, проекты-донор/получатель, количество,
+        основание, статус с подписью, решение (кто, когда, причина), созданный при accept резерв, версия."""
+        return {"id": o["id"], "warehouse_id": o["warehouse_id"], "item_id": o["item_id"],
+                "from_project_id": o["from_project_id"], "to_project_id": o["to_project_id"],
+                "need_id": o["need_id"], "need_line_id": o["need_line_id"], "qty": money.to_json(o["qty"]),
+                "reason": o["reason"], "status": o["status"],
+                "status_label": stock.PROPOSAL_LABELS_RU[o["status"]],
+                "decision_note": o["decision_note"], "decided_by": o["decided_by"],
+                "decided_at": iso(o["decided_at"]), "reservation_id": o["reservation_id"],
+                "version": o["version"], "created_by": o["created_by"], "created_at": iso(o["created_at"])}
+
+    def _proposal_propose(self, ctx, p, ev):
+        """proposal.propose {id, warehouse_id, item_id, to_project_id, from_project_id?, qty, reason,
+        need_id?, need_line_id?} — предложить перемещение количества позиции на складе из проекта-донора
+        (или из свободного остатка) в проект-получатель. В очереди офлайн (С4 шаг 3, Q).
+
+        Предложение — не резерв, не заказ и не движение: ничего не меняет, пока склад/закупка не примут решение
+        (proposal.decide). Если дана строка потребности, она должна принадлежать проекту-получателю и быть
+        сопоставленной с этой позицией — иначе предложение бессмысленно.
+        """
+        only_keys(p, {"id", "warehouse_id", "item_id", "to_project_id", "from_project_id", "qty", "reason",
+                      "need_id", "need_line_id"})
+        pid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, stock_transfer_proposals, pid)
+        to_project = req_uuid(p, "to_project_id")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "proposal.propose", ctx.now, project_id=to_project)
+        w, it = self._wh_item(ctx, p, for_new_stock=False)
+        pr_to = self._project_ref(ctx, to_project)
+        pr_from = None
+        if p.get("from_project_id") is not None:
+            pr_from = self._project_ref(ctx, req_uuid(p, "from_project_id"))
+            if pr_from["id"] == pr_to["id"]:
+                raise Rejected("same_project", "Проект-донор совпадает с проектом-получателем — перемещать "
+                               "внутри одного проекта нечего.", {"field": "from_project_id"})
+        qty = _qty(p)
+        reason = req_str(p, "reason", 2000)
+        need_id = line_id = None
+        if p.get("need_id") is not None or p.get("need_line_id") is not None:
+            need = self._require(ctx.conn, procurement_needs, req_uuid(p, "need_id"), "Потребность")
+            line_id = req_uuid(p, "need_line_id")
+            ln = ctx.conn.execute(sa.select(procurement_need_lines).where(
+                procurement_need_lines.c.need_id == need["id"], procurement_need_lines.c.line_id == line_id)).first()
+            if ln is None:
+                raise Rejected("not_found", "Строка потребности не найдена.", {"field": "need_line_id"})
+            if need["project_id"] != pr_to["id"]:
+                raise Rejected("need_mismatch", "Потребность относится к другому проекту — предложение делается "
+                               "в проект своей потребности.")
+            m = self._line_matches(ctx.conn, need["id"]).get(line_id)
+            if (m["item_id"] if m else ln.item_id) is None:
+                raise Rejected("need_line_unmatched", "Строка потребности не сопоставлена с номенклатурой — "
+                               "предложение по ней бессмысленно. " + (ln.match_note or ""))
+            if (m["item_id"] if m else ln.item_id) != it["id"]:
+                raise Rejected("need_mismatch", "Строка потребности относится к другой позиции номенклатуры.")
+            need_id = need["id"]
+        ctx.conn.execute(stock_transfer_proposals.insert().values(
+            id=pid, warehouse_id=w["id"], item_id=it["id"],
+            from_project_id=pr_from["id"] if pr_from else None, to_project_id=pr_to["id"],
+            need_id=need_id, need_line_id=line_id, qty=qty, reason=reason, status="proposed",
+            decision_note=None, decided_by=None, decided_at=None, reservation_id=None, version=1,
+            created_by=ctx.user_id, created_at=ctx.now, updated_by=ctx.user_id, updated_at=ctx.now))
+        ctx.log("stock_transfer_proposal", pid, auth, None, 1,
+                {"warehouse_code": w["code"], "item_code": it["code"], "qty": money.to_json(qty),
+                 "from_project_code": pr_from["code"] if pr_from else None, "to_project_code": pr_to["code"],
+                 "need_id": need_id, "need_line_id": line_id, "reason": reason})
+        # Предложение видят обе стороны: склад и закупка (D-78).
+        label = f"{w['code']} · {it['code']}: {money.to_json(qty)} в проект {pr_to['code']}" + \
+                (f" из проекта {pr_from['code']}" if pr_from else " из свободного остатка")
+        self._notify(ctx, self._users_with_role(ctx.conn, "warehouse", ctx.now)
+                     + self._users_with_role(ctx.conn, "procurement", ctx.now), "proposal_new",
+                     "Предложено перемещение между проектами", label + ". Основание: " + reason,
+                     "stock_transfer_proposal", pid)
+        return {"proposal": self.v_proposal(self._get(ctx.conn, stock_transfer_proposals, pid))}
+
+    def _proposal_withdraw(self, ctx, p, ev):
+        """proposal.withdraw {id, reason} + версия — автор отзывает своё предложение до решения (в очереди)."""
+        only_keys(p, {"id", "reason"})
+        o = self._require(ctx.conn, stock_transfer_proposals, req_uuid(p, "id"), "Предложение перемещения")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "proposal.withdraw", ctx.now, project_id=o["to_project_id"])
+        self._check_version(o, ev, self.v_proposal)
+        if o["status"] != "proposed":
+            raise Rejected("proposal_state", f"Предложение уже {stock.PROPOSAL_LABELS_RU[o['status']].lower()} — "
+                           "отозвать нельзя.")
+        if o["created_by"] != ctx.user_id:
+            raise Rejected("not_author", "Отозвать предложение может только его автор.")
+        reason = req_str(p, "reason", 2000)
+        n = self._update_versioned(ctx, stock_transfer_proposals, o,
+                                   {"status": "withdrawn", "decision_note": reason})
+        ctx.log("stock_transfer_proposal", o["id"], auth, o["version"], n["version"],
+                {"status": "withdrawn", "reason": reason})
+        return {"proposal": self.v_proposal(n)}
+
+    def _proposal_decide(self, ctx, p, ev):
+        """proposal.decide {id, decision, note?} + версия — совместное решение «склад + закупка» (С4 шаг 4, O):
+
+        * accept — только склад (как stock.reserve): переброс резервов проекта-донора (старшие сначала, частичное
+          снятие уменьшает резерв), недостающее — из свободного; в той же транзакции создаётся резерв
+          проекта-получателя (с проверкой покрытия строки потребности, как у stock.reserve);
+        * order — только закупка (как po.create): «закупим сами», предложение закрыто, заказ создаётся отдельно;
+        * reject — склад или закупка: отказ, причина (note) обязательна.
+        """
+        only_keys(p, {"id", "decision", "note"})
+        o = self._require(ctx.conn, stock_transfer_proposals, req_uuid(p, "id"), "Предложение перемещения")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "proposal.decide", ctx.now)
+        self._check_version(o, ev, self.v_proposal)
+        if o["status"] != "proposed":
+            raise Rejected("proposal_state", f"Предложение уже {stock.PROPOSAL_LABELS_RU[o['status']].lower()}.")
+        decision = p.get("decision")
+        if decision not in ("accept", "order", "reject"):
+            raise Rejected("bad_decision", "Решение — accept (перебросить резерв), order (закупим) или reject "
+                           "(отказать).", {"field": "decision"})
+        note = opt_str(p, "note", 2000)
+        # Матрица решений (A-62): резерв — склад, «закупим» — закупка, отказ — любая из сторон.
+        if decision == "accept" and not self.policy.can(ctx.conn, ctx.user_id, "stock.reserve", ctx.now):
+            raise Rejected("decision_not_for_role", "Перебросить резерв может только склад.")
+        if decision == "order" and not self.policy.can(ctx.conn, ctx.user_id, "po.create", ctx.now):
+            raise Rejected("decision_not_for_role", "Решение «закупим» принимает закупка.")
+        if decision == "reject" and not note:
+            raise Rejected("field_required", "Укажите причину отказа.", {"field": "note"})
+        w = self._get(ctx.conn, warehouses, o["warehouse_id"])
+        it = self._get(ctx.conn, stock_items, o["item_id"])
+        pr_to = self._get(ctx.conn, projects, o["to_project_id"])
+        reservation_id = None
+        released: list[dict] = []
+        if decision == "accept":
+            reservation_id, released = self._proposal_accept(ctx, o, w, it, pr_to, auth)
+        n = self._update_versioned(ctx, stock_transfer_proposals, o,
+                                   {"status": {"accept": "accepted", "order": "order", "reject": "rejected"}[decision],
+                                    "decision_note": note, "decided_by": ctx.user_id, "decided_at": ctx.now,
+                                    "reservation_id": reservation_id})
+        ctx.log("stock_transfer_proposal", o["id"], auth, o["version"], n["version"],
+                {"decision": decision, "note": note, "reservation_id": reservation_id,
+                 "released": released, "warehouse_code": w["code"], "item_code": it["code"]})
+        # Автор и вторая сторона узнают о решении (D-78).
+        label = f"{w['code']} · {it['code']}: {money.to_json(o['qty'])} в проект {pr_to['code']}"
+        self._notify(ctx, [o["created_by"]] + self._users_with_role(ctx.conn, "warehouse", ctx.now)
+                     + self._users_with_role(ctx.conn, "procurement", ctx.now), "proposal_decided",
+                     {"accept": "Предложение принято: резерв переброшен", "order": "По предложению решено закупить",
+                      "reject": "Предложение отклонено"}[decision],
+                     label + ((". " + note) if note else ""), "stock_transfer_proposal", o["id"])
+        out = {"proposal": self.v_proposal(n)}
+        if decision == "accept":
+            out["reservation"] = self.v_reservation(self._get(ctx.conn, stock_reservations, reservation_id))
+            _, nb = self._load_balance(ctx.conn, w["id"], it["id"])
+            out["balance"] = {"warehouse_id": w["id"], "item_id": it["id"], **nb.to_json()}
+        return out
+
+    def _proposal_accept(self, ctx, o: dict, w: dict, it: dict, pr_to: dict, auth) -> tuple[str, list[dict]]:
+        """Эффект accept: снять резервы проекта-донора (старшие сначала; частичное снятие уменьшает резерв, а не
+        закрывает его), недостающее — из свободного остатка, и создать резерв проекту-получателю. Всё — в одной
+        транзакции команды. Возвращает (id нового резерва, журнал снятий для аудита)."""
+        qty = o["qty"]
+        row, b = self._load_balance(ctx.conn, w["id"], it["id"])
+        released: list[dict] = []
+        need_from_free = qty
+        if o["from_project_id"]:
+            donors = [dict(r._mapping) for r in ctx.conn.execute(
+                sa.select(stock_reservations).where(
+                    stock_reservations.c.warehouse_id == w["id"], stock_reservations.c.item_id == it["id"],
+                    stock_reservations.c.project_id == o["from_project_id"],
+                    stock_reservations.c.status == "active").order_by(stock_reservations.c.created_at))]
+            for res in donors:
+                if need_from_free <= 0:
+                    break
+                remaining = res["qty"] - res["consumed"]
+                take = min(remaining, need_from_free)
+                if take <= 0:
+                    continue
+                try:
+                    b = stock.release(b, take)
+                except stock.StockError as e:
+                    raise _stock_rejected(e)
+                if take == remaining:
+                    n_res = self._update_versioned(ctx, stock_reservations, res,
+                                                   {"status": "released",
+                                                    "close_reason": f"Переброшено проекту {pr_to['code']} "
+                                                    f"по предложению перемещения"})
+                else:
+                    # Частичное снятие: резерв уменьшается, но остаётся действующим (строка версионируется).
+                    n_res = self._update_versioned(ctx, stock_reservations, res, {"qty": res["qty"] - take})
+                ctx.log("stock_reservation", res["id"], auth, res["version"], n_res["version"],
+                        {"transfer_release": money.to_json(take), "proposal_id": o["id"],
+                         "to_project_code": pr_to["code"]})
+                released.append({"reservation_id": res["id"], "taken": money.to_json(take),
+                                 "closed": take == remaining})
+                need_from_free -= take
+        # Резерв проекта-получателя на всё количество предложения (как stock.reserve, с проверкой строки).
+        # Доступного хватит ровно тогда, когда свободного хватает на часть, не снятую с донора (need_from_free):
+        # после снятий доступное выросло на сумму снятого — это проверяет stock.reserve ниже.
+        need_id = line_id = None
+        if o["need_id"] is not None:
+            line_id = o["need_line_id"]
+            need_id = self._check_need_line_open(ctx, o["need_id"], line_id, it, pr_to, qty)
+        try:
+            b = stock.reserve(b, qty)
+        except stock.StockError as e:
+            raise _stock_rejected(e)
+        self._save_balance(ctx, w["id"], it["id"], row, b)
+        rid = str(uuid.uuid5(uuid.UUID(o["id"]), "reservation"))
+        self._ensure_new(ctx.conn, stock_reservations, rid)
+        ctx.conn.execute(stock_reservations.insert().values(
+            id=rid, warehouse_id=w["id"], item_id=it["id"], project_id=pr_to["id"], need_id=need_id,
+            need_line_id=line_id, qty=qty, consumed=Decimal(0), status="active",
+            reason=f"Перемещение по предложению: {o['reason']}", close_reason=None, version=1,
+            created_by=ctx.user_id, created_at=ctx.now, updated_by=ctx.user_id, updated_at=ctx.now))
+        ctx.log("stock_reservation", rid, auth, None, 1,
+                {"warehouse_code": w["code"], "item_code": it["code"], "project_code": pr_to["code"],
+                 "qty": money.to_json(qty), "need_id": need_id, "need_line_id": line_id,
+                 "proposal_id": o["id"], "balance_after": b.to_json()})
+        return rid, released
 
     # ------------------------------------------------------------ потребность
     def _need_generate(self, ctx, p, ev):
@@ -1591,7 +1814,7 @@ class StockMixin:
         out: dict[str, Any] = {"warehouses": [], "stock_items": [], "stock_balances": [], "stock_reservations": [],
                                "stock_movements": [], "stock_movements_truncated": False, "needs": [], "stock_projects": [],
                                "need_candidates": [], "item_aliases": [], "unit_conversions": [],
-                               "stock_transfers": [], "stock_adjustments": []}
+                               "stock_transfers": [], "stock_adjustments": [], "transfer_proposals": []}
         can_stock = self.policy.can(conn, uid, "stock.read", now)
         if can_stock:
             out["warehouses"] = [self.v_warehouse(dict(r._mapping)) for r in conn.execute(sa.select(warehouses).order_by(warehouses.c.code))]
@@ -1656,6 +1879,15 @@ class StockMixin:
                 row["signature"] = _v_signature(sig, row["content"]) if sig else None
                 adj.append(row)
             out["stock_adjustments"] = adj
+        # Предложения перемещения (D-78): склад/закупка (stock.read) видят все; участники проектов — те, где
+        # их проект донор или получатель (по праву «предлагать в этот проект», включая participant — A-62);
+        # автор видит своё предложение всегда.
+        for r in conn.execute(sa.select(stock_transfer_proposals).order_by(
+                stock_transfer_proposals.c.created_at.desc(), stock_transfer_proposals.c.id)):
+            if (can_stock or r.created_by == uid
+                    or self.policy.can(conn, uid, "proposal.propose", now, r.to_project_id)
+                    or (r.from_project_id and self.policy.can(conn, uid, "proposal.propose", now, r.from_project_id))):
+                out["transfer_proposals"].append(self.v_proposal(dict(r._mapping)))
         # Кандидаты для «Сформировать потребность»: последняя зафиксированная версия каждого комплекта, по которой
         # потребности ещё нет. Без цен и сумм — закупке нужен только факт версии (A-22).
         out["need_candidates"] = []

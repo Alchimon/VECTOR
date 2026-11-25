@@ -583,7 +583,7 @@ class Backend(QObject):
             st.get("stock_reservations") or [], st.get("stock_movements") or [], st.get("stock_projects") or [],
             self._people, self._last_pull, self._online and self._session_mode == "online", self._me.get("roles", []),
             st.get("stock_transfers") or [], st.get("config") or [], st.get("stock_adjustments") or [],
-            self._me.get("user_id")))
+            self._me.get("user_id"), st.get("transfer_proposals") or []))
 
     @Property("QVariantMap", notify=dataChanged)
     def needsOverview(self):
@@ -643,6 +643,33 @@ class Backend(QObject):
         return qml_safe(notification_view.notifications_view(
             self._stock.get("notifications") or [], self._people, self._online and self._session_mode == "online",
             datetime.now(timezone.utc)))
+
+    @Slot(str, str, result="QVariantMap")
+    def transferDonors(self, item_id: str, to_project_id: str) -> dict:
+        """Источники для формы «Предложить перемещение» (D-78) по позиции: резервы других проектов
+        (склад · проект · остаток резерва) и свободное количество по складам. Проект-получатель исключён из
+        доноров — перемещение внутри одного проекта бессмысленно (сервер отвечает same_project). Из снимка
+        «на момент …»; окончательную проверку при решении делает сервер."""
+        st = self._stock
+        proj = {p["id"]: p for p in st.get("stock_projects") or []}
+        wh = {w["id"]: w for w in st.get("warehouses") or []}
+        donors: dict[tuple, Decimal] = {}
+        for r in st.get("stock_reservations") or []:
+            if r["item_id"] != item_id or r["status"] != "active" or r["project_id"] == to_project_id:
+                continue
+            key = (r["warehouse_id"], r["project_id"])
+            donors[key] = donors.get(key, Decimal(0)) + Decimal(str(r["remaining"]))
+        donor_rows = [{"warehouse_id": w_id, "project_id": p_id,
+                       "warehouse_code": (wh.get(w_id) or {}).get("code", "?"),
+                       "project_code": (proj.get(p_id) or {}).get("code", "проект скрыт"),
+                       "remaining": stock_view.qty_label(str(qty))}
+                      for (w_id, p_id), qty in sorted(donors.items()) if qty > 0]
+        free_rows = [{"warehouse_id": b["warehouse_id"],
+                      "warehouse_code": (wh.get(b["warehouse_id"]) or {}).get("code", "?"),
+                      "available": stock_view.qty_label(b["available"])}
+                     for b in st.get("stock_balances") or []
+                     if b["item_id"] == item_id and Decimal(str(b["available"])) > 0]
+        return qml_safe({"donors": donor_rows, "free": free_rows})
 
     @Slot(str, "QVariantList")
     def markNotificationsRead(self, tag: str, ids):

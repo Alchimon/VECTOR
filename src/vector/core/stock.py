@@ -59,6 +59,7 @@ SHORTAGE_STATUS_LABEL_RU = "Принято с недостачей"
 RESERVATION_STATES = ("active", "consumed", "released")
 RESERVATION_LABELS_RU = {"active": "Действует", "consumed": "Израсходован", "released": "Снят"}
 ADJUST_LABELS_RU = {"pending": "Ждёт подписи", "signed": "Подписана", "cancelled": "Отменена"}
+PROPOSAL_LABELS_RU = {"proposed": "Предложено", "withdrawn": "Отозвано", "accepted": "Резерв переброшен", "order": "Будет закуплено", "rejected": "Отклонено"}
 
 _CODE_RE = re.compile(r"^[0-9A-Za-zА-Яа-яЁё][0-9A-Za-zА-Яа-яЁё._/\-]{0,63}$")
 

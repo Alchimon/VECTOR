@@ -336,6 +336,34 @@ def main():
         h.shot(out / f"{theme}-73-stock-adjustments.png")
         sp.setProperty("tab", "balances")
         h.wait_idle()
+        # Предложения перемещения (D-78): закупка предложила хомуты со СК-2 (одно предложение склад уже принял —
+        # резерв переброшен, второе ждёт решения) — вкладка «Предложения».
+        h.backend.logout()
+        h.wait_idle()
+        h.login("s.morozov")
+        _p1, _p2 = str(uuid.uuid4()), str(uuid.uuid4())
+        h.backend.execute("t", "proposal.propose",
+                          {"id": _p1, "warehouse_id": h.ids["warehouses"]["СК-2"], "item_id": h.ids["items"]["ХМТ-200"],
+                           "to_project_id": h.ids["project"], "qty": "50",
+                           "reason": "Для П-2026-014 хомуты нужны до конца недели, свободные лежат на СК-2"}, 0)
+        h.backend.execute("t", "proposal.propose",
+                          {"id": _p2, "warehouse_id": h.ids["warehouses"]["СК-2"], "item_id": h.ids["items"]["ХМТ-200"],
+                           "to_project_id": h.ids["project"], "qty": "20",
+                           "reason": "Крепёж для силовых щитов — в ПАЗ цеха № 5 свои уже едут"}, 0)
+        h.wait_idle()
+        h.backend.logout()
+        h.wait_idle()
+        h.login("i.belova")
+        h.backend.execute("t", "proposal.decide", {"id": _p2, "decision": "accept",
+                                                   "note": "Свободных хватило, резерв переброшен"}, 1)
+        h.wait_idle()
+        h.go("stock")
+        sp = next(i for i in h.items("whOptions") if i.isVisible())
+        sp.setProperty("tab", "proposals")
+        h.wait_idle()
+        h.shot(out / f"{theme}-74-stock-proposals.png")
+        sp.setProperty("tab", "balances")
+        h.wait_idle()
         h.backend.logout()
         h.wait_idle()
         h.login("s.morozov")

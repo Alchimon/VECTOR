@@ -71,7 +71,7 @@ from vector.core import money
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
 # v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
 #         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
-SCHEMA_VERSION = 41
+SCHEMA_VERSION = 42
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -802,6 +802,35 @@ stock_adjustments = sa.Table("stock_adjustments", metadata,
     sa.CheckConstraint("status IN ('pending','signed','cancelled')", name="status"),
     sa.CheckConstraint("new_qty >= 0", name="new_qty_nonneg"))
 sa.Index("ix_stock_adjustments_pair", stock_adjustments.c.warehouse_id, stock_adjustments.c.item_id)
+
+# ---------------------------------------------------------------- v42: предложения перемещения между проектами (D-78, С4)
+# «Предложить перемещение» (С4 шаг 3, офлайн-очередь): участник проекта-получателя или закупка предлагает
+# переместить количество позиции на складе из проекта-донора (или из свободного остатка) в свой проект.
+# Предложение — НЕ резерв, НЕ заказ и НЕ движение: ничего не меняет, пока по нему нет решения (С4 шаг 4,
+# онлайн): склад принимает (переброс резервов донора + резерв получателя в одной транзакции), закупка решает
+# «закупим» или любая из сторон отказывает с причиной. Решение одно; вторая сторона и автор получают
+# уведомление (A-62 — временные правила ролей).
+stock_transfer_proposals = sa.Table("stock_transfer_proposals", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("warehouse_id", ID, sa.ForeignKey("warehouses.id"), nullable=False),
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id"), nullable=False),
+    sa.Column("from_project_id", ID, sa.ForeignKey("projects.id")),      # NULL — предложение из свободного остатка
+    sa.Column("to_project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("need_id", ID, sa.ForeignKey("procurement_needs.id")),
+    sa.Column("need_line_id", ID),
+    sa.Column("qty", Qty, nullable=False),
+    sa.Column("reason", U(2000), nullable=False),
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("decision_note", U(2000)),
+    sa.Column("decided_by", ID), sa.Column("decided_at", UtcDateTime),
+    sa.Column("reservation_id", ID, sa.ForeignKey("stock_reservations.id")),   # резерв, созданный при accept
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("status IN ('proposed','withdrawn','accepted','order','rejected')", name="status"),
+    sa.CheckConstraint("qty > 0", name="qty_pos"),
+    sa.CheckConstraint("from_project_id IS NULL OR from_project_id <> to_project_id", name="distinct_projects"))
+sa.Index("ix_stock_transfer_proposals_from", stock_transfer_proposals.c.from_project_id)
 
 # ---------------------------------------------------------------- v12: заказы поставщикам (С4 шаг 5, D-32)
 # Поставщики — справочник закупки (как номенклатура: правится офлайн через очередь, код уникален, отключение вместо

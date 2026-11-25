@@ -101,7 +101,8 @@ OBJECT_TYPES = (("customer", "customers"), ("tender", "tenders"), ("tkp", "tkp")
 # снимок «на момент последнего обновления», офлайн он только читается.
 META_LISTS = (("calc_version", "calc_versions"), ("calc_revision", "calc_revisions"),
               ("movement", "stock_movements"), ("reservation", "stock_reservations"), ("need", "needs"),
-              ("transfer", "stock_transfers"), ("adjustment", "stock_adjustments"))
+              ("transfer", "stock_transfers"), ("adjustment", "stock_adjustments"),
+              ("proposal", "transfer_proposals"))
 # Данные из pull, которые хранятся в meta как есть (снимок; время снимка — last_pull): склад, потребности,
 # справочник аналогов/пересчёта (D-25, A-27), настройки компании (config, D-26), замещения и покрытие ролей
 # (D-34), замещающие в проектах и уведомления (D-35). Всё это меняется только онлайн-командами, офлайн — только
@@ -110,6 +111,8 @@ STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_
               "stock_transfers", "stock_projects", "need_candidates", "item_aliases", "unit_conversions", "config",
               # D-77: корректировки остатка (подпись руководителя отдела).
               "stock_adjustments",
+              # D-78: предложения перемещения между проектами.
+              "transfer_proposals",
               "delegations", "role_coverage", "project_deputies", "notifications",
               # D-36: состав изделий из зафиксированных версий расчёта (без цен) — для ТП; исполнители «Производства».
               "tech_specs", "production_kits", "production_staff",
