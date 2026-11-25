@@ -54,6 +54,14 @@ python -m pytest -q -p no:cacheprovider tests
 ```
 В отчёте указываем точные команды и результаты; пропуски — с причиной. Классы A/B/C не смешиваем.
 
+Поднятие среды разработки с нуля (Linux без GUI: песочница, CI):
+```bash
+python3.11 -m venv .venv
+.venv/bin/pip install -e ".[server,client,dev]" -c deploy/test-stand/constraints.txt
+bash tools/make_stubgl.sh   # заглушки GL/EGL/xkbcommon/dbus → .venv/stubgl
+```
+Клиентские и UI-тесты, стенд снимков: `LD_LIBRARY_PATH=.venv/stubgl QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software`.
+
 Линтер (ruff, входит в `dev`-зависимости; чистый базовый уровень — поддерживаем чистым):
 ```bash
 ruff check src/ tools/ --select F,E9,S,B905,B007
