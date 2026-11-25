@@ -76,6 +76,21 @@ def cmd_init(args):
     print(f"Схема v{db.SCHEMA_VERSION} создана в {cfg.masked_db_url()}; администратор «{args.admin_login}» создан.")
 
 
+def load_vendor_license(cfg):
+    """Лицензия установки из конфигурации (D-81): None — демо/стенд; битая подпись — ошибка запуска."""
+    if cfg.license_file is None:
+        return None
+    from cryptography.hazmat.primitives import serialization
+    from vector.core.modules import LicenseError, load_license
+    try:
+        pub = serialization.load_pem_public_key(cfg.license_public_key.read_bytes())
+        lic = load_license(cfg.license_file.read_text(encoding="utf-8"), pub)
+    except LicenseError as e:
+        raise SystemExit(f"Лицензия не прошла проверку: {e.message_ru}") from None
+    print(f"Лицензия: {lic.customer} — {lic.license_id} ({lic.kind}), модулей: {len(lic.modules)}")
+    return lic
+
+
 def cmd_serve(args):
     """vector-server serve — запустить сервер: проверить конфигурацию и версию схемы, затем HTTPS (uvicorn).
 
@@ -90,7 +105,7 @@ def cmd_serve(args):
 
     from .api import create_app
     from .service import Service
-    app = create_app(Service(eng, sec=cfg.security))
+    app = create_app(Service(eng, sec=cfg.security, vendor_license=load_vendor_license(cfg)))
     kw = {} if cfg.dev_insecure_localhost else {"ssl_certfile": str(cfg.tls_cert), "ssl_keyfile": str(cfg.tls_key)}
     uvicorn.run(app, host=cfg.host, port=cfg.port, access_log=False, server_header=False, **kw)
 

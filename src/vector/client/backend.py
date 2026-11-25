@@ -637,6 +637,30 @@ class Backend(QObject):
                           "until_label": delegation_view._day(d.get("valid_until"))}
                          for d in self._stock.get("project_deputies") or []])
 
+    # ------------------------------------------------------------ лицензия (D-81)
+    @Property("QVariantMap", notify=dataChanged)
+    def licenseInfo(self):
+        """Лицензия установки из последнего pull (режим, заказчик, сроки, состояние модулей)."""
+        return qml_safe(self._meta_license())
+
+    def _meta_license(self) -> dict:
+        c = self.client
+        if c is None or c.db is None:                # нет клиента или локальная БД закрыта (после выхода)
+            return {"mode": "demo", "modules": []}
+        lic = c.get_meta("license") or {"mode": "demo", "modules": []}
+        # Версия и программа — для блока «О программе».
+        lic = dict(lic)
+        lic["app_version"] = __version__
+        return lic
+
+    @Slot(str, result=bool)
+    def moduleOk(self, module_id: str) -> bool:
+        """Модуль доступен в лицензии (active/grace) — навигация прячет разделы вне лицензии. В демо — всё доступно.
+        Это подсказка интерфейса: решение принимает сервер (module_not_licensed / module_readonly)."""
+        mods = self._meta_license().get("modules") or []
+        st = next((m for m in mods if m.get("id") == module_id), None)
+        return st is None or st.get("state") in ("active", "grace")
+
     # ------------------------------------------------------------ уведомления (D-35)
     @Property("QVariantMap", notify=dataChanged)
     def notificationsOverview(self):

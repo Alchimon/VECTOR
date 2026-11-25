@@ -72,6 +72,36 @@ MODULES: tuple[Module, ...] = (
 )
 
 MODULE_BY_ID = {m.id: m for m in MODULES}
+
+# Команда каталога → модуль (по префиксу команды). Чего нет в таблице — платформа: вход, учётные записи,
+# оргструктура, права, конфигурация, уведомления, замещения — доступны всегда и в лицензию не входят. Тест
+# test_command_module_covers_catalog следит, что каждая команда каталога попадает в известный модуль или
+# осознанно остаётся платформой.
+_COMMAND_PREFIX_MODULE = {
+    # Проекты, документы и расчёты
+    "calc.": "pdm", "checklist.": "pdm", "comment.": "pdm", "contract.": "pdm", "customer.": "pdm",
+    "doc_template.": "pdm", "docprofile.": "pdm", "docrev.": "pdm", "document.": "pdm", "kit.": "pdm",
+    "opportunity.": "pdm", "project.": "pdm", "risk.": "pdm", "task.": "pdm", "tender.": "pdm", "tkp.": "pdm",
+    "transmittal.": "pdm", "workstream.": "pdm",
+    # Склад и закупка
+    "analog.": "supply", "item.": "supply", "item_alias.": "supply", "need.": "supply", "po.": "supply",
+    "proposal.": "supply", "stock.": "supply", "supplier.": "supply", "unit_conversion.": "supply",
+    "warehouse.": "supply",
+    # Производство
+    "batch.": "production", "calendar.": "production", "norm.": "production", "tp.": "production", "wo.": "production",
+    # Качество
+    "claim.": "quality", "ecr.": "quality", "eco.": "quality",
+    # Экземпляры и сервис (включая ПНР, приёмо-сдаточные испытания и документы поставки заказчику)
+    "delivery_doc.": "service", "fat.": "service", "instance.": "service", "passport.": "service", "pnr.": "service",
+    # Люди и время
+    "hr.": "hr", "overtime.": "hr", "report.": "hr", "schedule.": "hr", "workday.": "hr",
+    # Платформа (не лицензируется): account., admin., config., delegation., notification., org.
+}
+
+
+def command_module(command: str) -> Optional[str]:
+    """Модуль, которому принадлежит команда каталога, или None — платформа (доступна всегда)."""
+    return _COMMAND_PREFIX_MODULE.get(command.split(".", 1)[0] + ".")
 CURRENT_MODULE_IDS = frozenset(m.id for m in MODULES if m.stage == "current")
 PLANNED_MODULE_IDS = frozenset(m.id for m in MODULES if m.stage == "planned")
 
@@ -262,3 +292,21 @@ def evaluate(lic: Optional[License], today: date) -> LicenseStatus:
     else:
         support = f"Поддержка истекла {lic.support_until.isoformat()} (обновления — после продления)"
     return LicenseStatus("licensed", lic, states, support, lic.customer)
+
+
+def license_block(status: LicenseStatus) -> dict:
+    """Статус лицензии для передачи клиенту (pull): режим, заказчик, вид, сроки, состояние каждого модуля.
+    Клиент прячет разделы недоступных модулей и показывает блок «О программе»; ворота — на сервере."""
+    lic = status.license
+    return {
+        "mode": status.mode,
+        "customer": status.customer,
+        "support_label_ru": status.support_label_ru,
+        "kind": lic.kind if lic else "",
+        "kind_label_ru": KIND_LABELS_RU[lic.kind] if lic else "",
+        "valid_until": lic.valid_until.isoformat() if lic and lic.valid_until else "",
+        "license_id": lic.license_id if lic else "",
+        "modules": [{"id": st.module_id, "title_ru": MODULE_BY_ID[st.module_id].title_ru,
+                     "state": st.state, "label_ru": st.label_ru, "detail_ru": st.detail_ru}
+                    for st in (status.modules[m.id] for m in MODULES)],
+    }

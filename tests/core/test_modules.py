@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import unittest
-from datetime import date, timedelta
+from datetime import date
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -132,6 +132,27 @@ class TestEvaluate(unittest.TestCase):
         lic = M.load_license(lic_text(self.key, support_until=None), self.pub)
         self.assertEqual(M.evaluate(lic, TODAY).support_label_ru, "Поддержка не включена")
 
+
+
+class TestCommandModuleMap(unittest.TestCase):
+    def test_command_module_covers_catalog(self):
+        import json as _json
+        from pathlib import Path
+        root = Path(__file__).resolve().parent.parent.parent
+        cat = _json.loads((root / "contracts" / "command-catalog.slice1.json").read_text(encoding="utf-8"))
+        for cmd in cat["commands"]:
+            mod = M.command_module(cmd)
+            self.assertTrue(mod is None or mod in M.CURRENT_MODULE_IDS,
+                            f"{cmd} → неизвестный модуль {mod}")
+        # и обратно: у каждого выпущенного модуля есть команды или это сознательно пусто (analytics/integrations
+        # — чтение и конфигурация, без команд записи)
+        used = {M.command_module(c) for c in cat["commands"]} - {None}
+        self.assertEqual(used, M.CURRENT_MODULE_IDS - {"analytics", "integrations"})
+
+    def test_platform_commands_stay_free(self):
+        for cmd in ("account.change_password", "admin.create_user", "config.publish",
+                    "delegation.create", "notification.read", "org.unit_create"):
+            self.assertIsNone(M.command_module(cmd))
 
 if __name__ == "__main__":
     unittest.main()

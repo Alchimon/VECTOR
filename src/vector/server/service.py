@@ -20,6 +20,7 @@ import sqlalchemy as sa
 from sqlalchemy.engine import Connection, Engine
 
 from vector import __version__
+from vector.core import modules as modules_core
 from vector.core import money
 from vector.core.contracts import Contracts
 from vector.core.errors import CommandOutcome, Conflict, Denied, Rejected, Unauthenticated
@@ -124,7 +125,7 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
     """
 
     def __init__(self, engine: Engine, contracts: Optional[Contracts] = None, clock=None,
-                 sec: Optional[security.SecurityPolicy] = None):
+                 sec: Optional[security.SecurityPolicy] = None, vendor_license=None):
         """Собрать сервис: контракты, матрица прав, часы, политика безопасности, ограничители частоты и таблица
         обработчиков команд.
 
@@ -144,6 +145,11 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         # Неверные пароли подписи актов (D-31) — отдельный счётчик и только неудачи: подписывать много актов подряд
         # можно, перебирать пароль — нет.
         self.sign_rate = security.RateLimiter(self.sec.lockout_threshold)
+        # Лицензия установки (D-80/D-81): vector.core.modules.License или None (демо/стенд — всё доступно).
+        # Статус считается на дату «сейчас» и кэшируется на день: истёкшая подписка начинает действовать
+        # без перезапуска сервера, а суточный кэш не считает состояние на каждую команду.
+        self._license = vendor_license
+        self._license_cache: Optional[tuple[Any, modules_core.LicenseStatus]] = None
         self._fault_after_effect: Optional[str] = None
         self.handlers: dict[str, Callable[[Ctx, dict, Optional[int]], dict]] = {
             "customer.create": self._customer_create, "customer.update": self._customer_update,
@@ -332,6 +338,35 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             return uid
         return self._tx(tx)
 
+    # ------------------------------------------------------------ лицензия (D-81)
+    def license_status(self) -> modules_core.LicenseStatus:
+        """Состояние лицензии на сегодня (кэш на дату)."""
+        today = self.now().date()
+        if self._license_cache is None or self._license_cache[0] != today:
+            self._license_cache = (today, modules_core.evaluate(self._license, today))
+        return self._license_cache[1]
+
+    def _license_denied(self, command: str) -> Optional[dict]:
+        """Отказ команды по лицензии или None. Модуль вне лицензии — изменения запрещены; подписка истекла —
+        «только чтение»: чтение/печать/выгрузка (query) доступны всегда, изменения — после продления. Данные
+        клиента не становятся заложниками счёта (D-80)."""
+        mod = modules_core.command_module(command)
+        if mod is None:
+            return None                                              # платформа — всегда
+        st = self.license_status().modules[mod]
+        if st.state in ("active", "grace"):
+            return None
+        m = modules_core.MODULE_BY_ID[mod]
+        if st.state == "readonly":
+            return {"status": "rejected", "code": "module_readonly",
+                    "message_ru": f"Подписка на модуль «{m.title_ru}» истекла: чтение, печать и выгрузка доступны, "
+                                  "изменения — после продления. Данные сохраняются в полном объёме.",
+                    "details": {"module": mod, "module_state": st.state}}
+        return {"status": "rejected", "code": "module_not_licensed",
+                "message_ru": f"Модуль «{m.title_ru}» не входит в лицензию этой установки. Обратитесь к поставщику "
+                              "или администратору — раздел можно подключить.",
+                "details": {"module": mod, "module_state": st.state}}
+
     # ------------------------------------------------------------ точка входа
     def handle(self, req: dict, client_addr: Optional[str] = None) -> dict:
         """Единая точка входа сервера: конверт {type: login|logout|command|query, …} → ответ-словарь.
@@ -457,6 +492,10 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             return {"status": "rejected", "code": "bad_operation_id", "message_ru": "operation_id должен быть UUID."}
         if command not in self.handlers:
             return {"status": "rejected", "code": "unknown_command", "message_ru": f"Неизвестная команда «{command}»."}
+        denied = self._license_denied(command)
+        if denied is not None:                                       # как unknown_command: до транзакции, повтор
+            denied["operation_id"] = op_id                           # даёт тот же отказ без записи в operations
+            return denied
         if not isinstance(payload, dict):
             return {"status": "rejected", "code": "bad_payload", "message_ru": "payload должен быть объектом."}
         if ev is not None and (isinstance(ev, bool) or not isinstance(ev, int)):
@@ -1190,7 +1229,10 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
         """
         uid = user["id"]
         can = lambda action, pid=None: self.policy.can(conn, uid, action, now, pid)  # noqa: E731
-        out: dict[str, Any] = {"server_time": iso(now), "customers": [], "tenders": [], "tkp": [], "projects": [], "kits": [], "assignments": [], "people": []}
+        out: dict[str, Any] = {"server_time": iso(now), "customers": [], "tenders": [], "tkp": [], "projects": [], "kits": [], "assignments": [], "people": [],
+                               # Лицензия установки — всем (D-81): клиент прячет разделы вне лицензии и показывает
+                               # блок «О программе»; ворота — на сервере (_license_denied), это лишь подсказка.
+                               "license": modules_core.license_block(self.license_status())}
         if can("customer.read"):
             out["customers"] = [self.v_customer(o) for o in self._rows(conn, sa.select(customers).order_by(customers.c.name))]
         if can("tender.read"):

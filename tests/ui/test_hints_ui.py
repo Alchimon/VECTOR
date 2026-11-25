@@ -119,3 +119,18 @@ def test_role_selects_expand_abbreviations(ui):
     proj = {r["id"]: r["label"] for r in _v(ui.backend, "projectRoleOptions")}
     assert proj["gip"] == "ГИП проекта (главный инженер проекта)"
     assert ui.backend.tip("Сторно").startswith("Исправить ошибочную запись")
+
+
+def test_help_page_about_tab_license_demo(ui):
+    """«О программе» (D-81): версия, режим и модули из лицензии. Стенд без файла лицензии — демо: все выпущенные
+    модули доступны (moduleOk), навигация не скрыта; ворота лицензии — на сервере (tests/server/test_license_gate.py)."""
+    ui.login("k.pavlov")
+    ui.go("help")
+    ui.click(ui.find("tabAbout"))
+    ui.wait_idle()
+    lic = _v(ui.backend, "licenseInfo")
+    assert lic["mode"] == "demo" and lic["app_version"]
+    assert ui.backend.moduleOk("pdm") and ui.backend.moduleOk("supply")
+    assert not ui.backend.moduleOk("schema")                      # «В разработке» — раздела ещё нет
+    support = ui.find("aboutSupport")
+    assert "демо" in support.property("v").lower() or "поддержк" in support.property("v").lower()

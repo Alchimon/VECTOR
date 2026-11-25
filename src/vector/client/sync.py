@@ -1104,6 +1104,9 @@ class SyncClient:
                                  self._seal("cache", f"{otype}/{obj['id']}/s", j), obj["version"]))
         self._set_meta("last_pull", res["server_time"])
         self._set_meta("me", res["me"])
+        # Лицензия установки (D-81): режим, состояние модулей — навигация прячет разделы вне лицензии, блок
+        # «О программе» показывает заказчика и сроки. Ворота — на сервере; это подсказка для интерфейса.
+        self._set_meta("license", res.get("license") or {"mode": "demo", "modules": []})
         self._set_meta("people", res.get("people", []))
         self._set_meta("assignments", res.get("assignments", []))
         self._set_meta("document_versions", res.get("document_versions", []))

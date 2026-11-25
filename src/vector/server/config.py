@@ -43,6 +43,10 @@ class ServerConfig:
     dev_insecure_localhost: bool = False
     backup_dir: Path | None = None
     backup_keep: int | None = None
+    # Лицензия установки (D-81): файл лицензии (подписан вендором) и публичный ключ проверки. Нет файла —
+    # режим демо/стенда (все выпущенные модули доступны). Оба поля задаются вместе.
+    license_file: Path | None = None
+    license_public_key: Path | None = None
     security: SecurityPolicy = field(default_factory=SecurityPolicy)
     warnings: list[str] = field(default_factory=list)
 
@@ -111,11 +115,26 @@ def load_config(path: Path) -> ServerConfig:
     if backend == "sqlite":
         warnings.append("SQLite допустим только для тестов и пилота на одном рабочем месте; для работы — PostgreSQL или MS SQL.")
     srv = data.get("server", {})
+    lic = data.get("license", {})
+    license_file = license_public_key = None
+    if lic:
+        # Лицензия (D-81): [license] file = "license.json", public_key = "vendor-public.pem". Оба файла публичны
+        # (подделку исключает подпись Ed25519 — секретный ключ только у вендора). Битая или подделанная лицензия —
+        # сервер не запускается: администратор должен увидеть проблему сразу, а не в разгар рабочего дня.
+        if not lic.get("file") or not lic.get("public_key"):
+            raise ConfigError("Разделу [license] нужны оба поля: file (файл лицензии) и public_key (публичный ключ вендора).")
+        license_file, license_public_key = rel(lic["file"]), rel(lic["public_key"])
+        if not license_file.is_file():
+            raise ConfigError(f"Файл лицензии не найден: {license_file}")
+        if not license_public_key.is_file():
+            raise ConfigError(f"Публичный ключ вендора не найден: {license_public_key}")
+
     cfg = ServerConfig(db_url=url, host=srv.get("host", "0.0.0.0"),  # noqa: S104 — см. выше
                        port=int(srv.get("port", 8443)),
                        tls_cert=rel(srv["tls_cert"]) if srv.get("tls_cert") else None,
                        tls_key=rel(srv["tls_key"]) if srv.get("tls_key") else None,
-                       dev_insecure_localhost=bool(srv.get("dev_insecure_localhost", False)), warnings=warnings)
+                       dev_insecure_localhost=bool(srv.get("dev_insecure_localhost", False)), warnings=warnings,
+                       license_file=license_file, license_public_key=license_public_key)
     if cfg.dev_insecure_localhost:
         if cfg.host not in ("127.0.0.1", "::1", "localhost"):
             raise ConfigError("Режим без TLS разрешён только при host = 127.0.0.1 (разработка).")

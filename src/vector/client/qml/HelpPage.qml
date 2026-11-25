@@ -11,7 +11,7 @@ Item {
     id: page
     objectName: "helpPage"
     property var shell: null
-    property string tab: "glossary"          // "glossary" — сокращения и подсказки; "guide" — встроенное руководство
+    property string tab: "glossary"          // "glossary" — сокращения; "guide" — руководство; "about" — о программе и лицензии
     property int guideIdx: 0                 // выбранный раздел руководства
     readonly property var guide: backend.helpSections || []
     // Строки справочника, подходящие под поиск (без учёта регистра и «ё/е»).
@@ -37,6 +37,10 @@ Item {
             VButton { objectName: "tabGuide"; text: "Руководство"; iconName: "file-text"
                       kind: page.tab === "guide" ? "primary" : "soft"; onClicked: page.tab = "guide"
                       tip: "Полное руководство пользователя встроено в программу и доступно без связи." }
+            // «О программе» (D-81): версия, лицензия установки, состояние модулей — честно и всегда доступно.
+            VButton { objectName: "tabAbout"; text: "О программе"; iconName: "info"
+                      kind: page.tab === "about" ? "primary" : "soft"; onClicked: page.tab = "about"
+                      tip: "Версия программы, лицензия (заказчик, вид, сроки, поддержка) и состояние модулей." }
             Item { Layout.fillWidth: true }
         }
         RowLayout {
@@ -199,6 +203,60 @@ Item {
                         font.family: Theme.family; font.pixelSize: Theme.fs
                         wrapMode: Text.Wrap
                         lineHeight: 1.25
+                    }
+                }
+            }
+        }
+
+        // ---- «О программе»: версия, лицензия и модули (D-81). Лицензия — из последнего снимка (pull); без
+        // файла лицензии — режим демо/стенда. Решение о доступе принимает сервер; здесь — честная информация.
+        Flickable {
+            visible: page.tab === "about"
+            Layout.fillWidth: true; Layout.fillHeight: true
+            contentWidth: width; contentHeight: aboutCol.implicitHeight
+            clip: true; boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar {}
+            ColumnLayout {
+                id: aboutCol
+                width: parent.width; spacing: 12
+                VCard {
+                    Layout.fillWidth: true
+                    ColumnLayout {
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 20
+                        spacing: 6
+                        SectionTitle { text: "ВЕКТОР — рабочая среда инженерной компании"; iconName: "info" }
+                        KeyValue { k: "Версия программы"; v: backend.licenseInfo.app_version || "" }
+                        KeyValue { k: "Режим"; v: backend.licenseInfo.mode === "licensed" ? "Лицензия" : "Демо / тестовый стенд" }
+                        KeyValue { visible: backend.licenseInfo.mode === "licensed"; k: "Заказчик"; v: backend.licenseInfo.customer || "" }
+                        KeyValue { visible: backend.licenseInfo.mode === "licensed"; k: "Лицензия"; v: (backend.licenseInfo.kind_label_ru || "")
+                                     + (backend.licenseInfo.valid_until ? " до " + backend.licenseInfo.valid_until : "") }
+                        KeyValue { objectName: "aboutSupport"; k: "Поддержка"; v: backend.licenseInfo.support_label_ru || "" }
+                        Text {
+                            Layout.fillWidth: true; wrapMode: Text.Wrap
+                            text: "Истёкшая подписка не блокирует данные: раздел переходит в режим «только чтение» — смотреть, печатать и выгружать можно всегда."
+                            color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS
+                        }
+                    }
+                }
+                VCard {
+                    Layout.fillWidth: true
+                    ColumnLayout {
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 20
+                        spacing: 6
+                        SectionTitle { text: "Модули"; iconName: "layers" }
+                        Repeater {
+                            model: backend.licenseInfo.modules || []
+                            delegate: RowLayout {
+                                required property var modelData
+                                width: parent ? parent.width : 0; spacing: 10
+                                Text { text: modelData.title_ru; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs
+                                       Layout.fillWidth: true; elide: Text.ElideRight }
+                                Text { text: modelData.label_ru; font.family: Theme.family; font.pixelSize: Theme.fsS
+                                       color: modelData.state === "active" ? Theme.success
+                                            : modelData.state === "grace" ? Theme.warning
+                                            : Theme.textMuted }
+                            }
+                        }
                     }
                 }
             }
