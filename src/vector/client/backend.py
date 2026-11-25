@@ -2174,6 +2174,30 @@ class Backend(QObject):
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._file_done(tag, res, "Документ сохранён новой версией."))
 
+    @Slot(str, str)
+    def officePrint(self, tag: str, dest_url: str):
+        """«Печать в PDF»: рабочая копия офисного документа → PDF-файл (локально, без связи).
+        HTML собирается из модели ядра (без Qt), PDF пишется QPdfWriter (GUI-поток — здесь, в done)."""
+        dest = Path(QUrl(dest_url).toLocalFile() if "://" in dest_url else dest_url)
+        if dest.suffix.lower() != ".pdf":
+            dest = dest.with_suffix(".pdf")
+        st = self._office
+        if not st:
+            self._command_done(tag, {"status": "rejected", "message_ru": "Нет открытого офисного документа."})
+            return
+        from vector.office import pdf as office_pdf
+        if st["kind"] == "sheet":
+            html_text = office_pdf.sheet_html(st["workbook"], st.get("title", ""))
+        else:
+            html_text = office_pdf.doc_html(office_view.doc_from_view(st.get("title", ""), st["rows"]))
+        try:
+            office_pdf.write_pdf(html_text, str(dest))
+        except Exception as e:  # noqa: BLE001 — печать может не сработать (нет принтера-плагина, переполнение)
+            self._command_done(tag, {"status": "error", "message_ru": f"PDF не записан: {e}"})
+            return
+        self.toast.emit("success", f"PDF сохранён: {dest.name}.")
+        self._command_done(tag, {"status": "accepted", "message_ru": ""})
+
     @Slot(result=str)
     def newId(self) -> str:
         """Новый UUID для создаваемого объекта: id выдаёт клиент, чтобы объект, созданный офлайн, сохранил его на

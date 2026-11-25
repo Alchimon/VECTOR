@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 import QtQuick.Layouts
 
 // Редактор офисного документа (Ф1.4, D-95): модальное окно поверх рабочей копии .vsheetx/.vdocx.
@@ -183,11 +184,23 @@ Popup {
                    font.family: Theme.family; font.pixelSize: Theme.fsS }
             Item { Layout.fillWidth: true }
             VButton { text: "Отмена"; kind: "ghost"; onClicked: ed.close() }
+            VButton {   // Печать в PDF — локально, без связи (рабочая копия → PDF через Qt).
+                text: "Печать / PDF"; kind: "soft"; iconName: "download"; enabled: ed.kind !== "" && !ed.working
+                Accessible.name: "Печать или сохранение в PDF"
+                onClicked: { pdfDlg.selectedFile = pdfDlg.currentFolder + "/" + (doc ? doc.code : "документ") + ".pdf"; pdfDlg.open() }
+            }
             VButton {
                 text: "Сохранить новой версией"; kind: "primary"; iconName: "check"; enabled: backend.online && !ed.working && ed.kind !== ""
                 Accessible.description: !backend.online ? "Сохранение версии файла — только при связи с сервером." : ""
                 onClicked: ed.save()
             }
         }
+    }
+
+    FileDialog {
+        id: pdfDlg
+        title: "Сохранить PDF"
+        fileMode: FileDialog.SaveFile
+        onAccepted: backend.officePrint(ed.tag, selectedFile.toString())
     }
 }
