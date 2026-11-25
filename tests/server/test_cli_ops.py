@@ -346,3 +346,38 @@ def test_package_manifest_check(tmp_path):
     (root / "readme.txt").unlink()
     problems = check_package_manifest(man, root)
     assert any("изменён" in p for p in problems) and any("нет файла" in p for p in problems)
+
+
+def test_audit_config_changes_report(tmp_path):
+    """Отчёт «изменения конфигурации» (D-87): административные команды попадают в отчёт, документооборот — нет."""
+    import datetime as dt
+    from sqlalchemy import insert
+    from vector.server.cli import cmd_audit_config_changes
+    from vector.server import db
+    import types
+
+    dburl = f"sqlite:///{tmp_path}/d.sqlite"
+    urlf = tmp_path / "db.url"
+    urlf.write_text(dburl, encoding="utf-8")
+    urlf.chmod(0o600)                                       # строка подключения — секрет (проверка прав в конфиге)
+    cfg = tmp_path / "server.toml"
+    cfg.write_text('[database]\nurl_file = "db.url"\n', encoding="utf-8")
+    eng = db.make_engine(dburl)
+    import uuid
+    db.create_schema(eng, str(uuid.uuid4()), dt.datetime.now(dt.timezone.utc))
+    now = dt.datetime(2026, 11, 20, 12, 0, tzinfo=dt.timezone.utc)
+    with eng.begin() as conn:
+        conn.execute(insert(db.users).values(id="u1", login="admin", display_name="Админ", pwd_hash="x",
+                                             must_change_password=False, failed_attempts=0, active=True,
+                                             password_changed_at=now, created_at=now))
+        for cmd in ("user.set_active", "document.register", "role.grant"):
+            conn.execute(insert(db.audit_log).values(
+                at=now, actor_user_id="u1", device_id=None, client_addr=None, operation_id=None, command=cmd,
+                object_type=None, object_id=None, authority="x", version_before=None, version_after=None,
+                result="ok", details_json="{}"))
+    out = tmp_path / "rep.txt"
+    cmd_audit_config_changes(types.SimpleNamespace(config=str(cfg), since="2026-11-01", out=str(out)))
+    text = out.read_text(encoding="utf-8")
+    assert "user.set_active" in text and "role.grant" in text
+    assert "document.register" not in text            # документооборот — не «изменение конфигурации»
+    assert "записей: 2" in text

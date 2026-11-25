@@ -105,6 +105,14 @@ _COMMAND_PREFIX_MODULE = {
 }
 
 
+def is_config_change(command: str) -> bool:
+    """Команда меняет административную конфигурацию (учётки, права, оргструктура, оповещения) — для отчёта
+    службы безопасности «изменения конфигурации за период» (54-compliance-fstek.md § 3.2, ФСТЭК). Платформенные
+    префиксы — те, что в карте отсутствуют (account/admin/config/…), иначе попадали бы и бизнес-команды."""
+    return command_module(command) is None and (command.split(".", 1)[0] + ".") not in _COMMAND_PREFIX_MODULE \
+        and "." in command
+
+
 def command_module(command: str) -> Optional[str]:
     """Модуль, которому принадлежит команда каталога, или None — платформа (доступна всегда)."""
     return _COMMAND_PREFIX_MODULE.get(command.split(".", 1)[0] + ".")

@@ -15,6 +15,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+import sqlalchemy as sa
+
 from vector import __version__
 from vector.core.errors import Rejected
 
@@ -210,6 +212,39 @@ def cmd_check(args):
         print("Целостность поставки: OK (манифест SHA-256)")
 
 
+def cmd_audit_config_changes(args):
+    """Отчёт «изменения конфигурации за период» из журнала аудита (D-87, 54-compliance-fstek.md § 3.2):
+    административные/системные команды (не документооборот) — что, кем, когда, успешно ли. Для службы
+    безопасности площадки (приказы ФСТЭК: управление конфигурацией и регистрация событий)."""
+    import datetime as dt
+    from vector.core import modules as m
+    since = dt.datetime.fromisoformat(args.since).replace(tzinfo=dt.timezone.utc)
+    from .config import read_db_url
+    eng = db.make_engine(read_db_url(Path(args.config)))
+    with eng.connect() as conn:
+        rows = conn.execute(sa.select(db.audit_log)
+                            .where(db.audit_log.c.at >= since, db.audit_log.c.actor_user_id.isnot(None))
+                            .order_by(db.audit_log.c.at)).all()
+        logins = dict(conn.execute(sa.select(db.users.c.id, db.users.c.login)).all())
+    items = []
+    for r in rows:
+        r = r._mapping
+        if not m.is_config_change(r["command"]):
+            continue
+        login = logins.get(r["actor_user_id"], r["actor_user_id"][:8])
+        items.append((r["at"].strftime("%Y-%m-%d %H:%M"), login, r["command"],
+                      "OK" if r["result"] == "ok" else "ОТКАЗ", r["object_id"] or ""))
+    lines = [f"Изменения конфигурации с {args.since} — записей: {len(items)}", ""]
+    for at, login, cmd, res, oid in items:
+        lines.append(f"{at}  {login:<14} {cmd:<40} {res:<6} {oid}")
+    text = "\n".join(lines)
+    if args.out:
+        Path(args.out).write_text(text, encoding="utf-8")
+        print(f"Отчёт записан: {args.out} ({len(items)} записей)")
+    else:
+        print(text)
+
+
 def cmd_migrate(args):
     """Обновить схему БД до версии программы: сначала проверенная копия, затем все шаги одной транзакцией."""
     from . import migrate as mg
@@ -313,6 +348,11 @@ def main(argv=None):
     s = sub.add_parser("migrate", help="обновить схему БД до версии программы (сначала проверенная копия)")
     s.add_argument("--config", required=True); s.add_argument("--key-file"); s.add_argument("--backup-dir")
     s.set_defaults(fn=cmd_migrate)
+    s = sub.add_parser("audit-config-changes", help="изменения административных настроек за период (журнал аудита)")
+    s.add_argument("--config", required=True); s.add_argument("--since", required=True,
+                                                              help="с даты ГГГГ-ММ-ДД (включительно)")
+    s.add_argument("--out", help="файл отчёта (по умолчанию — на экран)")
+    s.set_defaults(fn=cmd_audit_config_changes)
     s = sub.add_parser("gen-backup-key", help="создать файл ключа резервных копий"); s.add_argument("path"); s.set_defaults(fn=cmd_genkey)
     s = sub.add_parser("dev-cert", help="тестовый CA и TLS-сертификат для пилота")
     s.add_argument("--dir", required=True)

@@ -83,6 +83,31 @@ def _check_private_file(p: Path, what: str, warnings: list[str]) -> None:
         raise ConfigError(f"{what}: файл {p} доступен группе/всем (права {oct(mode & 0o777)}). Установите 600.")
 
 
+def read_db_url(path: Path) -> str:
+    """Только строка подключения из конфигурации — для служебных команд, не обслуживающих сеть
+    (отчёт по журналу и т. п.): TLS и лицензию не требуем. Секрет по-прежнему только из url_env/url_file."""
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        raise ConfigError(f"Не удалось прочитать конфигурацию {path}: {e}") from None
+    dbc = data.get("database", {})
+    if "url" in dbc:
+        raise ConfigError("Строку подключения нельзя хранить в конфигурации (секрет). Используйте database.url_env или database.url_file.")
+    base = Path(path).resolve().parent
+    if "url_env" in dbc:
+        url = os.environ.get(dbc["url_env"])
+        if not url:
+            raise ConfigError(f"Переменная окружения {dbc['url_env']} не задана.")
+        return url
+    if "url_file" in dbc:
+        p = Path(dbc["url_file"])
+        p = p if p.is_absolute() else base / p
+        _check_private_file(p, "Строка подключения", [])
+        return p.read_text(encoding="utf-8").strip()
+    raise ConfigError("Не задан источник строки подключения: database.url_env или database.url_file.")
+
+
 def load_config(path: Path) -> ServerConfig:
     """Прочитать и проверить server.toml. Любое нарушение — ConfigError с понятным текстом.
 
