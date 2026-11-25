@@ -90,7 +90,8 @@ def _state(on_hand: Decimal, reserved: Decimal) -> tuple[str, str, str]:
 def overview(warehouses: list, items: list, balances: list, reservations: list, movements: list, projects: list,
              people: dict, last_pull: str, online: bool, roles: list, transfers: Optional[list] = None,
              config: Optional[list] = None, adjustments: Optional[list] = None, me_id: Optional[str] = None,
-             proposals: Optional[list] = None) -> dict:
+             proposals: Optional[list] = None, replen_rules: Optional[list] = None,
+             replen_drafts: Optional[list] = None) -> dict:
     """Экран «Склад»: позиции с остатками по складам, резервы, перемещения «в пути», журнал, подсказки действий.
 
     transfers — перемещения из pull (D-29): все «в пути» и недавние закрытые. Количество «в пути» не входит ни в
@@ -265,6 +266,35 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
             "can_order": bool(open_row and online and is_pr),
             "can_reject": bool(open_row and online and (is_wh or is_pr)),
             "can_withdraw": bool(open_row and x["created_by"] == me_id)})
+    # Пополнение расходников по порогу (D-79, С4 шаг 7): правила задаёт склад (порог и количество — без
+    # умолчаний, Q2); черновые позиции создаёт система, когда доступное опускается ниже порога. Подтверждают
+    # обе стороны — склад и закупка (каждая один раз, только при связи); отклонить может любая с причиной.
+    draft_rows = []
+    for x in replen_drafts or []:
+        i = it.get(x["item_id"], {})
+        unit = i.get("unit", "")
+        open_row = x["status"] == "open"
+        draft_rows.append({**x, "item_code": i.get("code", "?"), "item_name": i.get("name", ""), "unit": unit,
+            "warehouse_code": wh.get(x["warehouse_id"], {}).get("code", "?"),
+            "qty_label": qty_label(x["qty"], unit),
+            "status_tone": {"open": "warning", "confirmed": "success", "dismissed": "danger",
+                            "resolved": "neutral"}.get(x["status"], "neutral"),
+            "wh_confirmer": people.get(x.get("warehouse_confirmed_by") or "", ""),
+            "pr_confirmer": people.get(x.get("procurement_confirmed_by") or "", ""),
+            "created_label": (x.get("created_at") or "").replace("T", " ")[:16],
+            # Подтверждает каждая сторона один раз и только при связи (online_required).
+            "can_confirm_wh": bool(open_row and online and is_wh and not x["warehouse_confirmed_by"]),
+            "can_confirm_pr": bool(open_row and online and is_pr and not x["procurement_confirmed_by"]),
+            "can_dismiss": bool(open_row and online and (is_wh or is_pr))})
+    draft_open = sum(1 for x in draft_rows if x["status"] == "open")
+    rule_rows = []
+    for r in sorted((replen_rules or []), key=lambda r: (it.get(r["item_id"], {}).get("code", ""), )):
+        i = it.get(r["item_id"], {})
+        unit = i.get("unit", "")
+        rule_rows.append({**r, "item_code": i.get("code", "?"), "item_name": i.get("name", ""), "unit": unit,
+            "warehouse_code": wh.get(r["warehouse_id"], {}).get("code", "?"),
+            "min_label": qty_label(r["min_qty"], unit), "target_label": qty_label(r["target_qty"], unit),
+            "can_edit": is_wh and online})
     active_wh = sum(1 for w in warehouses if w.get("active", True) and not w.get("_pending"))
     return {"as_of": as_of_label(last_pull), "online": online, "items": rows,
             "warehouses": [{**w, "pending": bool(w.get("_pending")),
@@ -279,13 +309,18 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
                         "in_transit": sum(1 for t in tr_rows if t["status"] == "in_transit"),
                         "movements": len(mv_rows),
                         "adjust_pending": len(adj_pending),
-                        "proposals_open": len(prop_open)},
+                        "proposals_open": len(prop_open),
+                        "replen_open": draft_open},
             "proposals": prop_rows,
+            "replen_rules": rule_rows,
+            "replen_drafts": draft_rows,
             "adjustments": adj_rows,
             # Корректировка: создаёт склад при связи; подписывает руководитель отдела при связи (D-77).
             "can_adjust": is_wh and online, "can_sign_adjust": online and "dept_head" in roles,
             # Предложить перемещение может закупка (офлайн-очередь, D-78); участники проекта — через сервер.
             "can_propose": is_pr,
+            # Правило пополнения задаёт склад (только при связи: порог проверяется по свежему остатку, D-79).
+            "can_replen_rule": is_wh and online,
             # Подсказки: проводки и резервы — склад и только при связи (online_required); справочники — офлайн тоже.
             "can_post": is_wh and online, "can_edit_refs": is_wh or "procurement" in roles,
             # Перемещать есть куда, только если действующих (уже отправленных на сервер) складов не меньше двух.

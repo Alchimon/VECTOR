@@ -16,7 +16,7 @@ import QtQuick.Layouts
 Item {
     id: page
     property var shell
-    property string tab: "balances"          // balances | reservations | transit | adjustments | proposals | journal | refs
+    property string tab: "balances"          // balances | reservations | transit | adjustments | proposals | replenishment | journal | refs
     property string selectedId: ""
     property string search: ""
     readonly property var ov: backend.stockOverview
@@ -53,6 +53,7 @@ Item {
                     { id: "transit", label: "В пути (" + (ov.summary ? ov.summary.in_transit : 0) + ")", icon: "truck" },
                     { id: "adjustments", label: "Корректировки (" + (ov.summary ? ov.summary.adjust_pending : 0) + ")", icon: "clipboard-check" },
                     { id: "proposals", label: "Предложения (" + (ov.summary ? ov.summary.proposals_open : 0) + ")", icon: "arrow-left-right" },
+                    { id: "replenishment", label: "Пополнение (" + (ov.summary ? ov.summary.replen_open : 0) + ")", icon: "package-plus" },
                     { id: "journal", label: "Журнал движений", icon: "history" },
                     { id: "refs", label: "Справочники", icon: "settings" },
                     { id: "directory", label: "Аналоги и пересчёт", icon: "arrow-left-right" }]
@@ -147,6 +148,7 @@ Item {
                                 VButton { objectName: "btnTransfer"; text: "Отгрузить на склад"; iconName: "arrow-left-right"; enabled: page.canPost && page.sel !== null && ov.can_transfer === true; onClicked: transferForm.openFor(page.sel) }
                                 VButton { objectName: "btnReserve"; text: "Зарезервировать"; kind: "soft"; iconName: "bookmark"; enabled: page.canPost && page.sel !== null && page.sel.active === true; onClicked: reserveForm.openFor(page.sel, "", "", "") }
                                 VButton { objectName: "btnAdjust"; text: "Корректировка"; kind: "soft"; iconName: "clipboard-check"; enabled: ov.can_adjust === true && page.sel !== null; onClicked: adjustForm.openFor(page.sel) }
+                                VButton { objectName: "btnReplenRule"; text: "Пополнение"; kind: "ghost"; iconName: "package-plus"; enabled: ov.can_replen_rule === true && page.sel !== null; onClicked: ruleForm.openFor(page.sel) }
                                 Text { visible: !page.canPost; text: "Только при связи с сервером"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs }
                             }
 
@@ -288,6 +290,53 @@ Item {
             }
             EmptyState { anchors.centerIn: parent; visible: propList.count === 0; iconName: "arrow-left-right"; title: "Предложений нет"
                          text: "Здесь появятся предложения переместить позицию из другого проекта (С4). Предложение — не резерв и не движение: оно ждёт решения склада или закупки." }
+        }
+
+        // ================================================================ Пополнение расходников (D-79)
+        VCard {
+            visible: page.tab === "replenishment"
+            Layout.fillWidth: true; Layout.fillHeight: true
+            Flickable {
+                anchors.fill: parent; anchors.margins: 14
+                contentWidth: parent.width - 28; contentHeight: replenCol.implicitHeight
+                clip: true; flickableDirection: Flickable.VerticalFlick
+                ScrollBar.vertical: ScrollBar {}
+                ColumnLayout {
+                    id: replenCol
+                    width: parent.width; spacing: 8
+                    SectionTitle { text: "Черновые позиции пополнения"; iconName: "package-plus" }
+                    Repeater {
+                        model: ov.replen_drafts || []
+                        delegate: ReplenRow { Layout.fillWidth: true; t: modelData
+                            onConfirmRequested: cReplenConfirm.run("stock.replen_confirm", { id: t.id }, t.version)
+                            onDismissRequested: replenDismissForm.openFor(modelData) }
+                    }
+                    EmptyState { visible: (ov.replen_drafts || []).length === 0; iconName: "package-plus"; title: "Черновиков нет"
+                                 text: "Когда доступное количество позиции с включённым правилом опустится ниже порога, здесь появится черновая позиция пополнения. Подтверждают её склад и закупка." }
+                    SectionTitle { text: "Правила пополнения"; iconName: "settings" }
+                    Repeater {
+                        model: ov.replen_rules || []
+                        delegate: Rectangle {
+                            required property var modelData
+                            Layout.fillWidth: true; implicitHeight: ruleRow.implicitHeight + 16; radius: Theme.radius; color: Theme.surfaceAlt
+                            RowLayout {
+                                id: ruleRow
+                                anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                                anchors.leftMargin: 14; anchors.rightMargin: 14; spacing: 10
+                                Icon { name: "package-plus"; size: 15; color: modelData.enabled ? Theme.primary : Theme.textMuted }
+                                Text { text: modelData.item_code + " · " + modelData.warehouse_code + ": ниже " + modelData.min_label
+                                             + " → пополнить до " + modelData.target_label + (modelData.enabled ? "" : "  ·  отключено")
+                                       color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsS
+                                       elide: Text.ElideRight; Layout.fillWidth: true }
+                                VButton { objectName: "btnRuleEdit"; visible: modelData.can_edit === true; text: "Изменить"
+                                          kind: "ghost"; compact: true; iconName: "pencil"; onClicked: ruleForm.openRule(modelData) }
+                            }
+                        }
+                    }
+                    EmptyState { visible: (ov.replen_rules || []).length === 0; iconName: "settings"; title: "Правил нет"
+                                 text: "Правило пополнения задаёт склад с карточки позиции (кнопка «Пополнение»): порог и количество — без умолчаний." }
+                }
+            }
         }
 
         // ================================================================ Справочники
@@ -688,6 +737,73 @@ Item {
         VField { id: pwReason; objectName: "pwReason"; label: "Почему отзываем"; required: true; placeholder: "Уже не нужно, ошибка в количестве …" }
     }
     Cmd { id: cPropWithdraw; dialog: propWithdrawForm }
+
+    // Правило пополнения расходника (D-79): порог и «пополнить до» задаёт пользователь, умолчаний нет (Q2).
+    // С карточки позиции — новое правило для пары; кнопкой «Изменить» у правила — правка или отключение.
+    FormDialog {
+        id: ruleForm
+        objectName: "ruleForm"
+        property var item: null
+        property var rule: null            // существующее правило (правка/отключение) или null (новое)
+        property var whOpts: page.whOptions
+        title: rule ? "Правило пополнения" : "Задать правило пополнения"
+        subtitle: item ? item.code + " · " + item.name + "  ·  пополнение считается по доступному количеству на складе" : ""
+        confirmText: rule ? "Сохранить правило" : "Включить правило"
+        canConfirm: (item !== null || rule !== null) && (rule !== null || rrWh.currentValue !== "") && ruleQtyOk()
+        function qtyNum(t) { const n = Number(String(t).trim().replace(",", ".")); return isFinite(n) && n > 0 ? n : 0 }
+        function ruleQtyOk() { return qtyNum(rrMin.text) > 0 && qtyNum(rrTarget.text) > qtyNum(rrMin.text) }
+        function openFor(it) {
+            item = it
+            rule = (ov.replen_rules || []).find(r => r.item_id === it.id && r.warehouse_id === rrWh.currentValue) || null
+            if (rule) { rrMin.text = rule.min_qty.split(" ")[0]; rrTarget.text = rule.target_qty.split(" ")[0]
+                        rrEnabled.checked = rule.enabled }
+            else { rrMin.text = ""; rrTarget.text = ""; rrEnabled.checked = true }
+            open()
+        }
+        function openRule(r) {
+            item = null; rule = r
+            rrMin.text = r.min_label.split(" ")[0]; rrTarget.text = r.target_label.split(" ")[0]
+            rrEnabled.checked = r.enabled
+            open()
+        }
+        onConfirmed: rule
+            ? cRuleUpd.run("stock.replen_rule_update",
+                           { id: rule.id, min_qty: backend.normalizeQty(rrMin.text),
+                             target_qty: backend.normalizeQty(rrTarget.text), enabled: rrEnabled.checked },
+                           rule.version)
+            : cRuleSet.run("stock.replen_rule_set",
+                           { id: backend.newId(), warehouse_id: rrWh.currentValue,
+                             item_id: item ? item.id : "", min_qty: backend.normalizeQty(rrMin.text),
+                             target_qty: backend.normalizeQty(rrTarget.text) }, 0)
+        Banner { tone: "info"; text: "Когда доступное опустится ниже порога, программа создаст черновую позицию пополнения — её подтверждают склад и закупка. Отключение правила не удаляет историю черновиков." }
+        VSelect { id: rrWh; objectName: "rrWh"; label: "Склад"; model: ruleForm.whOpts; visible: ruleForm.rule === null }
+        VField { id: rrMin; objectName: "rrMin"; label: "Порог, шт (меньше — нужно пополнение)"; required: true; placeholder: "0"
+                 error: rrMin.text !== "" && ruleForm.qtyNum(rrMin.text) <= 0 ? "Введите количество больше нуля" : "" }
+        VField { id: rrTarget; objectName: "rrTarget"; label: "Пополнить до, шт"; required: true; placeholder: "0"
+                 error: rrTarget.text !== "" && ruleForm.qtyNum(rrTarget.text) <= ruleForm.qtyNum(rrMin.text) ? "Должно быть больше порога" : "" }
+        CheckBox { id: rrEnabled; objectName: "rrEnabled"; Layout.fillWidth: true; Layout.preferredWidth: 1
+                   visible: ruleForm.rule !== null
+                   text: "Правило включено (отключение не удаляет историю черновиков)" }
+    }
+    Cmd { id: cRuleSet; dialog: ruleForm }
+    Cmd { id: cRuleUpd; dialog: ruleForm }
+
+    // Отклонение черновика пополнения (D-79): склад или закупка, причина обязательна, только при связи.
+    FormDialog {
+        id: replenDismissForm
+        objectName: "replenDismissForm"
+        property var draft: null
+        title: "Отклонить пополнение"
+        subtitle: draft ? draft.item_code + " · " + draft.warehouse_code + "  ·  " + draft.qty_label : ""
+        confirmText: "Отклонить"; confirmKind: "danger"
+        canConfirm: rdReason.text.trim() !== ""
+        function openFor(x) { draft = x; rdReason.text = ""; open() }
+        onConfirmed: cReplenDismiss.run("stock.replen_dismiss", { id: draft.id, reason: rdReason.text.trim() }, draft.version)
+        VField { id: rdReason; objectName: "rdReason"; label: "Почему не пополняем"; required: true
+                 placeholder: "Расходник снимают с производства, хватает до конца проекта …" }
+    }
+    Cmd { id: cReplenDismiss; dialog: replenDismissForm }
+    Cmd { id: cReplenConfirm; dialog: null }
 
     // Акт об утрате (D-31): не пришло ничего. Прихода нет, отправителю не возвращается — количество списывается
     // актом. Причина обязательна; подпись приёмщика — как в акте недостачи (настройка stock.act_signature).

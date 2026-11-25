@@ -71,7 +71,7 @@ from vector.core import money
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
 # v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
 #         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
-SCHEMA_VERSION = 42
+SCHEMA_VERSION = 43
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -831,6 +831,45 @@ stock_transfer_proposals = sa.Table("stock_transfer_proposals", metadata,
     sa.CheckConstraint("qty > 0", name="qty_pos"),
     sa.CheckConstraint("from_project_id IS NULL OR from_project_id <> to_project_id", name="distinct_projects"))
 sa.Index("ix_stock_transfer_proposals_from", stock_transfer_proposals.c.from_project_id)
+
+# ---------------------------------------------------------------- v43: пополнение расходников по порогу (D-79, С4 шаг 7)
+# Правило пополнения задаёт ПОЛЬЗОВАТЕЛЬ (склад): порогов и количеств по умолчанию нет (Q2). Когда доступное
+# количество позиции на складе опускается ниже порога, система создаёт (или обновляет) ЧЕРНОВУЮ позицию
+# пополнения — идемпотентно, одна открытая на пару склад+позиция; количество = target − доступное. Черновик
+# подтверждают ОБЕ стороны — склад и закупка (два подтверждения, С4 шаг 7); отклонить может любая с причиной.
+# Отключение правила не удаляет историю черновиков; восстановление остатка выше порога закрывает открытый
+# черновик как «остаток восстановлен» (подтверждённый остаётся — решение уже принято людьми).
+stock_replenishment_rules = sa.Table("stock_replenishment_rules", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("warehouse_id", ID, sa.ForeignKey("warehouses.id"), nullable=False),
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id"), nullable=False),
+    sa.Column("min_qty", Qty, nullable=False),          # порог: ниже — нужно пополнение
+    sa.Column("target_qty", Qty, nullable=False),       # пополнить до (количество задаёт пользователь, Q2)
+    sa.Column("enabled", sa.Boolean, nullable=False),   # правило включено пользователем (умолчаний нет, Q2)
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.UniqueConstraint("warehouse_id", "item_id", name="uq_replen_rule_pair"),
+    sa.CheckConstraint("min_qty > 0", name="min_pos"),
+    sa.CheckConstraint("target_qty > min_qty", name="target_gt_min"))
+
+stock_replenishment_drafts = sa.Table("stock_replenishment_drafts", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("rule_id", ID, sa.ForeignKey("stock_replenishment_rules.id"), nullable=False),
+    sa.Column("warehouse_id", ID, sa.ForeignKey("warehouses.id"), nullable=False),
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id"), nullable=False),
+    sa.Column("qty", Qty, nullable=False),              # сколько пополнить (target − доступное на момент проверки)
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("warehouse_confirmed_by", ID), sa.Column("warehouse_confirmed_at", UtcDateTime),
+    sa.Column("procurement_confirmed_by", ID), sa.Column("procurement_confirmed_at", UtcDateTime),
+    sa.Column("decision_note", U(2000)),                # причина отклонения
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("status IN ('open','confirmed','dismissed','resolved')", name="status"),
+    sa.CheckConstraint("qty > 0", name="qty_pos"))
+sa.Index("ix_stock_replenishment_drafts_pair", stock_replenishment_drafts.c.warehouse_id,
+         stock_replenishment_drafts.c.item_id)
 
 # ---------------------------------------------------------------- v12: заказы поставщикам (С4 шаг 5, D-32)
 # Поставщики — справочник закупки (как номенклатура: правится офлайн через очередь, код уникален, отключение вместо

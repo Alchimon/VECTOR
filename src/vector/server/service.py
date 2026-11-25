@@ -213,6 +213,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "stock.adjust_cancel": self._stock_adjust_cancel,
             "proposal.propose": self._proposal_propose, "proposal.withdraw": self._proposal_withdraw,
             "proposal.decide": self._proposal_decide,
+            "stock.replen_rule_set": self._replen_rule_set, "stock.replen_rule_update": self._replen_rule_update,
+            "stock.replen_confirm": self._replen_confirm, "stock.replen_dismiss": self._replen_dismiss,
             # поставщики, заказы поставщикам и факт поставки (purchasing.py, D-32)
             "supplier.create": self._supplier_create, "supplier.update": self._supplier_update,
             "po.create": self._po_create, "po.update": self._po_update, "po.place": self._po_place,
@@ -1293,6 +1295,7 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
                   "warehouse": "stock.read", "stock_item": "stock.read", "stock_movement": "stock.read",
                   "stock_transfer": "stock.read", "stock_reservation": "stock.read", "procurement_need": "need.read",
                   "stock_adjustment": "stock.read", "stock_transfer_proposal": "need.read",
+            "stock_replenishment_rule": "stock.read", "stock_replenishment_draft": "stock.read",
                   "item_alias": "stock.read", "unit_conversion": "stock.read", "config": "config.publish",
                   "supplier": "supplier.read", "supplier_contract": "supplier.read", "purchase_order": "po.read",
                   "tech_process": "tp.read", "work_order": "wo.read", "wo_operation": "wo.read",

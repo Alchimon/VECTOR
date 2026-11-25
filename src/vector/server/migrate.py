@@ -126,6 +126,8 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     41: [db.stock_adjustments],
     # Предложения перемещения между проектами и совместное решение «склад + закупка» (С4 шаги 3–4, D-78).
     42: [db.stock_transfer_proposals],
+    # Пополнение расходников по порогу: правила и черновые позиции (С4 шаг 7, D-79).
+    43: [db.stock_replenishment_rules, db.stock_replenishment_drafts],
 }
 
 
@@ -321,7 +323,8 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               38: _create_tables(ADDED_IN[39]),
                               39: _create_tables(ADDED_IN[40]),
                               40: _create_tables(ADDED_IN[41]),
-                              41: _create_tables(ADDED_IN[42])}
+                              41: _create_tables(ADDED_IN[42]),
+                              42: _create_tables(ADDED_IN[43])}
 
 
 @dataclass

@@ -56,7 +56,7 @@ from .db import (calc_version_lines, calc_versions, item_aliases, kits, procurem
                  procurement_need_line_match_units, procurement_need_line_matches, procurement_need_lines,
                  procurement_needs, projects, purchase_order_lines, purchase_orders, unit_conversions, signatures,
                  stock_adjustments, stock_balances, stock_item_packs, stock_items, stock_movements, stock_reservations,
-                 stock_transfer_proposals,
+                 stock_replenishment_drafts, stock_replenishment_rules, stock_transfer_proposals,
                  stock_shipment_losses, stock_shipment_terms, stock_shipments, stock_transfer_acts,
                  stock_transfers, users, warehouses, work_order_issues)
 from . import security
@@ -645,6 +645,58 @@ class StockMixin:
             on_hand=b.on_hand, reserved=b.reserved, version=row["version"] + 1, updated_at=ctx.now)).rowcount
         if n != 1:
             raise Conflict("stock_conflict", "Остаток изменился параллельно. Обновите данные и повторите.", {"current": None})
+        self._maybe_replenish(ctx, wid, iid, b)
+
+    # ------------------------------------------------------------ пополнение расходников по порогу (D-79)
+    def _maybe_replenish(self, ctx, wid: str, iid: str, b: stock.Balance) -> None:
+        """Проверить порог пополнения (С4 шаг 7): если по паре склад+позиция есть ВКЛЮЧЁННОЕ правило и доступное
+        количество опустилось ниже порога — создать черновую позицию пополнения (target − доступное) или
+        обновить её количество (идемпотентно: одна открытая на пару). Если остаток восстановился выше порога —
+        открытый черновик закрывается системой (resolved); подтверждённый остаётся (решение принято людьми).
+
+        Вызывается из _save_balance — любое движение, меняющее остаток или резервы пары, проверяет порог.
+        """
+        rule = ctx.conn.execute(sa.select(stock_replenishment_rules).where(
+            stock_replenishment_rules.c.warehouse_id == wid, stock_replenishment_rules.c.item_id == iid,
+            stock_replenishment_rules.c.enabled == sa.true())).first()
+        if rule is None:
+            return
+        open_d = ctx.conn.execute(sa.select(stock_replenishment_drafts).where(
+            stock_replenishment_drafts.c.rule_id == rule.id,
+            stock_replenishment_drafts.c.status == "open")).first()
+        if b.available >= rule.min_qty:
+            if open_d is not None:
+                n = self._update_versioned(ctx, stock_replenishment_drafts, dict(open_d._mapping),
+                                           {"status": "resolved"})
+                ctx.log("stock_replenishment_draft", n["id"], None,
+                        open_d._mapping["version"], n["version"], {"status": "resolved", "automatic": True})
+            return
+        need_qty = rule.target_qty - b.available
+        if open_d is not None:
+            if open_d.qty != need_qty:
+                n = self._update_versioned(ctx, stock_replenishment_drafts, dict(open_d._mapping),
+                                           {"qty": need_qty})
+                ctx.log("stock_replenishment_draft", n["id"], None,
+                        open_d._mapping["version"], n["version"],
+                        {"qty": money.to_json(need_qty), "automatic": True})
+            return
+        did = str(uuid.uuid4())
+        ctx.conn.execute(stock_replenishment_drafts.insert().values(
+            id=did, rule_id=rule.id, warehouse_id=wid, item_id=iid, qty=need_qty, status="open",
+            warehouse_confirmed_by=None, warehouse_confirmed_at=None,
+            procurement_confirmed_by=None, procurement_confirmed_at=None, decision_note=None, version=1,
+            created_by=ctx.user_id, created_at=ctx.now, updated_by=ctx.user_id, updated_at=ctx.now))
+        w = self._get(ctx.conn, warehouses, wid)
+        it = self._get(ctx.conn, stock_items, iid)
+        ctx.log("stock_replenishment_draft", did, None, None, 1,
+                {"warehouse_code": w["code"], "item_code": it["code"], "qty": money.to_json(need_qty),
+                 "min_qty": money.to_json(rule.min_qty), "automatic": True})
+        self._notify(ctx, self._users_with_role(ctx.conn, "warehouse", ctx.now)
+                     + self._users_with_role(ctx.conn, "procurement", ctx.now), "replen_draft_open",
+                     "Расходник ниже порога: черновик пополнения",
+                     f"{w['code']} · {it['code']}: доступно {money.to_json(b.available)} при пороге "
+                     f"{money.to_json(rule.min_qty)} — предложено пополнить на {money.to_json(need_qty)}. "
+                     f"Нужны подтверждения склада и закупки.", "stock_replenishment_draft", did)
 
     def _post(self, ctx, auth, *, mid: str, kind: str, w: dict, it: dict, qty: Decimal, project_id=None,
               reservation_id=None, reverses_id=None, source_doc=None, reason=None, details=None) -> dict:
@@ -1518,6 +1570,144 @@ class StockMixin:
                  "proposal_id": o["id"], "balance_after": b.to_json()})
         return rid, released
 
+    @staticmethod
+    def v_replen_rule(o: dict) -> dict:
+        """Правило пополнения (D-79) для клиента: склад, позиция, порог, «пополнить до», включено, версия."""
+        return {"id": o["id"], "warehouse_id": o["warehouse_id"], "item_id": o["item_id"],
+                "min_qty": money.to_json(o["min_qty"]), "target_qty": money.to_json(o["target_qty"]),
+                "enabled": bool(o["enabled"]), "version": o["version"],
+                "created_by": o["created_by"], "created_at": iso(o["created_at"])}
+
+    @staticmethod
+    def v_replen_draft(o: dict) -> dict:
+        """Черновая позиция пополнения (D-79): склад, позиция, количество, статус с подписью, два подтверждения
+        (склад и закупка), причина отклонения, версия."""
+        return {"id": o["id"], "rule_id": o["rule_id"], "warehouse_id": o["warehouse_id"], "item_id": o["item_id"],
+                "qty": money.to_json(o["qty"]), "status": o["status"],
+                "status_label": stock.REPLEN_LABELS_RU[o["status"]],
+                "warehouse_confirmed_by": o["warehouse_confirmed_by"],
+                "warehouse_confirmed_at": iso(o["warehouse_confirmed_at"]),
+                "procurement_confirmed_by": o["procurement_confirmed_by"],
+                "procurement_confirmed_at": iso(o["procurement_confirmed_at"]),
+                "decision_note": o["decision_note"], "version": o["version"],
+                "created_by": o["created_by"], "created_at": iso(o["created_at"])}
+
+    def _replen_rule_set(self, ctx, p, ev):
+        """stock.replen_rule_set {id, warehouse_id, item_id, min_qty, target_qty} — задать правило пополнения
+        пары склад+позиция (включается сразу). Порог и количество задаёт пользователь, умолчаний нет (Q2);
+        пополнить-до должно быть больше порога. На пару действует одно правило — изменение через
+        stock.replen_rule_update. В очереди офлайн. Если остаток уже ниже порога — черновик появится сразу.
+        """
+        only_keys(p, {"id", "warehouse_id", "item_id", "min_qty", "target_qty"})
+        rid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, stock_replenishment_rules, rid)
+        auth = self.policy.check(ctx.conn, ctx.user_id, "stock.replen_rule_set", ctx.now)
+        w, it = self._wh_item(ctx, p, for_new_stock=False)
+        min_qty = _qty(p, "min_qty")
+        target = _qty(p, "target_qty")
+        if target <= min_qty:
+            raise Rejected("target_not_above_min", "«Пополнить до» должно быть больше порога — иначе правило "
+                           "срабатывало бы снова сразу после пополнения.", {"field": "target_qty"})
+        if ctx.conn.execute(sa.select(stock_replenishment_rules.c.id).where(
+                stock_replenishment_rules.c.warehouse_id == w["id"],
+                stock_replenishment_rules.c.item_id == it["id"])).first() is not None:
+            raise Rejected("rule_exists", "Правило пополнения для этой пары склад+позиция уже есть — "
+                           "измените его (порог, количество) или отключите.", {"field": "item_id"})
+        ctx.conn.execute(stock_replenishment_rules.insert().values(
+            id=rid, warehouse_id=w["id"], item_id=it["id"], min_qty=min_qty, target_qty=target, enabled=True,
+            version=1, created_by=ctx.user_id, created_at=ctx.now, updated_by=ctx.user_id, updated_at=ctx.now))
+        ctx.log("stock_replenishment_rule", rid, auth, None, 1,
+                {"warehouse_code": w["code"], "item_code": it["code"], "min_qty": money.to_json(min_qty),
+                 "target_qty": money.to_json(target)})
+        # Остаток мог быть ниже порога и до правила — проверить сразу (черновик создастся той же транзакцией);
+        # позиция без записи остатка — «совсем нет», т.е. ниже любого положительного порога.
+        row = ctx.conn.execute(sa.select(stock_balances).where(
+            stock_balances.c.warehouse_id == w["id"], stock_balances.c.item_id == it["id"])).first()
+        b = stock.Balance(row.on_hand, row.reserved) if row is not None else stock.Balance(Decimal(0), Decimal(0))
+        self._maybe_replenish(ctx, w["id"], it["id"], b)
+        return {"rule": self.v_replen_rule(self._get(ctx.conn, stock_replenishment_rules, rid))}
+
+    def _replen_rule_update(self, ctx, p, ev):
+        """stock.replen_rule_update {id, min_qty?, target_qty?, enabled?} + версия — изменить правило или
+        отключить его (enabled=false). Отключение НЕ удаляет историю черновиков; открытый черновик при
+        отключении закрывается как отклонённый системой? Нет — остаётся открытым: решение по нему уже у людей.
+        После изменения порога правило срабатывает проверкой остатка сразу."""
+        only_keys(p, {"id", "min_qty", "target_qty", "enabled"})
+        o = self._require(ctx.conn, stock_replenishment_rules, req_uuid(p, "id"), "Правило пополнения")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "stock.replen_rule_update", ctx.now)
+        self._check_version(o, ev, self.v_replen_rule)
+        min_qty = _qty(p, "min_qty") if p.get("min_qty") is not None else o["min_qty"]
+        target = _qty(p, "target_qty") if p.get("target_qty") is not None else o["target_qty"]
+        if target <= min_qty:
+            raise Rejected("target_not_above_min", "«Пополнить до» должно быть больше порога.",
+                           {"field": "target_qty"})
+        enabled = o["enabled"] if p.get("enabled") is None else bool(p["enabled"])
+        n = self._update_versioned(ctx, stock_replenishment_rules, o,
+                                   {"min_qty": min_qty, "target_qty": target, "enabled": enabled})
+        ctx.log("stock_replenishment_rule", o["id"], auth, o["version"], n["version"],
+                {"min_qty": money.to_json(min_qty), "target_qty": money.to_json(target), "enabled": enabled})
+        row = ctx.conn.execute(sa.select(stock_balances).where(
+            stock_balances.c.warehouse_id == o["warehouse_id"], stock_balances.c.item_id == o["item_id"])).first()
+        if enabled:
+            b = stock.Balance(row.on_hand, row.reserved) if row is not None else stock.Balance(Decimal(0), Decimal(0))
+            self._maybe_replenish(ctx, o["warehouse_id"], o["item_id"], b)
+        return {"rule": self.v_replen_rule(n)}
+
+    def _replen_confirm(self, ctx, p, ev):
+        """stock.replen_confirm {id} + версия — подтвердить черновую позицию пополнения. Нужны ОБА подтверждения:
+        склада и закупки (С4 шаг 7); порядок любой, свою сторону подтверждают один раз. После второго
+        подтверждения черновик «подтверждён» — заказ поставщику закупка создаёт обычным путём. Только при связи.
+        """
+        only_keys(p, {"id"})
+        o = self._require(ctx.conn, stock_replenishment_drafts, req_uuid(p, "id"), "Черновик пополнения")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "stock.replen_confirm", ctx.now)
+        self._check_version(o, ev, self.v_replen_draft)
+        if o["status"] != "open":
+            raise Rejected("replen_state", f"Черновик уже {stock.REPLEN_LABELS_RU[o['status']].lower()}.")
+        is_wh = self.policy.can(ctx.conn, ctx.user_id, "stock.receive", ctx.now)
+        is_pr = self.policy.can(ctx.conn, ctx.user_id, "po.create", ctx.now)
+        patch: dict = {}
+        side = None
+        if is_wh and o["warehouse_confirmed_by"] is None:
+            patch = {"warehouse_confirmed_by": ctx.user_id, "warehouse_confirmed_at": ctx.now}
+            side = "склад"
+        elif is_pr and o["procurement_confirmed_by"] is None:
+            patch = {"procurement_confirmed_by": ctx.user_id, "procurement_confirmed_at": ctx.now}
+            side = "закупка"
+        else:
+            raise Rejected("already_confirmed", "Ваша сторона уже подтвердила этот черновик." if
+                           (is_wh or is_pr) else "Подтверждают склад и закупка.")
+        n = self._update_versioned(ctx, stock_replenishment_drafts, o, patch)
+        if n["warehouse_confirmed_by"] and n["procurement_confirmed_by"]:
+            n = self._update_versioned(ctx, stock_replenishment_drafts, n, {"status": "confirmed"})
+        ctx.log("stock_replenishment_draft", o["id"], auth, o["version"], n["version"],
+                {"confirmed_by_side": side, "status": n["status"]})
+        if n["status"] == "confirmed":
+            w = self._get(ctx.conn, warehouses, o["warehouse_id"])
+            it = self._get(ctx.conn, stock_items, o["item_id"])
+            self._notify(ctx, self._users_with_role(ctx.conn, "warehouse", ctx.now)
+                         + self._users_with_role(ctx.conn, "procurement", ctx.now), "replen_confirmed",
+                         "Пополнение подтверждено обеими сторонами",
+                         f"{w['code']} · {it['code']}: пополнить на {money.to_json(o['qty'])} — можно "
+                         f"включать в заказ поставщику.", "stock_replenishment_draft", o["id"])
+        return {"draft": self.v_replen_draft(n)}
+
+    def _replen_dismiss(self, ctx, p, ev):
+        """stock.replen_dismiss {id, reason} + версия — отклонить черновик (склад или закупка), причина
+        обязательна; автор и обе стороны узнают уведомлением. Только при связи."""
+        only_keys(p, {"id", "reason"})
+        o = self._require(ctx.conn, stock_replenishment_drafts, req_uuid(p, "id"), "Черновик пополнения")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "stock.replen_dismiss", ctx.now)
+        self._check_version(o, ev, self.v_replen_draft)
+        if o["status"] != "open":
+            raise Rejected("replen_state", f"Черновик уже {stock.REPLEN_LABELS_RU[o['status']].lower()}.")
+        reason = req_str(p, "reason", 2000)
+        n = self._update_versioned(ctx, stock_replenishment_drafts, o,
+                                   {"status": "dismissed", "decision_note": reason})
+        ctx.log("stock_replenishment_draft", o["id"], auth, o["version"], n["version"],
+                {"status": "dismissed", "reason": reason})
+        return {"draft": self.v_replen_draft(n)}
+
     # ------------------------------------------------------------ потребность
     def _need_generate(self, ctx, p, ev):
         """Потребность из ПОСЛЕДНЕЙ зафиксированной версии расчёта комплекта (снимок строк без цен)."""
@@ -1814,7 +2004,8 @@ class StockMixin:
         out: dict[str, Any] = {"warehouses": [], "stock_items": [], "stock_balances": [], "stock_reservations": [],
                                "stock_movements": [], "stock_movements_truncated": False, "needs": [], "stock_projects": [],
                                "need_candidates": [], "item_aliases": [], "unit_conversions": [],
-                               "stock_transfers": [], "stock_adjustments": [], "transfer_proposals": []}
+                               "stock_transfers": [], "stock_adjustments": [], "transfer_proposals": [],
+                               "replenishment_rules": [], "replenishment_drafts": []}
         can_stock = self.policy.can(conn, uid, "stock.read", now)
         if can_stock:
             out["warehouses"] = [self.v_warehouse(dict(r._mapping)) for r in conn.execute(sa.select(warehouses).order_by(warehouses.c.code))]
@@ -1888,6 +2079,12 @@ class StockMixin:
                     or self.policy.can(conn, uid, "proposal.propose", now, r.to_project_id)
                     or (r.from_project_id and self.policy.can(conn, uid, "proposal.propose", now, r.from_project_id))):
                 out["transfer_proposals"].append(self.v_proposal(dict(r._mapping)))
+        if can_stock:
+            out["replenishment_rules"] = [self.v_replen_rule(dict(r._mapping)) for r in conn.execute(
+                sa.select(stock_replenishment_rules).order_by(stock_replenishment_rules.c.created_at))]
+            out["replenishment_drafts"] = [self.v_replen_draft(dict(r._mapping)) for r in conn.execute(
+                sa.select(stock_replenishment_drafts).order_by(stock_replenishment_drafts.c.created_at.desc(),
+                                                               stock_replenishment_drafts.c.id))]
         # Кандидаты для «Сформировать потребность»: последняя зафиксированная версия каждого комплекта, по которой
         # потребности ещё нет. Без цен и сумм — закупке нужен только факт версии (A-22).
         out["need_candidates"] = []

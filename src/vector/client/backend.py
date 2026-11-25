@@ -583,7 +583,8 @@ class Backend(QObject):
             st.get("stock_reservations") or [], st.get("stock_movements") or [], st.get("stock_projects") or [],
             self._people, self._last_pull, self._online and self._session_mode == "online", self._me.get("roles", []),
             st.get("stock_transfers") or [], st.get("config") or [], st.get("stock_adjustments") or [],
-            self._me.get("user_id"), st.get("transfer_proposals") or []))
+            self._me.get("user_id"), st.get("transfer_proposals") or [],
+            st.get("replenishment_rules") or [], st.get("replenishment_drafts") or []))
 
     @Property("QVariantMap", notify=dataChanged)
     def needsOverview(self):

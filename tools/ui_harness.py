@@ -362,6 +362,19 @@ def main():
         sp.setProperty("tab", "proposals")
         h.wait_idle()
         h.shot(out / f"{theme}-74-stock-proposals.png")
+        # Пополнение расходников (D-79): правило на НШВИ-1.5 (СК-2): ниже 300 → пополнить до 1000. Доступно 200 —
+        # черновик на 800 создан системой; склад уже подтвердил, ждём закупку.
+        h.backend.execute("t", "stock.replen_rule_set",
+                          {"id": str(uuid.uuid4()), "warehouse_id": h.ids["warehouses"]["СК-2"],
+                           "item_id": h.ids["items"]["НШВИ-1.5"], "min_qty": "300", "target_qty": "1000"}, 0)
+        h.wait_idle()
+        ov = _plain(sp.property("ov"))
+        _draft = ov["replen_drafts"][0]
+        h.backend.execute("t", "stock.replen_confirm", {"id": _draft["id"]}, _draft["version"])
+        h.wait_idle()
+        sp.setProperty("tab", "replenishment")
+        h.wait_idle()
+        h.shot(out / f"{theme}-75-stock-replenishment.png")
         sp.setProperty("tab", "balances")
         h.wait_idle()
         h.backend.logout()

@@ -113,6 +113,8 @@ STOCK_META = ("stock_balances", "stock_reservations", "stock_movements", "stock_
               "stock_adjustments",
               # D-78: предложения перемещения между проектами.
               "transfer_proposals",
+              # D-79: правила пополнения расходников и черновые позиции.
+              "replenishment_rules", "replenishment_drafts",
               "delegations", "role_coverage", "project_deputies", "notifications",
               # D-36: состав изделий из зафиксированных версий расчёта (без цен) — для ТП; исполнители «Производства».
               "tech_specs", "production_kits", "production_staff",

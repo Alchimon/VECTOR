@@ -34,6 +34,12 @@ def _call(obj, method, *args):
     QMetaObject.invokeMethod(obj, method, *[Q_ARG("QVariant", a) for a in args])
 
 
+def _find_visual(ui, name):
+    """Элемент по objectName в ВИЗУАЛЬНОМ дереве (ui.items обходит и делегаты Repeater, которых нет
+    в QObject-дереве окна)."""
+    return next(i for i in ui.items("objectName") if i.objectName() == name and i.isVisible())
+
+
 def _popup_in(root, name):
     """Всплывающее окно по objectName ВНУТРИ данной страницы — после перелогина в дереве могут остаться
     одноимённые формы уже закрытой страницы (поиск по всему окну находит мёртвый экземпляр)."""
@@ -661,3 +667,69 @@ def test_transfer_proposal_flow(ui):
     QMetaObject.invokeMethod(wd, "confirmed")
     ui.wait_idle()
     assert all(r["status"] != "proposed" for r in _v(page, "ov")["proposals"])
+
+
+def test_replenishment_rule_and_draft_flow(ui):
+    """Пополнение расходника по порогу (D-79): склад задаёт правило с карточки позиции — остаток уже ниже порога,
+    черновик появляется сразу; подтверждают склад и закупка (два подтверждения), затем склад отклоняет новый."""
+    # Склад: карточка ДД (на складе 0 шт) → правило «ниже 2 → пополнить до 6».
+    ui.login("i.belova")
+    page = _stock_page(ui)
+    dd = _item(ui, "ДД")
+    page.setProperty("selectedId", dd["id"])
+    ui.wait_idle()
+    rf = _popup_in(page, "ruleForm")
+    _call(rf, "openFor", dd)
+    ui.wait_idle()
+    assert rf.property("rule") is None and rf.property("canConfirm") is False    # умолчаний нет (Q2)
+    _popup_in(page, "rrMin").setProperty("text", "2")
+    _popup_in(page, "rrTarget").setProperty("text", "2")
+    ui.wait_idle()
+    assert rf.property("canConfirm") is False                                   # «пополнить до» должно быть больше порога
+    _popup_in(page, "rrTarget").setProperty("text", "6")
+    ui.wait_idle()
+    assert rf.property("canConfirm") is True
+    QMetaObject.invokeMethod(rf, "confirmed")
+    ui.wait_idle()
+    # Правило появилось, черновик создан сразу (доступно 0 < 2): пополнить на 6 шт.
+    page.setProperty("tab", "replenishment")
+    ui.wait_idle()
+    ov = _v(page, "ov")
+    assert ov["summary"]["replen_open"] == 1
+    rule = ov["replen_rules"][0]
+    assert (rule["item_code"], rule["min_label"], rule["target_label"], rule["enabled"]) == \
+        ("ДД", "2 шт", "6 шт", True)
+    row = ov["replen_drafts"][0]
+    assert (row["status"], row["qty_label"]) == ("open", "6 шт")
+    assert row["can_confirm_wh"] is True and row["can_confirm_pr"] is False
+    # Склад подтверждает свою сторону кнопкой в строке.
+    ui.click(_find_visual(ui, "btnReplenConfirm"))
+    row = _v(page, "ov")["replen_drafts"][0]
+    assert row["status"] == "open" and row["wh_confirmer"] != "" and row["pr_confirmer"] == ""
+    # Закупка подтверждает вторую сторону → подтверждён.
+    ui.login("s.morozov")
+    ui.go("stock")
+    page = _stock_page(ui)
+    page.setProperty("tab", "replenishment")
+    ui.wait_idle()
+    row = _v(page, "ov")["replen_drafts"][0]
+    assert row["can_confirm_pr"] is True and row["can_confirm_wh"] is False     # склад уже подтвердил
+    ui.click(_find_visual(ui, "btnReplenConfirm"))
+    row = _v(page, "ov")["replen_drafts"][0]
+    assert row["status"] == "confirmed" and row["status_label"] == "Подтверждён"
+    # Правило можно отключить кнопкой «Изменить» — история черновиков сохраняется.
+    ui.login("i.belova")
+    ui.go("stock")
+    page = _stock_page(ui)
+    page.setProperty("tab", "replenishment")
+    ui.wait_idle()
+    ui.click(_find_visual(ui, "btnRuleEdit"))
+    rf = _popup_in(page, "ruleForm")
+    assert rf.property("rule") is not None
+    _popup_in(page, "rrEnabled").setProperty("checked", False)
+    ui.wait_idle()
+    QMetaObject.invokeMethod(rf, "confirmed")
+    ui.wait_idle()
+    ov = _v(page, "ov")
+    assert ov["replen_rules"][0]["enabled"] is False
+    assert len(ov["replen_drafts"]) == 1                                        # история не удалена

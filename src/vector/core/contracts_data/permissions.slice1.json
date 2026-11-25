@@ -1,5 +1,5 @@
 {
- "contract": "permissions-slice1-v39",
+ "contract": "permissions-slice1-v40",
  "notes": [
   "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
   "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -949,6 +949,56 @@
    ],
    "assumption": "A-62",
    "note": "Совместное решение (С4 шаг 4): accept — склад (проверяется как stock.reserve), order — закупка (как po.create), reject — любая из сторон. Решение одно; вторая сторона и автор — уведомлением."
+  },
+  "stock.replen_rule_set": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    }
+   ],
+   "note": "Правило пополнения расходника задаёт склад (порог и количество — без умолчаний, Q2)."
+  },
+  "stock.replen_rule_update": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    }
+   ],
+   "note": "Изменяет и отключает правило склад; история черновиков сохраняется."
+  },
+  "stock.replen_confirm": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    },
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "note": "Два подтверждения: склад (как stock.receive) и закупка (как po.create); каждая сторона — один раз."
+  },
+  "stock.replen_dismiss": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    },
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "note": "Отклоняет любая из двух сторон, причина обязательна."
   },
   "need.generate": {
    "any_of": [
