@@ -154,5 +154,53 @@ class TestCommandModuleMap(unittest.TestCase):
                     "delegation.create", "notification.read", "org.unit_create"):
             self.assertIsNone(M.command_module(cmd))
 
+
+class TestVerifierRegistry(unittest.TestCase):
+    """Сменный алгоритм подписи (D-86): лицензии в профиле ГОСТ проверяет СКЗИ площадки через register_verifier;
+    неизвестный алгоритм — честный отказ, а не «прошло молча»."""
+
+    def setUp(self):
+        self.key = make_key()
+        self.pub_pem = pub_pem(self.key)
+
+    def tearDown(self):
+        M._VERIFIERS.pop("toy-hmac", None)                              # не оставляем следов между тестами
+
+    def test_unknown_alg_rejected(self):
+        doc = json.loads(lic_text(self.key, alg="gost-34.10-2012-256"))
+        with self.assertRaises(M.LicenseError) as cm:
+            M.load_license(json.dumps(doc), self.pub_pem)
+        self.assertEqual(cm.exception.code, "unsupported_alg")
+
+    def test_custom_verifier_via_registry(self):
+        import hashlib
+        import hmac as hmac_mod
+        secret = b"stand-in for an external GOST provider"               # тестовый «провайдер» вместо СКЗИ
+
+        def toy_verify(payload: bytes, signature: bytes, public_key_pem: bytes) -> bool:
+            return hmac_mod.compare_digest(hmac_mod.new(secret, payload, hashlib.sha256).digest(), signature)
+
+        M.register_verifier("toy-hmac", toy_verify)
+        payload = {"license_id": "L-GOST-1", "customer": "ООО «КИИ»", "issued_at": "2026-11-25",
+                   "kind": "perpetual", "modules": ["pdm"], "seats": None, "alg": "toy-hmac", "key_id": "g1"}
+        import base64
+        sig = base64.b64encode(hmac_mod.new(secret, M.canonical_payload(payload), hashlib.sha256).digest()).decode()
+        lic = M.load_license(json.dumps({"payload": payload, "signature": sig}), b"unused-public")
+        self.assertEqual((lic.alg, lic.kind), ("toy-hmac", "perpetual"))
+        # Неверная подпись — отказ даже с зарегистрированным алгоритмом.
+        bad = dict(payload, seats=5)
+        with self.assertRaises(M.LicenseError) as cm:
+            M.load_license(json.dumps({"payload": bad, "signature": sig}), b"unused-public")
+        self.assertEqual(cm.exception.code, "bad_signature")
+
+    def test_builtin_alg_cannot_be_overridden(self):
+        with self.assertRaises(M.LicenseError):
+            M.register_verifier("ed25519", lambda p, s, k: True)
+
+    def test_public_key_as_pem_bytes_and_str(self):
+        lic1 = M.load_license(lic_text(self.key), self.pub_pem)          # bytes
+        lic2 = M.load_license(lic_text(self.key), self.pub_pem.decode("ascii"))  # str
+        self.assertEqual(lic1.license_id, lic2.license_id)
+
 if __name__ == "__main__":
     unittest.main()

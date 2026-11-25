@@ -30,6 +30,12 @@
 Канонический JSON: json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False). Подписывает
 вендор (tools/make_license.py — для стенда; боевой ключ хранится у вендора, НЕ в репозитории). ``key_id`` позволяет
 сменить ключ, не перевыпуская старые лицензии.
+
+Алгоритм подписи — сменный (D-86, ФСТЭК/КИИ — 54-compliance-fstek.md § 3.1): поле ``alg`` в payload, реестр
+верификаторов ``register_verifier``. Встроенный — ``ed25519``. Для заказчиков с КИИ вендор выпускает лицензию в
+профиле ГОСТ Р 34.10-2012, а проверку выполняет СЕРТИФИЦИРОВАННЫЙ СКЗИ площадки (КриптоПро CSP / ViPNet) —
+свою реализацию ГОСТ мы не пишем (без сертификата она юридического веса не имеет). Лицензия с алгоритмом без
+зарегистрированного верификатора отклоняется честно (``unsupported_alg``), а не «проходит молча».
 """
 from __future__ import annotations
 
@@ -134,6 +140,33 @@ MODULE_STATE_LABELS_RU = {
 }
 
 
+# ---------------------------------------------------------------- верификаторы подписи (D-86)
+
+Verifier = Any  # Callable[[payload_bytes: bytes, signature: bytes, public_key_pem: bytes], bool]
+
+
+def _verify_ed25519(payload: bytes, signature: bytes, public_key_pem: bytes) -> bool:
+    """Встроенный верификатор: Ed25519 (cryptography). Невалидная подпись/ключ → False (не исключение)."""
+    from cryptography.hazmat.primitives import serialization
+    try:
+        key = serialization.load_pem_public_key(public_key_pem)
+        key.verify(signature, payload)
+        return True
+    except Exception:
+        return False
+
+
+_VERIFIERS: dict[str, Verifier] = {"ed25519": _verify_ed25519}
+
+
+def register_verifier(alg: str, fn: Verifier) -> None:
+    """Зарегистрировать верификатор алгоритма подписи (например, профиль ГОСТ через СКЗИ площадки — адаптер
+    вызывает внешний провайдер и НЕ входит в поставку). Переопределение встроенного ed25519 запрещено."""
+    if alg == "ed25519" or not alg or len(alg) > 64:
+        raise LicenseError("bad_schema", f"Недопустимый идентификатор алгоритма: {alg!r}")
+    _VERIFIERS[alg] = fn
+
+
 @dataclass(frozen=True)
 class License:
     """Разобранная и проверенная подписью лицензия (содержимое payload)."""
@@ -147,6 +180,7 @@ class License:
     seats: Optional[int]                        # именных мест; None — без ограничения (площадка)
     grace_days: int = DEFAULT_GRACE_DAYS
     key_id: str = "dev"
+    alg: str = "ed25519"                          # алгоритм подписи (D-86); профиль ГОСТ — через register_verifier
 
 
 def _parse_date(value: Any, field_name: str) -> date:
@@ -202,6 +236,7 @@ def parse_license_payload(payload: Any) -> License:
         modules=frozenset(m for m in raw_modules if m in MODULE_BY_ID),
         seats=seats, grace_days=grace,
         key_id=_req_str(payload, "key_id", 32) if payload.get("key_id") is not None else "dev",
+        alg=_req_str(payload, "alg", 64) if payload.get("alg") is not None else "ed25519",
     )
 
 
@@ -211,7 +246,10 @@ def canonical_payload(payload: dict) -> bytes:
 
 
 def load_license(text: str, public_key: Any) -> License:
-    """Разбор файла лицензии: JSON → подпись Ed25519 публичным ключом вендора → схема. Без сети."""
+    """Разбор файла лицензии: JSON → схема (узнать alg) → подпись верификатором алгоритма → объект. Без сети.
+
+    public_key — PEM публичного ключа вендора (bytes/str) или готовый ключ Ed25519 (обратная совместимость
+    со стендом). Верификатор получает PEM: профиль ГОСТ решает СКЗИ площадки, а не наш код."""
     try:
         doc = json.loads(text)
     except (ValueError, UnicodeDecodeError):
@@ -225,12 +263,23 @@ def load_license(text: str, public_key: Any) -> License:
         signature = base64.b64decode(sig_raw, validate=True)
     except (binascii.Error, ValueError):
         raise LicenseError("bad_schema", "Подпись лицензии — не base64.") from None
-    try:
-        public_key.verify(signature, canonical_payload(doc["payload"]))
-    except Exception:
+    lic = parse_license_payload(doc["payload"])
+    verifier = _VERIFIERS.get(lic.alg)
+    if verifier is None:
+        raise LicenseError("unsupported_alg",
+                           f"Алгоритм подписи лицензии «{lic.alg}» этой установкой не поддерживается. "
+                           "Для профиля ГОСТ нужен сертифицированный СКЗИ — обратитесь к поставщику.")
+    if isinstance(public_key, str):
+        public_key = public_key.encode("utf-8")
+    if not isinstance(public_key, bytes):
+        # Обратная совместимость: готовый объект ключа Ed25519 → PEM.
+        from cryptography.hazmat.primitives import serialization
+        public_key = public_key.public_bytes(serialization.Encoding.PEM,
+                                             serialization.PublicFormat.SubjectPublicKeyInfo)
+    if not verifier(canonical_payload(doc["payload"]), signature, public_key):
         raise LicenseError("bad_signature",
-                           "Подпись лицензии не прошла проверку — файл изменён или выдан не вендором.") from None
-    return parse_license_payload(doc["payload"])
+                           "Подпись лицензии не прошла проверку — файл изменён или выдан не вендором.")
+    return lic
 
 
 # ---------------------------------------------------------------- состояние
