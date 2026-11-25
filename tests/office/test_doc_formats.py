@@ -129,3 +129,44 @@ class TestDocx:
             assert {"[Content_Types].xml", "_rels/.rels", "word/document.xml", "word/styles.xml"} <= set(z.namelist())
             ET.fromstring(z.read("word/document.xml"))          # валидный XML
             ET.fromstring(z.read("word/styles.xml"))
+
+
+class TestTemplate:
+    """Поля-подстановки (Ф1.3-ядро): {{project.code}} из контекста платформы; неизвестное — маркер остаётся."""
+
+    def test_render_act(self):
+        from vector.office.template import render_template
+        tpl = Document(title="Акт {{doc.number}}")
+        tpl.para("Акт по проекту {{project.code}} от {{today}}", style="heading", level=2)
+        t = tpl.table(1, 2)
+        t.rows[0][0][0].add("Заказчик: {{customer.name}}")
+        t.rows[0][1][0].add("Сумма: {{project.budget}} ₽")
+        data = write_vdocx(tpl)
+        out, missing = render_template(data, {
+            "project": {"code": "ПР-2026-017", "budget": "1 240 000,00"},
+            "customer": {"name": "ООО «Заказчик»"},
+            "today": "25.11.2026", "doc": {"number": "17"}})
+        assert missing == []
+        back = read_vdocx(out)
+        assert back.title == "Акт 17"
+        assert back.blocks[0].text == "Акт по проекту ПР-2026-017 от 25.11.2026"
+        assert back.blocks[0].style == "heading"          # начертание сохранено
+        tbl = next(b for b in back.blocks if isinstance(b, TableBlock))
+        assert tbl.cell_text(0, 0) == "Заказчик: ООО «Заказчик»"
+        assert tbl.cell_text(0, 1) == "Сумма: 1 240 000,00 ₽"
+
+    def test_missing_field_stays_visible(self):
+        from vector.office.template import render_template
+        tpl = Document()
+        tpl.para("Проект {{project.code}}, ответственный {{project.lead}}")
+        out, missing = render_template(write_vdocx(tpl), {"project": {"code": "ПР-1"}})
+        assert missing == ["project.lead"]
+        assert "{{project.lead}}" in read_vdocx(out).blocks[0].text   # не затёрли молча
+
+    def test_bool_and_none(self):
+        from vector.office.template import render_template
+        tpl = Document()
+        tpl.para("Срочный: {{flags.urgent}}; примечание: {{note}}")
+        out, missing = render_template(write_vdocx(tpl), {"flags": {"urgent": True}, "note": None})
+        assert missing == ["note"]                                   # None — поля нет
+        assert "Срочный: да" in read_vdocx(out).text
