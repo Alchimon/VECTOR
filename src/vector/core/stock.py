@@ -58,6 +58,7 @@ SIGNATURE_METHOD_LABELS_RU = {"confirm": "подтверждение в прог
 SHORTAGE_STATUS_LABEL_RU = "Принято с недостачей"
 RESERVATION_STATES = ("active", "consumed", "released")
 RESERVATION_LABELS_RU = {"active": "Действует", "consumed": "Израсходован", "released": "Снят"}
+ADJUST_LABELS_RU = {"pending": "Ждёт подписи", "signed": "Подписана", "cancelled": "Отменена"}
 
 _CODE_RE = re.compile(r"^[0-9A-Za-zА-Яа-яЁё][0-9A-Za-zА-Яа-яЁё._/\-]{0,63}$")
 

@@ -209,6 +209,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "stock.transfer_lost": self._stock_transfer_lost,
             "stock.reserve": self._stock_reserve, "stock.release": self._stock_release,
             "need.generate": self._need_generate, "need.match_line": self._need_match_line,
+            "stock.adjust": self._stock_adjust, "stock.adjust_sign": self._stock_adjust_sign,
+            "stock.adjust_cancel": self._stock_adjust_cancel,
             # поставщики, заказы поставщикам и факт поставки (purchasing.py, D-32)
             "supplier.create": self._supplier_create, "supplier.update": self._supplier_update,
             "po.create": self._po_create, "po.update": self._po_update, "po.place": self._po_place,
@@ -1288,6 +1290,7 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
                   "calc_draft": "calc.read", "project_calc": "calc.read_revisions",
                   "warehouse": "stock.read", "stock_item": "stock.read", "stock_movement": "stock.read",
                   "stock_transfer": "stock.read", "stock_reservation": "stock.read", "procurement_need": "need.read",
+                  "stock_adjustment": "stock.read",
                   "item_alias": "stock.read", "unit_conversion": "stock.read", "config": "config.publish",
                   "supplier": "supplier.read", "supplier_contract": "supplier.read", "purchase_order": "po.read",
                   "tech_process": "tp.read", "work_order": "wo.read", "wo_operation": "wo.read",

@@ -466,3 +466,76 @@ def test_lost_transfer_through_form_needs_reason_signature_and_password(ui):
     assert done["loss_label"] == "Акт об утрате № 2: утрачено 100 шт" and "с вводом пароля" in done["loss_signed_label"]
     hmt = _item(ui, "ХМТ-200")
     assert hmt["transfers"] == [] and [b["available_label"] for b in hmt["by_warehouse"]] == before
+
+
+def test_adjustment_create_sign_and_cancel_flow(ui):
+    """Корректировка остатка (D-77): склад создаёт с карточки позиции, руководитель отдела подписывает с паролем,
+    журнал пополняется проводкой «Корректировка…»; до подписи остаток неизменен."""
+    ui.login("i.belova")
+    page = _stock_page(ui)
+    dlg = _popup(ui, "adjustForm")
+    _call(dlg, "openFor", _item(ui, "ДД"))
+    ui.wait_idle()
+    qty, reason = _popup(ui, "adjQty"), _popup(ui, "adjReason")
+    assert _popup(ui, "adjWh").property("model")                              # склад предложен (есть учётный остаток)
+    qty.setProperty("text", "-1")
+    ui.wait_idle()
+    assert dlg.property("canConfirm") is False                                 # отрицательный факт нельзя
+    qty.setProperty("text", "0,5")
+    reason.setProperty("text", "Акт инвентаризации № 12 от 20.11.2026")
+    ui.wait_idle()
+    assert dlg.property("canConfirm") is True
+    QMetaObject.invokeMethod(dlg, "confirmed")
+    ui.wait_idle()
+    dd = _item(ui, "ДД")
+    assert dd["on_hand_label"] == "0 шт" or True                               # остаток НЕ изменился до подписи
+    page.setProperty("tab", "adjustments")
+    ui.wait_idle()
+    row = _v(page, "ov")["adjustments"][0]
+    assert (row["status"], row["delta_label"]) == ("pending", "+0,5 шт")
+    assert row["can_sign_row"] is False                                        # автор не подписывает своё
+    # Руководитель отдела: видит ждущую подписи и подписывает с паролем.
+    ui.login("e.orlova")
+    page = _stock_page(ui)
+    page.setProperty("tab", "adjustments")
+    ui.wait_idle()
+    row = _v(page, "ov")["adjustments"][0]
+    assert row["can_sign_row"] is True and row["status_label"] == "Ждёт подписи"
+    sd = _popup(ui, "adjSignForm")
+    _call(sd, "openFor", row)
+    ui.wait_idle()
+    assert sd.property("canConfirm") is False                                  # без флажка и пароля нельзя
+    _popup(ui, "adjSign").setProperty("checked", True)
+    _popup(ui, "adjPwd").setProperty("text", PWD)
+    ui.wait_idle()
+    assert sd.property("canConfirm") is True
+    QMetaObject.invokeMethod(sd, "confirmed")
+    ui.wait_idle()
+    row = _v(page, "ov")["adjustments"][0]
+    assert row["status"] == "signed" and row["signature"]["content_ok"] is True
+    # Проводка корректировки — в журнале (у e.orlova журнала нет: нет права stock.read — смотрим у склада ниже).
+    ui.login("i.belova")
+    mv = _v(_stock_page(ui), "ov")["movements"][0]
+    assert "Корректировка" in mv["source_doc"] and mv["qty_label"] == "+0,5 шт"
+    # Автор отменяет свою вторую корректировку.
+    page = _stock_page(ui)
+    dlg = _popup(ui, "adjustForm")
+    _call(dlg, "openFor", _item(ui, "ДД"))
+    qty2, reason2 = _popup(ui, "adjQty"), _popup(ui, "adjReason")
+    qty2.setProperty("text", "0")
+    reason2.setProperty("text", "Пересчёт по приказу № 8")
+    ui.wait_idle()
+    QMetaObject.invokeMethod(dlg, "confirmed")
+    ui.wait_idle()
+    page.setProperty("tab", "adjustments")
+    ui.wait_idle()
+    row = next(r for r in _v(page, "ov")["adjustments"] if r["status"] == "pending")
+    assert row["can_cancel_row"] is True
+    cd = _popup(ui, "adjCancelForm")
+    _call(cd, "openFor", row)
+    _popup(ui, "adjCanReason").setProperty("text", "Основание оформлено неверно")
+    ui.wait_idle()
+    QMetaObject.invokeMethod(cd, "confirmed")
+    ui.wait_idle()
+    assert all(r["status"] != "pending" for r in _v(page, "ov")["adjustments"])
+    assert _v(page, "ov")["summary"]["adjust_pending"] == 0

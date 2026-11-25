@@ -55,7 +55,7 @@ from .db import (calc_version_lines, calc_versions, item_aliases, kits, procurem
                  procurement_allocations, procurement_batch_lines, procurement_batches,
                  procurement_need_line_match_units, procurement_need_line_matches, procurement_need_lines,
                  procurement_needs, projects, purchase_order_lines, purchase_orders, unit_conversions, signatures,
-                 stock_balances, stock_item_packs, stock_items, stock_movements, stock_reservations,
+                 stock_adjustments, stock_balances, stock_item_packs, stock_items, stock_movements, stock_reservations,
                  stock_shipment_losses, stock_shipment_terms, stock_shipments, stock_transfer_acts,
                  stock_transfers, users, warehouses, work_order_issues)
 from . import security
@@ -1149,6 +1149,152 @@ class StockMixin:
                  **(extra or {})})
         return n, nb
 
+    # ------------------------------------------------------------ корректировка остатка (D-77)
+    @staticmethod
+    def v_adjustment(o: dict) -> dict:
+        """Корректировка остатка для клиента: склад+позиция, снимок «было», факт «стало», разница, основание,
+        статус (pending — ждёт подписи руководителя отдела; signed — проведена; cancelled — отменена автором)."""
+        return {"id": o["id"], "warehouse_id": o["warehouse_id"], "item_id": o["item_id"],
+                "new_qty": money.to_json(o["new_qty"]), "on_hand": money.to_json(o["on_hand"]),
+                "delta": money.to_json(o["delta"]), "reason": o["reason"], "status": o["status"],
+                # Содержание подписи (коды справочников, не id) — клиент проверяет content_ok подписи по нему.
+                "content": {"adjustment_id": o["id"], "warehouse_code": o.get("_warehouse_code"),
+                            "item_code": o.get("_item_code"), "on_hand": money.to_json(o["on_hand"]),
+                            "new_qty": money.to_json(o["new_qty"]), "delta": money.to_json(o["delta"]),
+                            "reason": o["reason"], "signer_name": o.get("_signer_name")},
+                "status_label": stock.ADJUST_LABELS_RU[o["status"]], "requested_by": o["requested_by"],
+                "requested_at": iso(o["requested_at"]), "movement_id": o["movement_id"],
+                "signed_by": o["signed_by"], "signed_at": iso(o["signed_at"]),
+                "cancelled_by": o["cancelled_by"], "cancel_reason": o["cancel_reason"], "version": o["version"]}
+
+    @staticmethod
+    def _adjust_content(o: dict, w: dict, it: dict, signer_name: str) -> dict:
+        """Содержание подписи корректировки (что именно подписал руководитель): пара склад+позиция КОДАМИ,
+        снимок «было», факт «стало», разница, основание и подписант. Хэш этого содержания — в строке подписи."""
+        return {"adjustment_id": o["id"], "warehouse_code": w["code"], "item_code": it["code"],
+                "on_hand": money.to_json(o["on_hand"]), "new_qty": money.to_json(o["new_qty"]),
+                "delta": money.to_json(o["delta"]), "reason": o["reason"], "signer_name": signer_name}
+
+    def _stock_adjust(self, ctx, p, ev):
+        """stock.adjust {id, warehouse_id, item_id, new_qty, reason} — корректировка остатка по акту
+        (инвентаризация). Склад создаёт запись со снимком текущего остатка; движение журнала появляется ТОЛЬКО
+        после подписи руководителя отдела (stock.adjust_sign) — до подписи ничего не проведено (D-77).
+
+        new_qty — фактический остаток по пересчёту (≥ 0; 0 — «совсем нет»); delta вычисляется сервером.
+        Отказы: остаток уже равен факту (no_change), незакрытая корректировка этой же пары склад+позиция
+        (adjust_pending_exists) — сначала подпишите или отмените её.
+        """
+        only_keys(p, {"id", "warehouse_id", "item_id", "new_qty", "reason"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "stock.adjust", ctx.now)
+        aid = req_uuid(p, "id")
+        self._ensure_new(ctx.conn, stock_adjustments, aid)
+        w, it = self._wh_item(ctx, p, for_new_stock=True)
+        try:
+            new_qty = money.parse_decimal(p.get("new_qty"))
+        except money.MoneyError as e:
+            raise Rejected(e.code, e.message_ru, {"field": "new_qty"}) from e
+        if new_qty < 0:
+            raise Rejected("qty_negative", "Фактический остаток не может быть отрицательным.", {"field": "new_qty"})
+        reason = req_str(p, "reason", 2000)
+        _, b = self._load_balance(ctx.conn, w["id"], it["id"])
+        if new_qty == b.on_hand:
+            raise Rejected("no_change", "Фактический остаток совпадает с учётным — корректировка не нужна.",
+                           {"field": "new_qty"})
+        pending = ctx.conn.execute(sa.select(stock_adjustments.c.id).where(
+            stock_adjustments.c.warehouse_id == w["id"], stock_adjustments.c.item_id == it["id"],
+            stock_adjustments.c.status == "pending")).first()
+        if pending:
+            raise Rejected("adjust_pending_exists", "По этой позиции на этом складе уже есть корректировка, "
+                           "ждущая подписи, — сначала подпишите или отмените её.")
+        ctx.conn.execute(stock_adjustments.insert().values(
+            id=aid, warehouse_id=w["id"], item_id=it["id"], new_qty=new_qty, on_hand=b.on_hand,
+            delta=new_qty - b.on_hand, reason=reason, status="pending", requested_by=ctx.user_id,
+            requested_at=ctx.now, movement_id=None, signed_by=None, signed_at=None, cancelled_by=None,
+            cancelled_at=None, cancel_reason=None, version=1))
+        ctx.log("stock_adjustment", aid, auth, None, 1,
+                {"warehouse_code": w["code"], "item_code": it["code"], "on_hand": money.to_json(b.on_hand),
+                 "new_qty": money.to_json(new_qty), "reason": reason})
+        # Руководителям отдела — ожидающая подписи корректировка (D-77).
+        self._notify(ctx, self._users_with_role(ctx.conn, "dept_head", ctx.now), "stock_adjust_pending",
+                     "Корректировка остатка ждёт подписи",
+                     f"{w['code']} · {it['code']}: учётный {money.to_json(b.on_hand)} → факт {money.to_json(new_qty)}. "
+                     f"Основание: {reason}", "stock_adjustment", aid)
+        return {"adjustment": self.v_adjustment(self._get(ctx.conn, stock_adjustments, aid))}
+
+    def _stock_adjust_sign(self, ctx, p, ev):
+        """stock.adjust_sign {id, sign_act, sign_password?} + версия — подписать корректировку (руководитель
+        отдела, не автор — четыре глаза). Подпись проводит движение журнала (приход или выдача на |delta|) и
+        меняет остаток в той же транзакции.
+
+        Предохранители (fail-closed): остаток к моменту подписи должен совпадать со снимком — иначе отказ
+        stale_balance (создайте корректировку заново); фактический остаток не может быть меньше активных
+        резервов по этой паре (adjust_below_reserved) — иначе доступное ушло бы в минус.
+        """
+        only_keys(p, {"id", "sign_act", "sign_password"})
+        o = self._require(ctx.conn, stock_adjustments, req_uuid(p, "id"), "Корректировка остатка")
+        if o["requested_by"] == ctx.user_id:
+            # Четыре глаза — до проверки роли: иначе автор получал бы «нет права», а не честное «нельзя своё».
+            raise Rejected("self_decision", "Нельзя подписать корректировку, которую создали вы сами, — "
+                           "подпись ставит руководитель отдела (четыре глаза).")
+        auth = self.policy.check(ctx.conn, ctx.user_id, "stock.adjust_sign", ctx.now)
+        self._check_version(o, ev, self.v_adjustment)
+        if o["status"] != "pending":
+            raise Rejected("adjust_state", f"Корректировка уже {stock.ADJUST_LABELS_RU[o['status']].lower()}.")
+        w = self._get(ctx.conn, warehouses, o["warehouse_id"])
+        it = self._get(ctx.conn, stock_items, o["item_id"])
+        content = self._adjust_content(o, w, it, self._actor_label(ctx, auth))
+        row, b = self._load_balance(ctx.conn, o["warehouse_id"], o["item_id"])
+        if b.on_hand != o["on_hand"]:
+            raise Rejected("stale_balance", f"Остаток изменился с момента создания корректировки (было "
+                           f"{money.to_json(o['on_hand'])}, стало {money.to_json(b.on_hand)}) — отмените её "
+                           "и создайте заново.")
+        if o["new_qty"] < b.reserved:
+            raise Rejected("adjust_below_reserved", f"Фактический остаток {money.to_json(o['new_qty'])} меньше "
+                           f"активных резервов ({money.to_json(b.reserved)}) — сначала снимите резервы.")
+        delta = o["delta"]
+        kind = "receipt" if delta > 0 else "issue"
+        mid = str(uuid.uuid5(uuid.UUID(o["id"]), "movement"))
+        self._ensure_new(ctx.conn, stock_movements, mid)
+        # Выдача корректировки — «из воздуха», а не из доступного: факт фиксируется как есть (резервы при этом
+        # уже проверены выше — доступное в минус не уйдёт).
+        nb = stock.receive(b, delta) if delta > 0 else stock.reverse_receipt(b, -delta)
+        self._save_balance(ctx, o["warehouse_id"], o["item_id"], row, nb)
+        sig = self._sign(ctx, p, "stock_adjustment", o["id"], content)
+        mv = self._post(ctx, auth, mid=mid, kind=kind, w=w, it=it, qty=abs(delta),
+                        source_doc=f"Корректировка (подписал {content['signer_name']})", reason=o["reason"],
+                        details={"adjustment_id": o["id"], "balance_after": nb.to_json()})
+        n = self._update_versioned(ctx, stock_adjustments, o,
+                                   {"status": "signed", "movement_id": mid, "signed_by": ctx.user_id,
+                                    "signed_at": ctx.now})
+        ctx.log("stock_adjustment", o["id"], auth, o["version"], n["version"],
+                {"signed": True, "movement_id": mid, "signature": sig["id"], "delta": money.to_json(delta)})
+        self._notify(ctx, [o["requested_by"]], "stock_adjust_signed",
+                     "Корректировка остатка подписана",
+                     f"{w['code']} · {it['code']}: проведено {money.to_json(o['on_hand'])} → "
+                     f"{money.to_json(o['new_qty'])}.", "stock_adjustment", o["id"])
+        return {"adjustment": self.v_adjustment(n), "movement": mv,
+                "balance": {"warehouse_id": o["warehouse_id"], "item_id": o["item_id"], **nb.to_json()}}
+
+    def _stock_adjust_cancel(self, ctx, p, ev):
+        """stock.adjust_cancel {id, reason} + версия — автор отменяет свою неподписанную корректировку
+        (причина обязательна). Подписанная не отменяется: она уже проведена в журнале — исправляйте новой."""
+        only_keys(p, {"id", "reason"})
+        auth = self.policy.check(ctx.conn, ctx.user_id, "stock.adjust_cancel", ctx.now)
+        o = self._require(ctx.conn, stock_adjustments, req_uuid(p, "id"), "Корректировка остатка")
+        self._check_version(o, ev, self.v_adjustment)
+        if o["status"] != "pending":
+            raise Rejected("adjust_state", "Отменить можно только корректировку, ждущую подписи, — "
+                           "подписанная уже проведена в журнале.")
+        if o["requested_by"] != ctx.user_id:
+            raise Rejected("not_author", "Отменить корректировку может только её автор.")
+        cancel_reason = req_str(p, "reason", 2000)
+        n = self._update_versioned(ctx, stock_adjustments, o,
+                                   {"status": "cancelled", "cancelled_by": ctx.user_id, "cancelled_at": ctx.now,
+                                    "cancel_reason": cancel_reason})
+        ctx.log("stock_adjustment", o["id"], auth, o["version"], n["version"],
+                {"cancelled": True, "cancel_reason": cancel_reason})
+        return {"adjustment": self.v_adjustment(n)}
+
     # ------------------------------------------------------------ потребность
     def _need_generate(self, ctx, p, ev):
         """Потребность из ПОСЛЕДНЕЙ зафиксированной версии расчёта комплекта (снимок строк без цен)."""
@@ -1445,7 +1591,7 @@ class StockMixin:
         out: dict[str, Any] = {"warehouses": [], "stock_items": [], "stock_balances": [], "stock_reservations": [],
                                "stock_movements": [], "stock_movements_truncated": False, "needs": [], "stock_projects": [],
                                "need_candidates": [], "item_aliases": [], "unit_conversions": [],
-                               "stock_transfers": []}
+                               "stock_transfers": [], "stock_adjustments": []}
         can_stock = self.policy.can(conn, uid, "stock.read", now)
         if can_stock:
             out["warehouses"] = [self.v_warehouse(dict(r._mapping)) for r in conn.execute(sa.select(warehouses).order_by(warehouses.c.code))]
@@ -1492,6 +1638,24 @@ class StockMixin:
             out["stock_projects"] = [{"id": r.id, "code": r.code, "title": r.title, "status": r.status}
                                      for r in conn.execute(sa.select(projects.c.id, projects.c.code, projects.c.title,
                                                                      projects.c.status).order_by(projects.c.code))]
+        # Корректировки остатка (D-77): видят склад/закупка (stock.read) и подписант — руководитель отдела
+        # (stock.adjust_sign): ему нужен список «ждут подписи».
+        if can_stock or self.policy.can(conn, uid, "stock.adjust_sign", now):
+            wh_codes = {r.id: r.code for r in conn.execute(sa.select(warehouses.c.id, warehouses.c.code))}
+            it_codes = {r.id: r.code for r in conn.execute(sa.select(stock_items.c.id, stock_items.c.code))}
+            sigs = {r.object_id: dict(r._mapping) for r in conn.execute(
+                sa.select(signatures).where(signatures.c.object_type == "stock_adjustment"))}
+            adj = []
+            for r in conn.execute(sa.select(stock_adjustments).order_by(stock_adjustments.c.requested_at.desc())):
+                o = dict(r._mapping)
+                sig = sigs.get(o["id"])
+                o["_warehouse_code"] = wh_codes.get(o["warehouse_id"], "?")
+                o["_item_code"] = it_codes.get(o["item_id"], "?")
+                o["_signer_name"] = sig["signer_name"] if sig else None
+                row = self.v_adjustment(o)
+                row["signature"] = _v_signature(sig, row["content"]) if sig else None
+                adj.append(row)
+            out["stock_adjustments"] = adj
         # Кандидаты для «Сформировать потребность»: последняя зафиксированная версия каждого комплекта, по которой
         # потребности ещё нет. Без цен и сумм — закупке нужен только факт версии (A-22).
         out["need_candidates"] = []

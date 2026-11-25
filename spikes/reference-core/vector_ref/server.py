@@ -128,6 +128,7 @@ OUT_OF_SPIKE_SCOPE = frozenset({
     "calc.save_draft", "calc.freeze",
     "warehouse.create", "warehouse.update", "item.create", "item.update",
     "stock.receive", "stock.issue", "stock.reverse", "stock.reserve", "stock.release", "need.generate", "need.match_line", "config.publish",
+    "stock.adjust", "stock.adjust_sign", "stock.adjust_cancel",
     "item_alias.create", "item_alias.update", "unit_conversion.create", "unit_conversion.update",
 
     # Этапы 2–7 продукта (D-20…D-76): склад/закупка, производство, качество, оргструктура, рабочее время,

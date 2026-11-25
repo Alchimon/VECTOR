@@ -71,7 +71,7 @@ from vector.core import money
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
 # v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
 #         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
-SCHEMA_VERSION = 40
+SCHEMA_VERSION = 41
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -774,6 +774,34 @@ signatures = sa.Table("signatures", metadata,
     sa.Column("content_sha256", sa.String(64), nullable=False),
     sa.CheckConstraint("method IN ('confirm','password','qes')", name="method"),
     sa.UniqueConstraint("object_type", "object_id", "purpose", name="one_signature"))
+
+# ---------------------------------------------------------------- v41: корректировка остатка (D-77, С4)
+# Инвентаризационная корректировка: склад фиксирует фактический остаток (new_qty) и причину (акт), но движение
+# в журнале появляется только после подписи руководителя отдела (stock.adjust_sign; автор подписать не может —
+# четыре глаза). До подписи корректировку может отменить автор. Два предохранителя в момент подписи: остаток не
+# должен измениться с момента создания (иначе stale_balance — создают заново) и фактический остаток не может быть
+# меньше активных резервов по этой паре склад+позиция (adjust_below_reserved — сначала снимите резервы).
+# Движение — обычный приход/расход журнала на |delta| с источником «Корректировка № …»: таблица движений не
+# меняется (миграции только добавляют, принцип 3 migrate.py). Подпись — строка signatures (object_type
+# 'stock_adjustment') способом из настройки stock.act_signature (D-31).
+stock_adjustments = sa.Table("stock_adjustments", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("warehouse_id", ID, sa.ForeignKey("warehouses.id"), nullable=False),
+    sa.Column("item_id", ID, sa.ForeignKey("stock_items.id"), nullable=False),
+    sa.Column("new_qty", Qty, nullable=False),
+    sa.Column("on_hand", Qty, nullable=False),          # снимок остатка на момент создания
+    sa.Column("delta", Qty, nullable=False),            # new_qty − on_hand (может быть отрицательной)
+    sa.Column("reason", U(2000), nullable=False),       # основание (акт инвентаризации) — обязательно
+    sa.Column("status", U(16), nullable=False),
+    sa.Column("requested_by", ID, nullable=False),
+    sa.Column("requested_at", UtcDateTime, nullable=False),
+    sa.Column("movement_id", ID, sa.ForeignKey("stock_movements.id")),
+    sa.Column("signed_by", ID), sa.Column("signed_at", UtcDateTime),
+    sa.Column("cancelled_by", ID), sa.Column("cancelled_at", UtcDateTime), sa.Column("cancel_reason", U(2000)),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.CheckConstraint("status IN ('pending','signed','cancelled')", name="status"),
+    sa.CheckConstraint("new_qty >= 0", name="new_qty_nonneg"))
+sa.Index("ix_stock_adjustments_pair", stock_adjustments.c.warehouse_id, stock_adjustments.c.item_id)
 
 # ---------------------------------------------------------------- v12: заказы поставщикам (С4 шаг 5, D-32)
 # Поставщики — справочник закупки (как номенклатура: правится офлайн через очередь, код уникален, отключение вместо

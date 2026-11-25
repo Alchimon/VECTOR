@@ -89,7 +89,7 @@ def _state(on_hand: Decimal, reserved: Decimal) -> tuple[str, str, str]:
 
 def overview(warehouses: list, items: list, balances: list, reservations: list, movements: list, projects: list,
              people: dict, last_pull: str, online: bool, roles: list, transfers: Optional[list] = None,
-             config: Optional[list] = None) -> dict:
+             config: Optional[list] = None, adjustments: Optional[list] = None, me_id: Optional[str] = None) -> dict:
     """Экран «Склад»: позиции с остатками по складам, резервы, перемещения «в пути», журнал, подсказки действий.
 
     transfers — перемещения из pull (D-29): все «в пути» и недавние закрытые. Количество «в пути» не входит ни в
@@ -208,6 +208,32 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
                      "in_transit_label": qty_label(str(transit_by_item.get(i["id"], ZERO)), unit),
                      "transfers": [t for t in tr_rows if t["item_id"] == i["id"] and t["status"] == "in_transit"],
                      "movements": [m for m in mv_rows if m["item_id"] == i["id"]][:30]})
+    # Корректировки остатка (D-77): ждущие подписи — сверху (сначала самые старые — они ждут дольше всех),
+    # затем подписанные и отменённые (новые сверху). Подписать может руководитель отдела, но не автор (четыре
+    # глаза); отменить — только автор и только неподписанную.
+    adj_pending = sorted((a for a in adjustments or [] if a["status"] == "pending"),
+                         key=lambda a: a.get("requested_at") or "")
+    adj_rest = sorted((a for a in adjustments or [] if a["status"] != "pending"),
+                      key=lambda a: a.get("requested_at") or "", reverse=True)
+    adj_rows = []
+    for a in adj_pending + adj_rest:
+        i = it.get(a["item_id"], {})
+        unit = i.get("unit", "")
+        delta = _d(a["delta"])
+        adj_rows.append({**a, "item_code": i.get("code", "?"), "item_name": i.get("name", ""), "unit": unit,
+                         "warehouse_code": wh.get(a["warehouse_id"], {}).get("code", "?"),
+                         "on_hand_label": qty_label(a["on_hand"], unit),
+                         "new_qty_label": qty_label(a["new_qty"], unit),
+                         "delta_label": ("+" if delta > 0 else "−") + qty_label(str(abs(delta)), unit),
+                         "status_tone": {"pending": "warning", "signed": "success",
+                                         "cancelled": "neutral"}.get(a["status"], "neutral"),
+                         "author": people.get(a.get("requested_by") or "", ""),
+                         "signer": people.get(a.get("signed_by") or "", ""),
+                         "requested_label": (a.get("requested_at") or "").replace("T", " ")[:16],
+                         "can_sign_row": bool(online and "dept_head" in roles and a["status"] == "pending"
+                                              and a["requested_by"] != me_id),
+                         "can_cancel_row": bool(online and is_wh and a["status"] == "pending"
+                                                and a["requested_by"] == me_id)})
     active_wh = sum(1 for w in warehouses if w.get("active", True) and not w.get("_pending"))
     return {"as_of": as_of_label(last_pull), "online": online, "items": rows,
             "warehouses": [{**w, "pending": bool(w.get("_pending")),
@@ -220,7 +246,11 @@ def overview(warehouses: list, items: list, balances: list, reservations: list, 
             "summary": {"items": len(rows), "with_stock": sum(1 for r in rows if r["state"] != "none"),
                         "active_reservations": sum(1 for r in res_rows if r["status"] == "active"),
                         "in_transit": sum(1 for t in tr_rows if t["status"] == "in_transit"),
-                        "movements": len(mv_rows)},
+                        "movements": len(mv_rows),
+                        "adjust_pending": len(adj_pending)},
+            "adjustments": adj_rows,
+            # Корректировка: создаёт склад при связи; подписывает руководитель отдела при связи (D-77).
+            "can_adjust": is_wh and online, "can_sign_adjust": online and "dept_head" in roles,
             # Подсказки: проводки и резервы — склад и только при связи (online_required); справочники — офлайн тоже.
             "can_post": is_wh and online, "can_edit_refs": is_wh or "procurement" in roles,
             # Перемещать есть куда, только если действующих (уже отправленных на сервер) складов не меньше двух.

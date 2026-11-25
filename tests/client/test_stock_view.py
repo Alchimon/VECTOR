@@ -58,7 +58,8 @@ def test_item_states_totals_and_per_warehouse_rows():
     assert by["ДД"]["state_label"] == "Нет на складе"                          # приход сторнирован → 0
     assert by["ШУ"]["state_label"] == "Всё в резерве"
     assert by["ОЛД"]["state_label"] == "Отключена" and by["ОЛД"]["pending"] is True
-    assert ov["summary"] == {"items": 4, "with_stock": 2, "active_reservations": 1, "in_transit": 0, "movements": 3}
+    assert ov["summary"] == {"items": 4, "with_stock": 2, "active_reservations": 1, "in_transit": 0, "movements": 3,
+                                  "adjust_pending": 0}
     assert {w["code"]: w["item_count"] for w in ov["warehouses"]} == {"СК-1": 2, "СК-2": 1}
 
 

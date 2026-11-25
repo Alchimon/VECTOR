@@ -1,7 +1,7 @@
 """UI-проверки обмена расчётом с Excel (.xlsx, R-31): экспорт текущего черновика в файл,
 импорт с предпросмотром (только после подтверждения), отказ «всё или ничего» при замечаниях."""
 import pytest
-from PySide6.QtCore import QMetaObject, QObject, Q_ARG
+from PySide6.QtCore import QMetaObject, Q_ARG
 
 from vector.core import calc, xlsx
 

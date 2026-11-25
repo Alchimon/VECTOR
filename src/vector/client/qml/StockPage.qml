@@ -16,7 +16,7 @@ import QtQuick.Layouts
 Item {
     id: page
     property var shell
-    property string tab: "balances"          // balances | reservations | journal | refs
+    property string tab: "balances"          // balances | reservations | transit | adjustments | journal | refs
     property string selectedId: ""
     property string search: ""
     readonly property var ov: backend.stockOverview
@@ -51,6 +51,7 @@ Item {
             model: [{ id: "balances", label: "Остатки", icon: "boxes" },
                     { id: "reservations", label: "Резервы (" + (ov.summary ? ov.summary.active_reservations : 0) + ")", icon: "bookmark" },
                     { id: "transit", label: "В пути (" + (ov.summary ? ov.summary.in_transit : 0) + ")", icon: "truck" },
+                    { id: "adjustments", label: "Корректировки (" + (ov.summary ? ov.summary.adjust_pending : 0) + ")", icon: "clipboard-check" },
                     { id: "journal", label: "Журнал движений", icon: "history" },
                     { id: "refs", label: "Справочники", icon: "settings" },
                     { id: "directory", label: "Аналоги и пересчёт", icon: "arrow-left-right" }]
@@ -144,6 +145,7 @@ Item {
                                 VButton { objectName: "btnIssue"; text: "Выдать на проект"; iconName: "package-minus"; enabled: page.canPost && page.sel !== null; onClicked: issueForm.openFor(page.sel) }
                                 VButton { objectName: "btnTransfer"; text: "Отгрузить на склад"; iconName: "arrow-left-right"; enabled: page.canPost && page.sel !== null && ov.can_transfer === true; onClicked: transferForm.openFor(page.sel) }
                                 VButton { objectName: "btnReserve"; text: "Зарезервировать"; kind: "soft"; iconName: "bookmark"; enabled: page.canPost && page.sel !== null && page.sel.active === true; onClicked: reserveForm.openFor(page.sel, "", "", "") }
+                                VButton { objectName: "btnAdjust"; text: "Корректировка"; kind: "soft"; iconName: "clipboard-check"; enabled: ov.can_adjust === true && page.sel !== null; onClicked: adjustForm.openFor(page.sel) }
                                 Text { visible: !page.canPost; text: "Только при связи с сервером"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs }
                             }
 
@@ -245,6 +247,25 @@ Item {
                     onReverseRequested: reverseForm.openFor(modelData) }
             }
             EmptyState { anchors.centerIn: parent; visible: mvList.count === 0; iconName: "history"; title: "Журнал пуст"; text: "Здесь появятся приходы, выдачи, перемещения и сторно. Проведённые записи не меняются и не удаляются." }
+        }
+
+        // ================================================================ Корректировки остатка (D-77)
+        VCard {
+            visible: page.tab === "adjustments"
+            Layout.fillWidth: true; Layout.fillHeight: true
+            ListView {
+                id: adjList
+                objectName: "stockAdjustments"
+                anchors.fill: parent; anchors.margins: 14
+                clip: true; spacing: 6
+                model: page.tab === "adjustments" ? (ov.adjustments || []) : []
+                ScrollBar.vertical: ScrollBar {}
+                delegate: AdjustmentRow { width: ListView.view.width; a: modelData
+                    onSignRequested: adjSignForm.openFor(modelData)
+                    onCancelRequested: adjCancelForm.openFor(modelData) }
+            }
+            EmptyState { anchors.centerIn: parent; visible: adjList.count === 0; iconName: "clipboard-check"; title: "Корректировок нет"
+                         text: "Здесь появятся корректировки остатка по акту (инвентаризация). Корректировку создаёт склад с карточки позиции, в учёт она попадает только после подписи руководителя отдела." }
         }
 
         // ================================================================ Справочники
@@ -536,6 +557,75 @@ Item {
         VField { id: rtReason; objectName: "rtReason"; label: "Почему возвращаем"; required: true; placeholder: "Пересорт, отгружено не туда …" }
     }
     Cmd { id: cReturn; dialog: returnForm }
+
+    // Корректировка остатка по акту (инвентаризация, D-77): склад фиксирует фактический остаток и основание;
+    // проводка в журнале появляется только после подписи руководителя отдела (adjSignForm ниже).
+    FormDialog {
+        id: adjustForm
+        objectName: "adjustForm"
+        property var item: null
+        readonly property var whRows: item ? item.by_warehouse.map(b => ({ id: b.warehouse_id, label: b.warehouse_code + " — учётный " + b.on_hand_label })) : []
+        // У позиции без учётного остатка (ещё не было прихода) склад выбирается из всех действующих.
+        readonly property var whOpts: whRows.length > 0 ? whRows : page.whOptions
+        title: "Корректировка остатка: " + (item ? item.code : "")
+        subtitle: "Введите фактический остаток по пересчёту и основание (акт). Проводка выполнится только после подписи руководителя отдела — до этого в журнале ничего не изменится."
+        confirmText: "Создать корректировку"
+        canConfirm: adjQty.text.trim() !== "" && adjQty.error === "" && adjReason.text.trim() !== ""
+                    && adjustForm.whOpts.length > 0 && adjWh.currentValue !== ""
+        function openFor(it) { item = it; adjQty.text = ""; adjReason.text = ""; adjWh.currentIndex = 0; open() }
+        onConfirmed: cAdjust.run("stock.adjust", { id: backend.newId(), warehouse_id: adjWh.currentValue, item_id: item.id,
+                                                   new_qty: backend.normalizeQty(adjQty.text), reason: adjReason.text.trim() })
+        Banner { tone: "info"; text: "По каждой паре склад + позиция может быть только одна корректировка, ждущая подписи." }
+        VSelect { id: adjWh; objectName: "adjWh"; label: "Склад"; model: adjustForm.whOpts }
+        VField { id: adjQty; objectName: "adjQty"; label: "Фактический остаток" + (adjustForm.item ? ", " + adjustForm.item.unit : ""); required: true; placeholder: "0, если совсем нет"; error: backend.qtyProblem(text) }
+        VField { id: adjReason; objectName: "adjReason"; label: "Основание (акт инвентаризации)"; required: true; placeholder: "Акт инвентаризации № 4 от 20.11.2026" }
+    }
+    Cmd { id: cAdjust; dialog: adjustForm }
+
+    // Подпись корректировки руководителем отдела (D-77): способ подписи — настройка stock.act_signature, как у актов.
+    FormDialog {
+        id: adjSignForm
+        objectName: "adjSignForm"
+        property var adj: null
+        readonly property var sig: ov.act_signature || ({ needs_password: true, blocked: false, hint: "" })
+        title: "Подписать корректировку остатка"
+        subtitle: adj ? adj.item_code + " · " + adj.warehouse_code + ": было " + adj.on_hand_label + " → станет " + adj.new_qty_label + " (" + adj.delta_label + "). Основание: " + adj.reason : ""
+        confirmText: "Подписать корректировку"
+        canConfirm: adj !== null && adjSign.checked && sig.blocked !== true && (sig.needs_password !== true || adjPwd.text !== "")
+        function openFor(a) { adj = a; adjSign.checked = false; adjPwd.text = ""; open() }
+        onConfirmed: {
+            var p = { id: adj.id, sign_act: true }
+            // Пароль уходит только в эту онлайн-команду: в очередь, кэш и хэш запроса он не попадает (redact).
+            if (sig.needs_password === true) p.sign_password = adjPwd.text
+            adjPwd.text = ""
+            cAdjSign.run("stock.adjust_sign", p, adj.version)
+        }
+        Banner { tone: "info"; text: "Если остаток изменился с момента создания корректировки, сервер её отклонит — её нужно будет создать заново." }
+        CheckBox { id: adjSign; objectName: "adjSign"; Layout.fillWidth: true; Layout.preferredWidth: 1
+                   enabled: adjSignForm.sig.blocked !== true
+                   text: "Подписываю корректировку как руководитель отдела: расхождение подтверждено"
+                   contentItem: Text { text: adjSign.text; wrapMode: Text.Wrap; leftPadding: adjSign.indicator.width + adjSign.spacing
+                                       verticalAlignment: Text.AlignVCenter; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs } }
+        VField { id: adjPwd; objectName: "adjPwd"; visible: adjSignForm.sig.needs_password === true
+                 label: "Ваш пароль (подпись корректировки)"; password: true; required: true; hint: adjSignForm.sig.hint || "" }
+        Banner { visible: adjSignForm.sig.blocked === true; tone: "danger"; text: adjSignForm.sig.hint || "" }
+    }
+    Cmd { id: cAdjSign; dialog: adjSignForm }
+
+    // Отмена неподписанной корректировки её автором (D-77).
+    FormDialog {
+        id: adjCancelForm
+        objectName: "adjCancelForm"
+        property var adj: null
+        title: "Отменить корректировку"
+        subtitle: adj ? adj.item_code + " · " + adj.warehouse_code + " — запись останется в истории как отменённая; в журнал движений ничего не попадало." : ""
+        confirmText: "Отменить корректировку"; confirmKind: "danger"
+        canConfirm: adjCanReason.text.trim() !== ""
+        function openFor(a) { adj = a; adjCanReason.text = ""; open() }
+        onConfirmed: cAdjCancel.run("stock.adjust_cancel", { id: adj.id, reason: adjCanReason.text.trim() }, adj.version)
+        VField { id: adjCanReason; objectName: "adjCanReason"; label: "Почему отменяем"; required: true; placeholder: "Ошибка в основании, пересчитаем …" }
+    }
+    Cmd { id: cAdjCancel; dialog: adjCancelForm }
 
     // Акт об утрате (D-31): не пришло ничего. Прихода нет, отправителю не возвращается — количество списывается
     // актом. Причина обязательна; подпись приёмщика — как в акте недостачи (настройка stock.act_signature).

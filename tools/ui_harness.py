@@ -326,6 +326,14 @@ def main():
         h.shot(out / f"{theme}-24-transfer-loss-act.png")
         QMetaObject.invokeMethod(lf, "close")
         h.wait_idle()
+        # Корректировка остатка (D-77): создана складом, ждёт подписи руководителя отдела — вкладка со списком.
+        h.backend.execute("t", "stock.adjust", {"id": str(uuid.uuid4()), "warehouse_id": h.ids["warehouses"]["СК-1"],
+                                                "item_id": h.ids["items"]["ХМТ-200"], "new_qty": "50",
+                                                "reason": "Акт инвентаризации № 7 от 20.11.2026: найдены 2 шт в зоне приёмки"}, 0)
+        h.wait_idle()
+        sp.setProperty("tab", "adjustments")
+        h.wait_idle()
+        h.shot(out / f"{theme}-73-stock-adjustments.png")
         sp.setProperty("tab", "balances")
         h.wait_idle()
         h.backend.logout()
