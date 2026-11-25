@@ -12,7 +12,11 @@ license = "LicenseRef-Proprietary"
 dependencies = []
 
 [project.optional-dependencies]
+office = [
+  "defusedxml>=0.7,<1",        # безопасный разбор чужих XML (.xlsx/.docx) — XXE/billion laughs
+]
 server = [
+  "defusedxml>=0.7,<1",
   "SQLAlchemy>=2.0,<2.2",
   "starlette>=0.40,<2",
   "uvicorn>=0.30,<1",
