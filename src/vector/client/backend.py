@@ -655,11 +655,29 @@ class Backend(QObject):
 
     @Slot(str, result=bool)
     def moduleOk(self, module_id: str) -> bool:
-        """Модуль доступен в лицензии (active/grace) — навигация прячет разделы вне лицензии. В демо — всё доступно.
-        Это подсказка интерфейса: решение принимает сервер (module_not_licensed / module_readonly)."""
+        """Полный доступ к модулю (active/grace): создание и изменения пройдут. readonly — только чтение.
+        Подсказка интерфейса: решение принимает сервер (module_not_licensed / module_readonly)."""
         mods = self._meta_license().get("modules") or []
         st = next((m for m in mods if m.get("id") == module_id), None)
         return st is None or st.get("state") in ("active", "grace")
+
+    @Slot(str, result=bool)
+    def moduleVisible(self, module_id: str) -> bool:
+        """Раздел виден в навигации (D-88): active/grace — полноценно, readonly — для чтения и выгрузки
+        (политика D-81 «данные клиента не заложники»: истёкшая подписка НЕ прячет накопленное). Скрываем
+        только not_licensed (модуль не куплен) и planned (ещё не выпущен). В демо — всё видно."""
+        mods = self._meta_license().get("modules") or []
+        st = next((m for m in mods if m.get("id") == module_id), None)
+        return st is None or st.get("state") in ("active", "grace", "readonly")
+
+    @Slot(str, result=str)
+    def moduleState(self, module_id: str) -> str:
+        """Состояние модуля в лицензии (active/grace/readonly/not_licensed/planned) — для полосы предупреждения
+        в разделе (D-88): readonly — подписка истекла, данные только читаются; grace — льготный период.
+        В демо и без данных — active. Решение о доступе принимает сервер; это только подсказка интерфейса."""
+        mods = self._meta_license().get("modules") or []
+        st = next((m for m in mods if m.get("id") == module_id), None)
+        return (st or {}).get("state") or "active"
 
     # ------------------------------------------------------------ уведомления (D-35)
     @Property("QVariantMap", notify=dataChanged)

@@ -134,3 +134,32 @@ def test_help_page_about_tab_license_demo(ui):
     assert not ui.backend.moduleOk("schema")                      # «В разработке» — раздела ещё нет
     support = ui.find("aboutSupport")
     assert "демо" in support.property("v").lower() or "поддержк" in support.property("v").lower()
+
+
+def test_license_banner_readonly_and_grace(ui):
+    """Полоса состояния лицензии раздела (D-88): подписка модуля истекла (readonly) — видна на страницах модуля,
+    скрыта на платформенных страницах и в разделах активных модулей; льготный период (grace) — мягкое
+    предупреждение. Решения о доступе принимает сервер (tests/server/test_license_gate.py); это подсказка."""
+    ui.login("k.pavlov")
+    lic = {"mode": "subscription", "customer": "ООО «Тест»", "kind": "subscription",
+           "modules": [{"id": "pdm", "title_ru": "Проекты", "state": "readonly", "label_ru": "", "detail_ru": ""},
+                       {"id": "hr", "title_ru": "Люди", "state": "grace", "label_ru": "", "detail_ru": ""},
+                       {"id": "supply", "title_ru": "Склад", "state": "active", "label_ru": "", "detail_ru": ""},
+                       {"id": "schema", "title_ru": "Схемы", "state": "planned", "label_ru": "", "detail_ru": ""}]}
+    ui.backend.client._set_meta("license", lic)
+    ui.backend.dataChanged.emit()
+    ui.pump(0.2)
+    banner = ui.find("licenseBanner")
+    assert banner is not None
+    ui.go("projects"); ui.pump(0.2)                       # pdm — readonly
+    assert banner.property("visible") is True
+    assert "только чтения" in ui.find("licenseBannerText").property("text") or "чтения и выгрузки" in ui.find("licenseBannerText").property("text")
+    ui.go("worktime"); ui.pump(0.2)                       # hr — grace
+    assert banner.property("visible") is True
+    assert "Льготный период" in ui.find("licenseBannerText").property("text")
+    ui.go("sync"); ui.pump(0.2)                           # платформа — полосы нет
+    assert banner.property("visible") is False
+    assert ui.backend.moduleState("supply") == "active" and ui.backend.moduleState("nope") == "active"
+    # readonly-раздел НЕ скрыт (чтение/выгрузка — политика D-81 «данные не заложники»), но полного доступа нет:
+    assert ui.backend.moduleVisible("pdm") is True and ui.backend.moduleOk("pdm") is False
+    assert ui.backend.moduleVisible("schema") is False    # «В разработке» — скрыт

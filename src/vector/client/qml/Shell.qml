@@ -12,6 +12,11 @@ Item {
     property string page: "tenders"
     property var navTarget: ({})     // {page, id} — переход к объекту из другого раздела
     function go(p, id) { navTarget = { page: p, id: id || "" }; page = p }
+    // Страница → модуль лицензии (D-88): по нему полоса состояния раздела знает, что показывать.
+    // Платформенные страницы (sync, admin, help, org, notifications, delegations) в лицензии не участвуют.
+    readonly property var pageModule: ({ customers: "pdm", tenders: "pdm", projects: "pdm", leads: "pdm",
+        finance: "analytics", analytics: "analytics", stock: "supply", procurement: "supply",
+        worktime: "hr", production: "production", products: "service", quality: "quality" })
     // Стартовый раздел по ролям: у склада и закупки нет тендеров — сразу открываем их рабочий раздел.
     // Роли приходят из кэша чуть позже создания оболочки, поэтому выбор делается один раз — когда они известны.
     property bool startPicked: false
@@ -101,33 +106,33 @@ Item {
                         width: navFlick.width
                         spacing: 4
                     Text { text: "РАБОТА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.bottomMargin: 4 }
-                    NavItem { text: "Заказчики"; iconName: "building-2"; active: shellRoot.page === "customers"; onClicked: shellRoot.go("customers"); visible: backend.hint("customer.read", backend.permRevision) && backend.moduleOk("pdm") }
-                    NavItem { text: "Тендеры и ТКП"; iconName: "gavel"; active: shellRoot.page === "tenders"; onClicked: shellRoot.go("tenders"); visible: backend.hint("tender.read", backend.permRevision) && backend.moduleOk("pdm") }
+                    NavItem { text: "Заказчики"; iconName: "building-2"; active: shellRoot.page === "customers"; onClicked: shellRoot.go("customers"); visible: backend.hint("customer.read", backend.permRevision) && backend.moduleVisible("pdm") }
+                    NavItem { text: "Тендеры и ТКП"; iconName: "gavel"; active: shellRoot.page === "tenders"; onClicked: shellRoot.go("tenders"); visible: backend.hint("tender.read", backend.permRevision) && backend.moduleVisible("pdm") }
                     NavItem { objectName: "navLeads"; text: "Лиды"; iconName: "sparkles"; active: shellRoot.page === "leads"; onClicked: shellRoot.go("leads")
-                              visible: backend.hint("opportunity.read", backend.permRevision) && backend.moduleOk("pdm") }
-                    NavItem { text: "Проекты"; iconName: "folder-kanban"; active: shellRoot.page === "projects"; onClicked: shellRoot.go("projects"); visible: backend.moduleOk("pdm") }
+                              visible: backend.hint("opportunity.read", backend.permRevision) && backend.moduleVisible("pdm") }
+                    NavItem { text: "Проекты"; iconName: "folder-kanban"; active: shellRoot.page === "projects"; onClicked: shellRoot.go("projects"); visible: backend.moduleVisible("pdm") }
                     NavItem { text: "Итоги проектов"; iconName: "wallet"; active: shellRoot.page === "finance"; onClicked: shellRoot.go("finance")
-                              visible: ((backend.me.roles || []).indexOf("accountant") >= 0 || backend.financeOverview.length > 0) && backend.moduleOk("analytics") }
+                              visible: ((backend.me.roles || []).indexOf("accountant") >= 0 || backend.financeOverview.length > 0) && backend.moduleVisible("analytics") }
                     // Аналитика портфеля (D-73): сводные сроки/количества без денег — производственному руководству.
                     NavItem { objectName: "navAnalytics"; text: "Аналитика"; iconName: "sliders-horizontal"; active: shellRoot.page === "analytics"; onClicked: shellRoot.go("analytics")
-                              visible: backend.hint("norm.read", backend.permRevision) && backend.moduleOk("analytics") }
+                              visible: backend.hint("norm.read", backend.permRevision) && backend.moduleVisible("analytics") }
                     // Рабочее время (D-42): свой дневной отчёт — всем; бейдж — руководителю отдела отчёты на проверке,
                     // остальным — возвращённые на исправление.
                     NavItem { objectName: "navWorktime"; text: "Рабочее время"; iconName: "clock"; active: shellRoot.page === "worktime"; onClicked: shellRoot.go("worktime")
                               badge: ((backend.worktimeOverview.counts || {}).to_review || 0) + ((backend.worktimeOverview.counts || {}).returned || 0)
-                              badgeTone: ((backend.worktimeOverview.counts || {}).returned || 0) > 0 ? "danger" : "warning"; visible: backend.moduleOk("hr") }
+                              badgeTone: ((backend.worktimeOverview.counts || {}).returned || 0) > 0 ? "danger" : "warning"; visible: backend.moduleVisible("hr") }
                     Text { visible: shellRoot.seesStock || shellRoot.seesNeeds; text: "СНАБЖЕНИЕ"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
-                    NavItem { objectName: "navStock"; text: "Склад"; iconName: "warehouse"; active: shellRoot.page === "stock"; onClicked: shellRoot.go("stock"); visible: shellRoot.seesStock && backend.moduleOk("supply") }
-                    NavItem { objectName: "navProcurement"; text: "Закупка"; iconName: "shopping-cart"; active: shellRoot.page === "procurement"; onClicked: shellRoot.go("procurement"); visible: shellRoot.seesNeeds && backend.moduleOk("supply")
+                    NavItem { objectName: "navStock"; text: "Склад"; iconName: "warehouse"; active: shellRoot.page === "stock"; onClicked: shellRoot.go("stock"); visible: shellRoot.seesStock && backend.moduleVisible("supply") }
+                    NavItem { objectName: "navProcurement"; text: "Закупка"; iconName: "shopping-cart"; active: shellRoot.page === "procurement"; onClicked: shellRoot.go("procurement"); visible: shellRoot.seesNeeds && backend.moduleVisible("supply")
                               badge: (backend.needsOverview.candidates || []).length; badgeTone: "warning" }
                     Text { visible: shellRoot.seesProduction || shellRoot.seesProducts || shellRoot.seesQuality; text: "ПРОИЗВОДСТВО"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
                     // Бейдж: исполнителю — операции в работе/на паузе, остальным — открытые наряды.
-                    NavItem { objectName: "navProduction"; text: "Производство"; iconName: "factory"; active: shellRoot.page === "production"; onClicked: shellRoot.go("production"); visible: shellRoot.seesProduction && backend.moduleOk("production")
+                    NavItem { objectName: "navProduction"; text: "Производство"; iconName: "factory"; active: shellRoot.page === "production"; onClicked: shellRoot.go("production"); visible: shellRoot.seesProduction && backend.moduleVisible("production")
                               badge: (backend.productionOverview.my_ops || []).length > 0 ? backend.productionOverview.my_ops.length : 0; badgeTone: "primary" }
                     // Изделия и паспорта (D-38): экземпляры с заводскими номерами, паспорт-черновик, эксплуатация.
-                    NavItem { objectName: "navProducts"; text: "Изделия и паспорта"; iconName: "package-check"; active: shellRoot.page === "products"; onClicked: shellRoot.go("products"); visible: shellRoot.seesProducts && backend.moduleOk("service") }
+                    NavItem { objectName: "navProducts"; text: "Изделия и паспорта"; iconName: "package-check"; active: shellRoot.page === "products"; onClicked: shellRoot.go("products"); visible: shellRoot.seesProducts && backend.moduleVisible("service") }
                     // Качество (D-39): бейдж — что ждёт моего решения или отметки (проверки, решения, мои действия CAPA).
-                    NavItem { objectName: "navQuality"; text: "Качество"; iconName: "shield-check"; active: shellRoot.page === "quality"; onClicked: shellRoot.go("quality"); visible: shellRoot.seesQuality && backend.moduleOk("quality")
+                    NavItem { objectName: "navQuality"; text: "Качество"; iconName: "shield-check"; active: shellRoot.page === "quality"; onClicked: shellRoot.go("quality"); visible: shellRoot.seesQuality && backend.moduleVisible("quality")
                               badge: (backend.qualityOverview.counts || {}).to_me || 0; badgeTone: "primary" }
                     Text { text: "СИСТЕМА"; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: 10; font.weight: Font.Bold; font.letterSpacing: 1.2; Layout.leftMargin: 10; Layout.topMargin: 14; Layout.bottomMargin: 4 }
                     NavItem { text: "Синхронизация"; iconName: "refresh-cw"; active: shellRoot.page === "sync"; onClicked: shellRoot.go("sync")
@@ -180,10 +185,39 @@ Item {
             }
         Loader {
             anchors.fill: parent
+            anchors.topMargin: licenseBanner.visible ? licenseBanner.height + 20 : 0
             sourceComponent: ({ customers: customersC, tenders: tendersC, projects: projectsC, sync: syncC, admin: adminC, finance: financeC,
                                stock: stockC, procurement: procurementC, delegations: delegationsC,
                                notifications: notificationsC, production: productionC, products: productsC, quality: qualityC, help: helpC,
                                worktime: worktimeC, org: orgC, leads: leadsC, analytics: analyticsC })[shellRoot.page]
+        }
+        // Полоса состояния лицензии раздела (D-88). readonly: подписка истекла — данные читаются и выгружаются,
+        // изменения отклонит сервер (ворота — там, это только честная подсказка). grace: льготный период —
+        // пора продлить. Появляется только для страниц, принадлежащих лицензируемым модулям.
+        Rectangle {
+            id: licenseBanner
+            objectName: "licenseBanner"
+            anchors { left: parent.left; right: parent.right; top: parent.top; margins: 12 }
+            z: 20
+            readonly property string mstate: backend.moduleState(shellRoot.pageModule[shellRoot.page] || "")
+            visible: mstate === "readonly" || mstate === "grace"
+            height: visible ? bannerText.implicitHeight + 20 : 0
+            radius: Theme.radius
+            color: mstate === "readonly" ? Theme.dangerSoft : Theme.warningSoft
+            border.color: mstate === "readonly" ? Theme.danger : Theme.warning
+            border.width: 1
+            Text {
+                id: bannerText
+                objectName: "licenseBannerText"
+                anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter
+                          leftMargin: 12; rightMargin: 12 }
+                wrapMode: Text.WordWrap
+                font.family: Theme.family; font.pixelSize: Theme.fsS
+                color: Theme.text
+                text: licenseBanner.mstate === "readonly"
+                      ? "Подписка на этот раздел закончилась. Данные доступны для чтения и выгрузки; изменения сервер не примет. Продлите подписку — поставщик вышлет новый файл лицензии."
+                      : "Льготный период подписки: скоро раздел перейдёт в режим «только чтение». Продлите подписку, чтобы работать без ограничений."
+            }
         }
         }
     }
