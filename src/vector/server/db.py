@@ -71,7 +71,7 @@ from vector.core import money
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
 # v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
 #         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 44
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -364,6 +364,19 @@ document_versions = sa.Table("document_versions", metadata,
     sa.Column("created_by", ID, nullable=False),
     sa.Column("created_at", UtcDateTime, nullable=False),
     sa.UniqueConstraint("document_id", "version_no", name="uq_document_versions_no"))
+
+# ---------------------------------------------------------------- v44: офисные документы (Ф1.3, D-94)
+# Офисный документ — карточка documents + версии (неизменяемые, дедупликация файлов — уже есть) + вид и
+# признак шаблона. Содержимое — .vsheetx/.vdocx (55-office-documents.md); шаблоны содержат {{поля}},
+# подстановку делает office_doc.render (контекст собирается сервером из проекта/заказчика — только то,
+# что пользователю доступно по правам).
+office_documents = sa.Table("office_documents", metadata,
+    sa.Column("document_id", ID, sa.ForeignKey("documents.id"), primary_key=True),
+    sa.Column("kind", U(16), nullable=False),                       # sheet | doc
+    sa.Column("is_template", sa.Boolean, nullable=False),
+    sa.Column("created_by", ID, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("kind IN ('sheet', 'doc')", name="office_kind"))
 
 # ---------------------------------------------------------------- расчёт комплекта (С3, R-04/R-11/R-12)
 # Правила позиций и итогов — vector.core.calc (общие с клиентом). Количество хранится тем же типом Money:

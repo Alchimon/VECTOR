@@ -128,6 +128,8 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     42: [db.stock_transfer_proposals],
     # Пополнение расходников по порогу: правила и черновые позиции (С4 шаг 7, D-79).
     43: [db.stock_replenishment_rules, db.stock_replenishment_drafts],
+    # Офисные документы (Ф1.3, D-94): вид и признак шаблона поверх карточки documents.
+    44: [db.office_documents],
 }
 
 
@@ -324,7 +326,8 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               39: _create_tables(ADDED_IN[40]),
                               40: _create_tables(ADDED_IN[41]),
                               41: _create_tables(ADDED_IN[42]),
-                              42: _create_tables(ADDED_IN[43])}
+                              42: _create_tables(ADDED_IN[43]),
+                              43: _create_tables(ADDED_IN[44])}
 
 
 @dataclass

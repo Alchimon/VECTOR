@@ -33,6 +33,7 @@ from .config_store import ConfigMixin
 from .consolidation import ConsolidationMixin
 from .delegation import DelegationMixin
 from .delivery import DeliveryMixin
+from .office import OfficeMixin
 from .rkd import RkdMixin
 from .notify import NotificationMixin
 from .lifecycle import LifecycleMixin
@@ -97,7 +98,7 @@ class Ctx:
 
 class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin, NotificationMixin,
               ProductionMixin, LifecycleMixin, QualityMixin, WorktimeMixin, OrgMixin, WorkdayMixin,
-              ScheduleMixin, CalendarMixin, DeliveryMixin, RkdMixin, ConsolidationMixin):
+              ScheduleMixin, CalendarMixin, DeliveryMixin, RkdMixin, ConsolidationMixin, OfficeMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
     склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py);
     замещение и основания решений — DelegationMixin (delegation.py, D-34/D-35); уведомления — NotificationMixin
@@ -172,6 +173,8 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             "fat.create": self._fat_create, "fat.finish": self._fat_finish,
             "fat.add_finding": self._fat_add_finding, "fat.close_finding": self._fat_close_finding,
             # Документы доставки отдела логистики: настраиваемые формы (D-69, этап 6 blueprint 52).
+            "office_doc.create": self._office_doc_create, "office_doc.set_template": self._office_doc_set_template,
+            "templates.render": self._office_doc_render,
             "doc_template.create": self._doc_template_create, "doc_template.update": self._doc_template_update,
             "doc_template.set_active": self._doc_template_set_active,
             "delivery_doc.create": self._delivery_doc_create, "delivery_doc.update": self._delivery_doc_update,

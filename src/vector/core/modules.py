@@ -70,8 +70,10 @@ MODULES: tuple[Module, ...] = (
     Module("analytics", "Отчёты и итоги", "current", "итоги проектов, сводка, консолидация"),
     Module("integrations", "Интеграции", "current", "1С, почта, CAD-адаптеры — каждый адаптер выключаем"),
     # Экосистема (D-80): собственные программы вместо внешних. Порядок — предложение, решение за владельцем.
-    Module("sheets", "ВЕКТОР Таблицы", "planned", "аналог Excel; движок .xlsx уже есть (core/xlsx.py)"),
-    Module("text", "ВЕКТОР Текст", "planned", "аналог Word; документы становятся объектами, а не файлами"),
+    Module("sheets", "ВЕКТОР Таблицы", "current",
+           "аналог Excel: форматы .vsheetx/.xlsx, формулы, CSV (Ф1.1); серверные документы (Ф1.3); редактор — Ф1.4"),
+    Module("text", "ВЕКТОР Текст", "current",
+           "аналог Word: форматы .vdocx/.docx, шаблоны с полями из платформы (Ф1.2–Ф1.3); редактор — Ф1.4"),
     Module("schema", "ВЕКТОР Схема", "planned", "аналог EPLAN: схемы Э3 по ЕСКД, перечень элементов — в спецификацию"),
     Module("cad", "ВЕКТОР CAD", "planned", "аналог AutoCAD/КОМПАС: 2D ЕСКД, просмотр 3D (STEP)"),
     Module("slides", "ВЕКТОР Презентации", "planned", "аналог PowerPoint"),
@@ -84,9 +86,11 @@ MODULE_BY_ID = {m.id: m for m in MODULES}
 # test_command_module_covers_catalog следит, что каждая команда каталога попадает в известный модуль или
 # осознанно остаётся платформой.
 _COMMAND_PREFIX_MODULE = {
-    # Проекты, документы и расчёты
+    # Проекты, документы и расчёты. office_doc. → text по умолчанию (set_template/render — всегда «Текст»;
+    # create(kind=sheet) гейтится на «Таблицы» внутри транзакции — префикс параметра не видит; D-94).
     "calc.": "pdm", "checklist.": "pdm", "comment.": "pdm", "contract.": "pdm", "customer.": "pdm",
     "doc_template.": "pdm", "docprofile.": "pdm", "docrev.": "pdm", "document.": "pdm", "kit.": "pdm",
+    "office_doc.": "text",
     "opportunity.": "pdm", "project.": "pdm", "risk.": "pdm", "task.": "pdm", "tender.": "pdm", "tkp.": "pdm",
     "transmittal.": "pdm", "workstream.": "pdm",
     # Склад и закупка

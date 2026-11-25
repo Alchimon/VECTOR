@@ -125,6 +125,7 @@ OUT_OF_SPIKE_SCOPE = frozenset({
     "account.change_password", "admin.reset_password", "admin.set_user_active",
     "task.create", "task.update", "task.transition",
     "document.create", "document.update", "document.add_version",
+    "office_doc.create", "office_doc.set_template", "templates.render",
     "calc.save_draft", "calc.freeze",
     "warehouse.create", "warehouse.update", "item.create", "item.update",
     "stock.receive", "stock.issue", "stock.reverse", "stock.reserve", "stock.release", "need.generate", "need.match_line", "config.publish",

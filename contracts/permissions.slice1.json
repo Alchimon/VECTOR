@@ -1,5 +1,5 @@
 {
- "contract": "permissions-slice1-v40",
+ "contract": "permissions-slice1-v41",
  "notes": [
   "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
   "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
@@ -2091,6 +2091,47 @@
   },
   "hr.category_set": {
    "same_as": "hr.category_manage"
+  },
+  "office_doc.create": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "decision": "D-94",
+   "note": "Как у document.create: участник проекта создаёт офисные документы."
+  },
+  "office_doc.set_template": {
+   "same_as": "office_doc.manage"
+  },
+  "office_doc.manage": {
+   "any_of": [
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-94",
+   "note": "Шаблоны документов ведёт руководитель отдела (как формы доставки, D-69): глобальная «руководитель отдела» (A-59), до появления отдельной роли делопроизводителя. Право виртуальное — команды office_doc.manage нет, его проверяет office_doc.set_template."
+  },
+  "templates.render": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "decision": "D-94",
+   "note": "Формирование из шаблона — тем, кто работает с документами проекта.",
+   "same_as": "office_doc.create"
   }
  }
 }

@@ -147,7 +147,9 @@ class TestCommandModuleMap(unittest.TestCase):
         # и обратно: у каждого выпущенного модуля есть команды или это сознательно пусто (analytics/integrations
         # — чтение и конфигурация, без команд записи)
         used = {M.command_module(c) for c in cat["commands"]} - {None}
-        self.assertEqual(used, M.CURRENT_MODULE_IDS - {"analytics", "integrations"})
+        # sheets — сознательно «без своего префикса»: его команды (office_doc.create kind=sheet) ведут
+        # префикс text и гейтятся по виду внутри транзакции (D-94).
+        self.assertEqual(used, M.CURRENT_MODULE_IDS - {"analytics", "integrations", "sheets"})
 
     def test_platform_commands_stay_free(self):
         for cmd in ("account.change_password", "admin.create_user", "config.publish",
