@@ -274,3 +274,80 @@ def _norm(field: str, v: Any) -> Any:
     if field in ("qty", "unit_price", "amount") and isinstance(v, str):
         return Decimal(v)
     return v
+
+
+# ------------------------------------------------------------ обмен с Excel (.xlsx), R-31
+from . import xlsx  # noqa: E402  (внизу файла: чистый модуль, циклических импортов нет)
+
+# Колонки листа расчёта — в этом же порядке идёт вставка из буфера обмена (CalcEditor.pasteRows).
+SHEET_HEADER = ["Обозначение", "Наименование", "Ед. изм.", "Количество", "Цена", "Примечание"]
+
+
+def lines_to_sheet(lines: list[dict]) -> list[list[str]]:
+    """Позиции редактора → строки листа Excel: заголовок + данные, числа каноническими строками.
+
+    line_id в файл не пишется: при импорте позиции получают новые идентификаторы (импорт ДОБАВЛЯЕТ
+    позиции в черновик, а не заменяет его — как вставка из буфера). Итоги в файл не пишем:
+    лист кругово импортируется, а суммы в Excel пусть считает сам Excel.
+    """
+    rows = [list(SHEET_HEADER)]
+    for ln in lines:
+        rows.append([str(ln.get("code") or ""), str(ln.get("name") or ""), str(ln.get("unit") or ""),
+                     str(ln.get("qty") or "").strip(), str(ln.get("unit_price") or "").strip(),
+                     str(ln.get("note") or "")])
+    return rows
+
+
+def _is_header(row: list[xlsx.Cell]) -> bool:
+    """Первая строка — наш заголовок? Сравнение без учёта регистра по первым двум колонкам."""
+    return (len(row) >= 2 and row[0].text.strip().casefold() == SHEET_HEADER[0].casefold()
+            and row[1].text.strip().casefold() == SHEET_HEADER[1].casefold())
+
+
+def sheet_to_lines(cells: list[list[xlsx.Cell]], new_id=None) -> tuple[list[dict], list[dict]]:
+    """Строки листа → (позиции для редактора, замечания). Импорт «всё или ничего»: любое замечание
+    отменяет импорт целиком — частично загруженного расчёта не бывает (R-31).
+
+    Пропускаются: строка-заголовок (см. _is_header) и полностью пустые строки. Замечания адресуются
+    номером строки ЛИСТА (как в Excel, с 1), чтобы пользователь нашёл место в своём файле.
+    Числовая ячейка с более чем 15 значащими цифрами — замечание excel_precision: Excel хранит
+    числа с точностью float64, такое значение в файле уже искажено; текстовые ячейки проходят точно.
+    """
+    import uuid as _uuid
+    new_id = new_id or (lambda: str(_uuid.uuid4()))
+    raw: list[dict] = []
+    sheet_row: list[int] = []          # raw-индекс → номер строки листа
+    problems: list[dict] = []
+    for n, row in enumerate(cells, start=1):
+        if all(not c.text.strip() for c in row):
+            continue
+        if not raw and not sheet_row and _is_header(row):
+            continue
+        vals = [(row[i].text.strip() if i < len(row) else "") for i in range(6)]
+        for i, field in ((3, "qty"), (4, "unit_price")):
+            if i < len(row) and row[i].numeric and vals[i]:
+                sig = xlsx.significant_digits(vals[i])
+                if sig is not None and sig > xlsx.EXCEL_SIG_DIGITS:
+                    problems.append(_problem(n, field, "excel_precision",
+                                             f"Больше {xlsx.EXCEL_SIG_DIGITS} значащих цифр — Excel хранит числа неточно; "
+                                             "проверьте значение или перенесите его текстом."))
+        raw.append({"line_id": new_id(), "code": vals[0] or None, "name": vals[1], "unit": vals[2],
+                    "qty": vals[3] or None, "unit_price": vals[4] or None, "note": vals[5] or None})
+        sheet_row.append(n)
+    if not raw and not problems:
+        problems.append(_problem(None, "lines", "empty_sheet", "На листе нет ни одной позиции."))
+        return [], problems
+    if len(raw) > MAX_LINES:
+        problems.append(_problem(None, "lines", "too_many_lines",
+                                 f"Не более {MAX_LINES} позиций в расчёте комплекта (в файле {len(raw)})."))
+        return [], problems
+    try:
+        # Валюта здесь осознанно не проверяется (заглушка): она относится ко всему расчёту, остаётся в поле
+        # редактора и будет проверена при сохранении; импорт отвечает только за позиции.
+        parse_lines(raw, "XXX")
+    except CalcError as e:
+        for p in e.problems:
+            if p.get("line"):
+                p["line"] = sheet_row[p["line"] - 1] if p["line"] - 1 < len(sheet_row) else p["line"]
+            problems.append(p)
+    return ([], problems) if problems else (raw, [])

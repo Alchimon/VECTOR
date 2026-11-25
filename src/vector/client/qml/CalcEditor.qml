@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 import QtQuick.Layouts
 
 // Редактор позиций расчёта комплекта: широкое модальное окно с таблицей полей ввода.
@@ -93,10 +94,29 @@ Popup {
         working = true; error = ""
         backend.saveCalcDraft(tag, kit.id, curField.text, noteField.text, collect())
     }
+    // Добавить проверенные позиции из файла (предпросмотр подтверждён) — как pasteRows, но из .xlsx.
+    function appendRows(rows) {
+        for (var i = 0; i < rows.length; i++) lm.append(rowOf(rows[i]))
+        if (rows.length > 0 && lm.count > rows.length) {
+            var f = lm.get(0)
+            if (!f.name && !f.qty && !f.unit_price && !f.code) lm.remove(0)
+        }
+        editRev++
+    }
+    // Предпросмотр импорта .xlsx (R-31): позиции либо замечания; без подтверждения в редакторе ничего не меняется.
+    function showXlsxPreview(rows, problems) {
+        xlsxDlg.rows = rows || []; xlsxDlg.problems = problems || []; xlsxDlg.open()
+    }
     Connections {
         target: backend
         function onCommandDone(t, r) {
-            if (t !== ed.tag) return
+            if (t === "calc-xlsx-import") {          // ответ backend.importCalcXlsx — предпросмотр
+                if (r.status === "accepted") ed.showXlsxPreview(r.rows, [])
+                else if (r.status === "rejected") ed.showXlsxPreview([], r.problems)
+                else ed.error = r.message_ru || "Файл не прочитан."
+                return
+            }
+            if (t !== ed.tag) return                  // «calc-xlsx-export» — только тост (уже показан)
             ed.working = false
             if (r.status === "accepted" || r.status === "queued") ed.close()
             else ed.error = r.message_ru || "Расчёт не сохранён."
@@ -104,6 +124,60 @@ Popup {
     }
     // Невидимый буфер для чтения текста из системного буфера обмена (QML не даёт прямого доступа к нему).
     TextEdit { id: clip; visible: false }
+
+    FileDialog {
+        id: xlsxOpen
+        title: "Импорт расчёта из файла Excel"
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["Книга Excel (*.xlsx)", "Все файлы (*)"]
+        onAccepted: backend.importCalcXlsx("calc-xlsx-import", selectedFile.toString())
+    }
+    FileDialog {
+        id: xlsxSave
+        title: "Экспорт расчёта в файл Excel"
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["Книга Excel (*.xlsx)"]
+        onAccepted: backend.exportCalcXlsx("calc-xlsx-export", selectedFile.toString(), ed.collect())
+    }
+    FormDialog {
+        id: xlsxDlg
+        objectName: "calcXlsxPreview"
+        title: "Импорт из Excel"
+        property var rows: []
+        property var problems: []
+        subtitle: problems.length > 0
+                  ? "Позиции не добавлены. Исправьте файл и импортируйте снова (строка = номер строки листа):"
+                  : "Позиций: " + rows.length + " — проверьте перед добавлением в расчёт."
+        confirmText: "Добавить позиции (" + rows.length + ")"
+        confirmTip: "Добавить проверенные позиции из файла в конец таблицы расчёта."
+        canConfirm: problems.length === 0 && rows.length > 0
+        formWidth: 640
+        onConfirmed: { ed.appendRows(rows); xlsxDlg.close() }
+        Flickable {
+            Layout.fillWidth: true; Layout.preferredHeight: Math.min(320, prevCol.implicitHeight)
+            contentHeight: prevCol.implicitHeight; clip: true
+            ColumnLayout {
+                id: prevCol; width: parent.width; spacing: 4
+                Repeater {
+                    model: (xlsxDlg.problems.length > 0 ? xlsxDlg.problems : xlsxDlg.rows).slice(0, 12)
+                    delegate: Text {
+                        required property var modelData
+                        Layout.fillWidth: true; wrapMode: Text.Wrap
+                        font.family: Theme.family; font.pixelSize: Theme.fsS
+                        color: xlsxDlg.problems.length > 0 ? Theme.danger : Theme.text
+                        text: xlsxDlg.problems.length > 0
+                              ? (modelData.line ? "Строка " + modelData.line + ": " : "В целом: ") + modelData.message_ru
+                              : ((modelData.code ? modelData.code + " · " : "") + modelData.name + " — " +
+                                 (modelData.qty || "—") + " " + (modelData.unit || "") +
+                                 (modelData.unit_price ? " × " + modelData.unit_price : ""))
+                    }
+                }
+                Text { visible: (xlsxDlg.problems.length > 0 ? xlsxDlg.problems.length : xlsxDlg.rows.length) > 12
+                       text: "…и ещё " + ((xlsxDlg.problems.length > 0 ? xlsxDlg.problems.length : xlsxDlg.rows.length) - 12)
+                       color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsS }
+            }
+        }
+    }
 
     contentItem: ColumnLayout {
         spacing: 0
@@ -192,6 +266,10 @@ Popup {
             VButton { text: "Вставить из Excel"; iconName: "copy"; kind: "ghost"; compact: true
                       onClicked: { clip.text = ""; clip.paste(); var n = ed.pasteRows(clip.text)
                                    if (n === 0) ed.error = "В буфере обмена нет строк таблицы. Скопируйте в Excel колонки: обозначение, наименование, ед., количество, цена." } }
+            VButton { objectName: "calcImportXlsx"; text: "Импорт из .xlsx…"; iconName: "upload"; kind: "ghost"; compact: true
+                      onClicked: xlsxOpen.open() }
+            VButton { objectName: "calcExportXlsx"; text: "Экспорт в .xlsx…"; iconName: "download"; kind: "ghost"; compact: true
+                      onClicked: xlsxSave.open() }
             Item { Layout.fillWidth: true }
             Text { text: (ed.pv.rows || []).length + " поз."; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsS }
         }

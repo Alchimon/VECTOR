@@ -1510,6 +1510,57 @@ class Backend(QObject):
             return {"result": r.__dict__, "snap": self._snapshot(False)}
         self._run(job, lambda res: self._finish_command(tag, "calc.save_draft", res))
 
+    @Slot(str, str, "QVariantList")
+    def exportCalcXlsx(self, tag: str, dest_url: str, lines):
+        """«Экспорт в .xlsx»: текущее содержимое редактора → книга Excel (R-31).
+
+        Числа — десятичным текстом (без float), длиннее 15 значащих цифр — текстовыми ячейками
+        (точность Excel), запись атомарна (обрыв не оставляет частичный файл). Локальная операция —
+        работает и без связи.
+        """
+        from vector.core import calc as core_calc, xlsx
+        dest = Path(QUrl(dest_url).toLocalFile() if "://" in dest_url else dest_url)
+        if dest.suffix.lower() != ".xlsx":
+            dest = dest.with_suffix(".xlsx")
+        rows = core_calc.lines_to_sheet(_clean_lines(lines.toVariant() if hasattr(lines, "toVariant") else lines))
+
+        def job():
+            """Собрать книгу и атомарно записать её в рабочем потоке."""
+            try:
+                xlsx.atomic_write(dest, xlsx.write_rows(rows, sheet_name="Расчёт"))
+            except xlsx.XlsxError as e:
+                return {"status": "error", "message_ru": str(e)}
+            return {"result": {"status": "accepted", "message_ru": "", "response": None, "operation_id": None},
+                    "snap": None}
+        self._run(job, lambda res: self._file_done(tag, res, f"Расчёт сохранён в файл: {dest.name}."))
+
+    @Slot(str, str)
+    def importCalcXlsx(self, tag: str, file_url: str):
+        """«Импорт из .xlsx»: прочитать книгу и проверить позиции ДО добавления в редактор (R-31).
+
+        Ничего не меняет: результат (позиции либо замечания с номерами строк листа) уходит в commandDone,
+        показывается предпросмотром, и только после подтверждения пользователя позиции попадают в редактор.
+        Локальная операция — работает и без связи.
+        """
+        from vector.core import calc as core_calc, xlsx
+        path = Path(QUrl(file_url).toLocalFile() if "://" in file_url else file_url)
+
+        def job():
+            """Прочитать и проверить файл в рабочем потоке (чужой файл может быть большим)."""
+            try:
+                if path.stat().st_size > xlsx.MAX_FILE:
+                    raise xlsx.XlsxError(f"Файл больше {xlsx.MAX_FILE // (1024 * 1024)} МБ — это не книга расчёта.")
+                cells = xlsx.read_cells(path.read_bytes())
+                lines, problems = core_calc.sheet_to_lines(cells)
+            except (OSError, xlsx.XlsxError) as e:
+                return {"status": "error", "message_ru": f"Не удалось прочитать файл: {e}" if isinstance(e, OSError) else str(e)}
+            if problems:
+                return {"status": "rejected", "code": "import_invalid", "rows": [], "problems": problems,
+                        "message_ru": f"В файле замечания ({len(problems)}) — позиции не добавлены."}
+            return {"status": "accepted", "rows": lines, "problems": [],
+                    "message_ru": f"Позиций в файле: {len(lines)}."}
+        self._run(job, lambda res: self._command_done(tag, qml_safe(res)))
+
     def _assignments_known(self, project_id) -> bool:
         """Известны ли клиенту назначения проекта (если нет — подсказки прав не скрывают действия, решит сервер)."""
         return any(a.get("project_id") == project_id for a in self._assignments)

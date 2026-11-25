@@ -56,7 +56,8 @@ def _rgba(img: QImage) -> QImage:
 
 def _bytes(img: QImage) -> bytearray:
     """Копия пикселей изображения (RGBA8888, строки без выравнивания — ширина×4 байта)."""
-    assert img.bytesPerLine() == img.width() * 4, "ожидаются строки без выравнивания"
+    if img.bytesPerLine() != img.width() * 4:
+        raise RuntimeError("ожидаются строки без выравнивания")
     return bytearray(bytes(img.constBits()))
 
 
@@ -92,7 +93,7 @@ def color_to_alpha(buf: bytearray, paper: tuple[int, int, int]) -> None:
 
 def paper_alpha(buf: bytearray, i: int, paper: tuple[int, int, int]) -> float:
     """«Сколько не-бумаги» в пикселе: 0 — чистая бумага, 1 — чёрный (только каналы темнее бумаги)."""
-    return max(((p - c) / p if c < p else 0.0) for c, p in zip(buf[i:i + 3], paper))
+    return max(((p - c) / p if c < p else 0.0) for c, p in zip(buf[i:i + 3], paper, strict=True))
 
 
 def matte_emblem(buf: bytearray, w: int, h: int, paper: tuple[int, int, int], max_x: int) -> None:

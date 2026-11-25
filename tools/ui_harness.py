@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
 
-PWD = "Демо-пароль-2026"
+PWD = "Демо-пароль-2026"  # noqa: S105 — пароль демо-стенда, задокументирован в test-pc.md
 
 
 def build_server(tmp: Path):
@@ -247,6 +247,16 @@ def main():
         QMetaObject.invokeMethod(ed, "setCell", Q_ARG("QVariant", 1), Q_ARG("QVariant", "qty"), Q_ARG("QVariant", "1,5"))
         h.wait_idle()
         h.shot(out / f"{theme}-13-calc-editor.png")
+        # Предпросмотр импорта из .xlsx (R-31): позиции добавятся только после подтверждения.
+        QMetaObject.invokeMethod(ed, "showXlsxPreview", Q_ARG("QVariant", _plain([
+            {"code": "КБЛ-01", "name": "Кабель ВВГнг 3×2,5", "unit": "м", "qty": "120.5", "unit_price": "99.99", "note": ""},
+            {"code": "АТХ-01", "name": "Шкаф автоматики", "unit": "шт", "qty": "2", "unit_price": "1500000.00", "note": "осн."},
+            {"code": "ДТЧ-14", "name": "Датчик температуры", "unit": "шт", "qty": "4", "unit_price": "", "note": "цена неизвестна"},
+        ])), Q_ARG("QVariant", _plain([])))
+        h.wait_idle()
+        h.shot(out / f"{theme}-13b-calc-xlsx-import.png")
+        next(o for o in h.win.findChildren(QObject) if o.objectName() == "calcXlsxPreview").setProperty("visible", False)
+        h.wait_idle()
         ed.setProperty("visible", False)
         h.wait_idle()
         h.backend.logout()
@@ -657,7 +667,8 @@ def main():
             if ev is not None:
                 msg["expected_version"] = ev
             r = h.svc.handle(msg, "x")
-            assert r["status"] == "accepted", (command, r)
+            if r["status"] != "accepted":
+                raise RuntimeError(f"демо-команда {command} не принята: {r}")
             return r["result"]
 
         pid = h.ids["project"]

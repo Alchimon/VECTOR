@@ -58,7 +58,7 @@ python -m pytest -q -p no:cacheprovider tests
 ```bash
 python3.11 -m venv .venv
 .venv/bin/pip install -e ".[server,client,dev]" -c deploy/test-stand/constraints.txt
-bash tools/make_stubgl.sh   # заглушки GL/EGL/xkbcommon/dbus → .venv/stubgl
+.venv/bin/python tools/qt_offscreen_stubs.py .venv/lib/python3.11/site-packages .venv/stubgl   # заглушки GL/EGL/xkbcommon/dbus
 ```
 Клиентские и UI-тесты, стенд снимков: `LD_LIBRARY_PATH=.venv/stubgl QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software`.
 
