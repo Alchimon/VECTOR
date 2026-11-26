@@ -254,3 +254,21 @@ def test_v2_inspector_document_preview_and_download(ui):
     assert "ВЕКТОР" in (insp.property("previewNote") or "")
     dl = insp.findChild(QObject, "inspDownload")
     assert dl is not None and dl.property("visible") is True
+
+
+def test_v2_projects_filter_chips(ui):
+    """Страница «Проекты» 2.0 (D-106): чипы-фильтры Активные/Архив/Все и прогресс задач на карточках."""
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    # Страница — делегат Repeater вкладок: findChild её не видит, ищем визуальным обходом (ui.items).
+    page = next((i for i in ui.items("filter") if i.property("objectName") == "projectsPage2"), None)
+    assert page is not None
+    # По умолчанию — активные: оба демо-проекта в разработке РКД
+    assert page.property("filter") == "active"
+    assert len(_plain(page.property("items"))) == 2
+    page.setProperty("filter", "archive")
+    ui.pump(0.2)
+    assert len(_plain(page.property("items"))) == 0      # архива в демо нет
+    page.setProperty("filter", "all")
+    ui.pump(0.2)
+    assert len(_plain(page.property("items"))) == 2
