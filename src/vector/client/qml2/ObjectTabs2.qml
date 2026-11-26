@@ -47,7 +47,7 @@ Rectangle {
                 Icon { Layout.leftMargin: 10; name: modelData.icon || "file-text"; size: 15
                        color: tab.active ? Theme2.primary : Theme2.textMuted }
                 Text { text: modelData.title; color: tab.active ? Theme2.text : Theme2.textMuted
-                       font.family: Theme2.family; font.pixelSize: Theme2.fsS
+                       font.family: Theme2.mono; font.pixelSize: Theme2.fsS
                        font.weight: tab.active ? Font.DemiBold : Font.Normal
                        Layout.fillWidth: true; elide: Text.ElideRight }
                 AbstractButton {

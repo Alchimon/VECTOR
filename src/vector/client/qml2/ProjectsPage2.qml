@@ -55,8 +55,19 @@ Item {
 
             delegate: Rectangle {
                 id: card
+                // Богатая карточка проекта по утверждённому концепту A (D-101): иконка-тайл, шифр и
+                // название, заказчик, ответственный (ГИП), чип статуса, счётчики комплектов/документов,
+                // зелёная точка активности. Предпросмотр — в инспекторе, двойной щелчок — вкладка.
+                readonly property var tender: backend.tenders.find(t => t.id === modelData.tender_id) || null
+                readonly property string customerName: tender ? (tender.customer_name || "") : ""
+                readonly property var gip: backend.assignments.find(a => a.project_id === modelData.id && a.project_role === "gip") || null
+                readonly property int docCount: backend.documents.filter(function(d) {
+                    var k = backend.kits.find(function(kk) { return kk.id === d.kit_id })
+                    return k && k.project_id === modelData.id
+                }).length
+                readonly property bool inWork: modelData.status === "work"
                 width: list.width
-                implicitHeight: Theme2.cardMinH + Theme2.pad
+                implicitHeight: (Theme2.compact ? 88 : 112) + Theme2.pad
                 radius: Theme2.radius
                 color: ma.containsMouse ? Theme2.hover : Theme2.surface
                 border.color: page.selectedId === modelData.id ? Theme2.primary : Theme2.cardBorder
@@ -79,35 +90,50 @@ Item {
                               topMargin: Theme2.pad - 4; bottomMargin: Theme2.pad - 4 }
                     spacing: Theme2.pad
 
-                    // Бейдж модуля ХАБ из графического пака (D-99): проекты — раздел ядра платформы.
-                    // Без подложки и побольше: эмблема сама тёмно-сланцевая, на тёмной подложке терялась.
-                    Image { Layout.preferredWidth: Theme2.compact ? 40 : 52; Layout.preferredHeight: width
-                            Layout.leftMargin: 4
-                            source: "../assets/vektor/app_icons/png_64/vektor_hub.png"
-                            sourceSize: Qt.size(64, 64); fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
+                    // Иконка-тайл: эмблема ХАБа из графического пака (D-99) на мягкой подложке — как в концепте A.
+                    Rectangle { Layout.preferredWidth: Theme2.compact ? 52 : 64; Layout.preferredHeight: width
+                                Layout.leftMargin: 4; radius: Theme2.radius
+                                color: Theme2.surfaceAlt; border.color: Theme2.border
+                        Image { anchors.centerIn: parent; width: parent.width - 14; height: width
+                                source: "../assets/vektor/app_icons/png_64/vektor_hub.png"
+                                sourceSize: Qt.size(64, 64); fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true } }
 
-                    ColumnLayout { spacing: Theme2.compact ? 2 : 4; Layout.fillWidth: true
+                    ColumnLayout { spacing: Theme2.compact ? 3 : 6; Layout.fillWidth: true
                         RowLayout { spacing: 10
-                            Text { text: modelData.code; color: Theme2.primary; font.family: Theme2.family
+                            Text { text: modelData.code; color: Theme2.primary; font.family: Theme2.mono
                                    font.pixelSize: Theme2.fsM; font.weight: Font.Bold }
                             Text { text: modelData.title; color: Theme2.text; font.family: Theme2.family
                                    font.pixelSize: Theme2.fsM; font.weight: Font.DemiBold
                                    Layout.fillWidth: true; elide: Text.ElideRight }
                         }
+                        // Заказчик и ответственный — кто платит и кто отвечает, видно сразу (концепт A).
+                        RowLayout { spacing: 16
+                            RowLayout { visible: card.customerName !== ""; spacing: 6
+                                Icon { name: "building-2"; size: 13; color: Theme2.textFaint }
+                                Text { text: card.customerName
+                                       color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsS
+                                       Layout.maximumWidth: card.width * 0.34; elide: Text.ElideRight } }
+                            RowLayout { visible: card.gip !== null; spacing: 6
+                                Icon { name: "user"; size: 13; color: Theme2.textFaint }
+                                Text { text: "ГИП: " + (card.gip ? card.gip.user_name : "")
+                                       color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsS } }
+                        }
                         RowLayout { spacing: 14
-                            Text { visible: (modelData.tender_title || "") !== ""
-                                   text: "Тендер: " + (modelData.tender_title || "")
-                                   color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsS
-                                   Layout.maximumWidth: card.width * 0.45; elide: Text.ElideRight }
+                            // Точка активности: проект в работе — зелёная, как в концепте A.
+                            Rectangle { width: 8; height: 8; radius: 4
+                                        color: card.inWork ? Theme2.success : Theme2.textFaint }
                             Text { text: modelData.kit_count + " компл."
+                                   color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsS }
+                            Text { text: card.docCount + " докум."
                                    color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsS }
                             Text { text: "карточка v" + modelData.version
                                    color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsS }
                         }
                     }
-                    VChip { text: modelData.status_label; tone: "info" }
-                    VChip { visible: modelData.pending === true; text: "Не отправлено"; tone: "warning"; iconName: "clock" }
-                    Icon { name: "chevron-right"; size: 16; color: Theme2.textFaint }
+                    ColumnLayout { spacing: 6; Layout.alignment: Qt.AlignTop
+                        VChip { text: modelData.status_label; tone: card.inWork ? "success" : "info" }
+                        VChip { visible: modelData.pending === true; text: "Не отправлено"; tone: "warning"; iconName: "clock" } }
+                    Icon { name: "chevron-right"; size: 16; color: Theme2.textFaint; Layout.alignment: Qt.AlignVCenter }
                 }
             }
 

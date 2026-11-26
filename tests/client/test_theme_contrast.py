@@ -6,7 +6,7 @@
 * бледные подписи (textFaint) — не ниже 3:1 (вспомогательный текст, не основной);
 * основной цвет на поверхности и текст на кнопке основного цвета — 4,5:1;
 * цвет каждого тона (успех, предупреждение, ошибка, информация) на своей подложке и на карточке — 4,5:1.
-Фирменные изображения тоже проверяются: файлы на месте, логотип прозрачен по краям.
+Фирменные изображения графического пака (assets/vektor) тоже проверяются: файлы на месте, логотип прозрачен по краям.
 """
 import re
 from pathlib import Path
@@ -15,7 +15,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 THEME = ROOT / "src" / "vector" / "client" / "qml" / "Theme.qml"
-BRAND = ROOT / "src" / "vector" / "client" / "assets" / "brand"
 
 
 def _tokens() -> dict:
@@ -65,10 +64,14 @@ def test_screens_have_no_hardcoded_colors():
 
 
 def test_brand_images_exist_and_logo_is_transparent():
+    """Фирменные изображения — графический пак экосистемы (D-99, assets/vektor): логотипы, фон, значок окна."""
     from PySide6.QtGui import QImage
-    for name in ("logo-light.png", "logo-dark.png", "mark-light.png", "mark-dark.png", "bg-light.jpg", "bg-dark.jpg"):
-        img = QImage(str(BRAND / name))
+    pack = ROOT / "src" / "vector" / "client" / "assets" / "vektor"
+    for name in ("app_icons/logo/vektor_platform_horizontal.png", "app_icons/logo/vektor_emblem_only.png",
+                 "app_icons/png_64/vektor_platform.png", "app_icons/ico/vektor_platform.ico",
+                 "backgrounds/space.jpg"):
+        img = QImage(str(pack / name))
         assert not img.isNull(), name
-    for name in ("logo-light.png", "logo-dark.png", "mark-light.png"):
-        img = QImage(str(BRAND / name))
+    for name in ("app_icons/logo/vektor_platform_horizontal.png", "app_icons/logo/vektor_emblem_only.png"):
+        img = QImage(str(pack / name))
         assert img.hasAlphaChannel() and img.pixelColor(0, 0).alpha() == 0, f"{name}: фон не прозрачен"

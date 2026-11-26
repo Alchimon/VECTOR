@@ -13,6 +13,7 @@ QtObject {
     property bool dark: false
     property bool compact: false
     readonly property string family: Theme.family
+    readonly property string mono: Theme.mono
 
     // ---- цвета: делегируем классической теме (единая палитра, один источник правды)
     readonly property color bg:           Theme.bg
@@ -43,6 +44,7 @@ QtObject {
     readonly property color scrim:        Theme.scrim
     readonly property url   logo:         Theme.logo
     readonly property url   mark:         Theme.mark
+    readonly property url   backdrop:     Theme.backdrop
 
     function tone(name) { return Theme.tone(name) }
 
@@ -82,12 +84,11 @@ QtObject {
     readonly property int statusBarH: compact ? 24 : 30  // статус-бар
     readonly property int tabsH:     compact ? 34 : 40   // вкладки открытых объектов
 
-    // ---- радиусы (мягче, чем в классике — Fluent)
-    readonly property int radiusS: 8
-    readonly property int radius:  12
-    readonly property int radiusL: 16
+    // ---- радиусы Neo-Utilitarian (D-99): плоские поверхности, скругления 4–6 px
+    readonly property int radiusS: 4
+    readonly property int radius:  6
+    readonly property int radiusL: 8
 
-    // ---- «воздушная» карточка: тонкая рамка + едва заметная тень (без layer-эффектов — offscreen-стенд)
-    readonly property color cardBorder: Qt.alpha(border, 0.9)
-    readonly property color cardShadow: dark ? "#40000000" : "#142E3846"
+    // ---- карточка: тонкая рамка 1px, без тени (плоская эстетика Linear/Figma)
+    readonly property color cardBorder: border
 }

@@ -116,7 +116,7 @@ MasterDetail {
                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: page.selectedKitId = modelData.id }
                 ColumnLayout { anchors.fill: parent; anchors.margins: 14; spacing: 4
                     RowLayout { Layout.fillWidth: true
-                        Text { text: modelData.code; color: Theme.primary; font.family: Theme.family; font.pixelSize: Theme.fsM; font.weight: Font.Bold; Layout.fillWidth: true }
+                        Text { text: modelData.code; color: Theme.primary; font.family: Theme.mono; font.pixelSize: Theme.fsM; font.weight: Font.Bold; Layout.fillWidth: true }
                         VChip { visible: modelData.pending; text: "Не отправлено"; tone: "warning"; iconName: "clock" }
                         VButton { kind: "ghost"; compact: true; iconName: "pencil"; Accessible.name: "Изменить комплект"; enabled: modelData.version > 0
                                   onClicked: { kitForm.editId = modelData.id; kitForm.editVersion = modelData.version; kCode.text = modelData.code; kTitle.text = modelData.title; kitForm.open() } } }

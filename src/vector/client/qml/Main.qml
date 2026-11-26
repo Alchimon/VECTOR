@@ -5,8 +5,9 @@ import "../qml2"
 
 // Главное окно программы. Показывает один из экранов по backend.screen:
 // «login» — LoginPage, «change_password» — ChangePasswordPage, «main» — рабочая оболочка.
-// Оболочка — по backend.uiMode (D-98): «classic» — привычная Shell.qml, «v2» — новая Shell2.qml
-// (лента команд, вкладки объектов, предпросмотр, статус-бар); переключается без перезапуска.
+// Оболочка — по backend.uiMode (D-98/D-100): «v2» — Shell2.qml (лента команд, вкладки объектов,
+// предпросмотр, статус-бар), режим по умолчанию; «classic» — прежняя Shell.qml, запасной вид
+// на время миграции разделов; переключается без перезапуска.
 // Тонкая полоска вверху — индикатор фоновой работы (backend.busy); Toasts — всплывающие уведомления.
 ApplicationWindow {
     id: win
@@ -24,6 +25,7 @@ ApplicationWindow {
 
     Binding { target: Theme; property: "dark"; value: backend.theme === "dark" }
     Binding { target: Theme; property: "family"; value: uiFontFamily }
+    Binding { target: Theme; property: "mono"; value: uiMonoFamily }
     // Интерфейс 2.0: та же тема (dark) + плотность из настроек (backend.uiDensity, D-98).
     Binding { target: Theme2; property: "dark"; value: backend.theme === "dark" }
     Binding { target: Theme2; property: "compact"; value: backend.uiDensity === "compact" }

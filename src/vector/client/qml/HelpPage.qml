@@ -220,10 +220,18 @@ Item {
                 id: aboutCol
                 width: parent.width; spacing: 12
                 VCard {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; implicitHeight: aboutMain.implicitHeight + 40
                     ColumnLayout {
-                        anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 20
+                        id: aboutMain
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20
                         spacing: 6
+                        // Логотип экосистемы из графического пака (D-99): на тёмной панели — как на входе,
+                        // в светлой теме серебристый читается за счёт тёмных кромок.
+                        Rectangle { Layout.fillWidth: true; implicitHeight: 86; radius: Theme.radiusS
+                                    color: Theme.dark ? Theme.brandBg : Theme.surfaceAlt
+                            Image { anchors.centerIn: parent; height: 62; width: height * sourceSize.width / Math.max(1, sourceSize.height)
+                                    source: Theme.logo; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true
+                                    Accessible.name: "ВЕКТОР ПЛАТФОРМА" } }
                         SectionTitle { text: "ВЕКТОР ПЛАТФОРМА — рабочая среда инженерной компании"; iconName: "info" }
                         KeyValue { k: "Версия программы"; v: backend.licenseInfo.app_version || "" }
                         KeyValue { k: "Режим"; v: backend.licenseInfo.mode === "licensed" ? "Лицензия" : "Демо / тестовый стенд" }
@@ -243,9 +251,10 @@ Item {
                     }
                 }
                 VCard {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; implicitHeight: aboutMods.implicitHeight + 40
                     ColumnLayout {
-                        anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 20
+                        id: aboutMods
+                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20
                         spacing: 6
                         SectionTitle { text: "Модули"; iconName: "layers" }
                         Repeater {

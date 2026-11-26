@@ -115,10 +115,22 @@ def test_v2_density_toggle_shrinks_chrome(ui):
     assert ui.find("statusBar2").property("implicitHeight") == h_cozy
 
 
+def test_v2_is_default_mode(ui, tmp_path):
+    """Свежая установка (нет сохранённых настроек) стартует в интерфейсе 2.0 (D-100)."""
+    from PySide6.QtCore import QSettings
+    from vector.client.backend import Backend
+    b = Backend(settings=QSettings(str(tmp_path / "fresh.ini"), QSettings.Format.IniFormat))
+    try:
+        assert b.uiMode == "v2"
+    finally:
+        b.shutdown()
+
+
 def test_v2_switch_roundtrip_with_classic(ui):
-    """Классика ↔ 2.0: кнопка «Новый вид» в классике, «Классика» на ленте 2.0; выбор сохраняется."""
+    """Классика ↔ 2.0: кнопка «Новый вид» в классике, «Классика» на ленте 2.0; выбор сохраняется.
+    (Стенд-фикстура стартует классику ради совместимости тестов; фабричное умолчание — 2.0, проверено выше.)"""
     ui.login("a.smirnova")
-    assert ui.backend.uiMode == "classic"
+    # В 2.0 — кнопкой ✨ в классике
     btn = ui.find("btnUiV2")
     assert btn is not None
     ui.click(btn)
@@ -140,7 +152,8 @@ def test_v2_switch_roundtrip_with_classic(ui):
 def test_v2_invalid_ui_values_ignored(ui):
     """Некорректные значения вида/плотности игнорируются (защита настроек)."""
     ui.login("a.smirnova")
+    before_mode = ui.backend.uiMode
     ui.backend.uiMode = "spaceship"
     ui.backend.uiDensity = "sparse"
-    assert ui.backend.uiMode == "classic"
+    assert ui.backend.uiMode == before_mode
     assert ui.backend.uiDensity == "cozy"

@@ -66,7 +66,7 @@ class Harness:
 
         self.tmp = Path(tempfile.mkdtemp(prefix="vector-ui-"))
         self.app = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])
-        family = load_fonts()
+        family, mono_family = load_fonts()
         self.svc = build_server(self.tmp)
         self.ids = seed(self.svc)
         self.transport = LoopbackTransport(self.svc, "10.0.0.20")
@@ -78,7 +78,7 @@ class Harness:
             """Фабрика SyncClient для Backend: loopback-транспорт вместо HTTPS."""
             return SyncClient(self.transport, url, self.tmp / "profiles", store, "ui-device", kdf={"n": 2 ** 10, "r": 8, "p": 1})
         self.backend = Backend(client_factory=factory, settings=settings, auto_timers=False)
-        self.engine = create_engine(self.backend, family)
+        self.engine = create_engine(self.backend, family, mono_family)
         self.win = self.engine.rootObjects()[0]
         self.win.setProperty("width", 1440)
         self.win.setProperty("height", 900)
@@ -219,6 +219,10 @@ def main():
         h = Harness(theme)
         h.shot(out / f"{theme}-01-login.png")
         h.login()
+        # Сцены 01–76 — классическая оболочка; интерфейс 2.0 — сцены 77 ниже (с D-100 умолчание — v2,
+        # поэтому для классических сцен переключаем явно).
+        h.backend.uiMode = "classic"
+        h.wait_idle()
         h.go("tenders", h.ids["tender_won"])
         h.shot(out / f"{theme}-02-tender-won.png")
         h.go("tenders", h.ids["tender_sub"])
@@ -916,7 +920,10 @@ def main():
         h.backend.uiMode = "v2"
         h.wait_idle()
         from PySide6.QtCore import QMetaObject as _QMo, QObject as _QO, Q_ARG as _QA
-        sh2 = h.win.findChild(_QO, "shell2")
+        # findChild может вернуть «призрак»: старый экземпляр shell2 остаётся в QObject-дереве после
+        # выгрузки Loader'ом (на старте стенда умолчание D-100 — v2, затем сцены 01–76 в классике).
+        # Берём ВИДИМЫй экземпляр.
+        sh2 = next(x for x in h.win.findChildren(_QO, "shell2") if x.isVisible())
         _p = next(x for x in _plain(h.backend.property("projects")) if x["id"] == h.ids["project"])
         _QMo.invokeMethod(sh2, "selectObject", _QA("QVariant", "project"), _QA("QVariant", _p))
         h.wait_idle()

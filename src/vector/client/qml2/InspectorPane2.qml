@@ -3,8 +3,9 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../qml"
 
-// Инспектор справа (интерфейс 2.0, D-98): предпросмотр и свойства выбранного объекта — то, чего не хватало
-// в классике («нет окон предпросмотра»). Пока поддерживает проект, комплект и документ; пустой выбор —
+// Инспектор справа (интерфейс 2.0, D-98/D-101): предпросмотр и свойства выбранного объекта — то, чего
+// не хватало в классике («нет окон предпросмотра»). Три вкладки по утверждённому концепту B:
+// «Свойства», «Версии», «Обсуждение». Поддерживает проект, комплект и документ; пустой выбор —
 // вежливая подсказка. Действия крупные и видимые (принцип «контекстные действия на виду»).
 Rectangle {
     id: insp
@@ -12,6 +13,7 @@ Rectangle {
     property var object: null            // объект кэша backend (project/kit/document)
     property string kind: ""             // project | kit | document
     property var team: []                // команда проекта (для kind=project)
+    property string inspectorTab: "props"   // props | versions | discuss
     signal openRequested(string kind, string id)
     signal goPage(string page, string id)
     signal editDocument(var doc)
@@ -40,7 +42,8 @@ Rectangle {
             ColumnLayout { visible: insp.object === null; Layout.fillWidth: true; spacing: Theme2.gap; Layout.topMargin: 40
                 Icon { name: "eye"; size: 34; color: Theme2.textFaint; Layout.alignment: Qt.AlignHCenter }
                 Text { text: "Предпросмотр"; color: Theme2.textMuted; font.family: Theme2.family
-                       font.pixelSize: Theme2.fsM; font.weight: Font.DemiBold; Layout.alignment: Qt.AlignHCenter }
+                       font.capitalization: Font.AllUppercase; font.letterSpacing: 1.0; font.weight: Font.DemiBold
+                       font.pixelSize: Theme2.fsM; Layout.alignment: Qt.AlignHCenter }
                 Text { text: "Выберите объект в списке — здесь появятся его свойства, версии и действия."
                        color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsS
                        wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
@@ -64,6 +67,36 @@ Rectangle {
                 }
             }
 
+            // ---------- вкладки инспектора (концепт B, D-101): Свойства / Версии / Обсуждение
+            RowLayout { visible: insp.object !== null; Layout.fillWidth: true; spacing: 4
+                Repeater {
+                    model: [
+                        { id: "props",    label: "Свойства" },
+                        { id: "versions", label: "Версии" },
+                        { id: "discuss",  label: "Обсуждение" }
+                    ]
+                    delegate: AbstractButton {
+                        id: itab
+                        property bool active: insp.inspectorTab === modelData.id
+                        Accessible.name: modelData.label
+                        Layout.fillWidth: true; implicitHeight: Theme2.compact ? 30 : 34
+                        hoverEnabled: true
+                        onClicked: insp.inspectorTab = modelData.id
+                        background: Rectangle {
+                            radius: Theme2.radiusS
+                            color: itab.active ? Theme2.primarySoft : itab.hovered ? Theme2.hover : "transparent"
+                        }
+                        contentItem: Text { text: modelData.label; horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter; color: itab.active ? Theme2.primary : Theme2.textMuted
+                            font.family: Theme2.family; font.pixelSize: Theme2.fsS
+                            font.weight: itab.active ? Font.DemiBold : Font.Normal }
+                    }
+                }
+            }
+
+            // ================= ВКЛАДКА «СВОЙСТВА» =================
+            ColumnLayout { visible: insp.inspectorTab === "props" && insp.object !== null
+                           Layout.fillWidth: true; spacing: Theme2.gap + 4
             // ---------- свойства проекта
             ColumnLayout { visible: insp.kind === "project" && insp.object !== null; Layout.fillWidth: true; spacing: 6
                 KeyValue { k: "Тендер-основание"; v: insp.object ? insp.object.tender_title || "—" : "" }
@@ -75,7 +108,8 @@ Rectangle {
             // ---------- команда проекта (аватарки)
             ColumnLayout { visible: insp.kind === "project" && insp.team.length > 0; Layout.fillWidth: true; spacing: 6
                 Text { text: "Команда"; color: Theme2.textMuted; font.family: Theme2.family
-                       font.pixelSize: Theme2.fsXs; font.weight: Font.Bold; font.letterSpacing: 0.6 }
+                       font.capitalization: Font.AllUppercase; font.letterSpacing: 1.0; font.weight: Font.DemiBold
+                       font.pixelSize: Theme2.fsXs }
                 Flow { Layout.fillWidth: true; spacing: 6
                     Repeater {
                         model: insp.team
@@ -96,7 +130,8 @@ Rectangle {
             // ---------- комплекты проекта (мини-предпросмотр)
             ColumnLayout { visible: insp.kind === "project" && insp.selKits.length > 0; Layout.fillWidth: true; spacing: 6
                 Text { text: "Комплекты"; color: Theme2.textMuted; font.family: Theme2.family
-                       font.pixelSize: Theme2.fsXs; font.weight: Font.Bold; font.letterSpacing: 0.6 }
+                       font.capitalization: Font.AllUppercase; font.letterSpacing: 1.0; font.weight: Font.DemiBold
+                       font.pixelSize: Theme2.fsXs }
                 Repeater {
                     model: insp.selKits
                     delegate: Rectangle {
@@ -153,6 +188,44 @@ Rectangle {
                        : "Комплект откроется во вкладке — задачи, документы и расчёт рядом."
                    color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
                    wrapMode: Text.WordWrap; Layout.fillWidth: true }
+            }   // конец вкладки «Свойства»
+
+            // ================= ВКЛАДКА «ВЕРСИИ» (концепт B, D-101): история версий объекта.
+            // Сейчас карточка знает только текущую версию (номер + метка времени сохранения);
+            // полный журнал ревизий появится с пакетом v3 (объектное хранилище версий).
+            ColumnLayout { visible: insp.inspectorTab === "versions" && insp.object !== null
+                           Layout.fillWidth: true; spacing: Theme2.gap
+                Repeater {
+                    model: insp.object !== null ? [insp.object] : []
+                    delegate: RowLayout {
+                        Layout.fillWidth: true; spacing: 10
+                        Rectangle { width: 10; height: 10; radius: 5; color: Theme2.success }
+                        ColumnLayout { spacing: 2; Layout.fillWidth: true
+                            Text { text: "Версия v" + modelData.version; color: Theme2.text
+                                   font.family: Theme2.family; font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold }
+                            Text { text: "Текущая версия карточки объекта. Журнал изменений появится в ближайшем обновлении."
+                                   color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                                   wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        }
+                    }
+                }
+                Text { text: "История версий — основа утверждённого концепта: здесь будут таймлайн изменений, авторы и сравнение версий."
+                       color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                       wrapMode: Text.WordWrap; Layout.fillWidth: true }
+            }
+
+            // ================= ВКЛАДКА «ОБСУЖДЕНИЕ» (концепт B, D-101): комментарии к объекту.
+            ColumnLayout { visible: insp.inspectorTab === "discuss" && insp.object !== null
+                           Layout.fillWidth: true; spacing: Theme2.gap
+                ColumnLayout { Layout.fillWidth: true; spacing: 6; Layout.topMargin: 24
+                    Icon { name: "message-circle"; size: 30; color: Theme2.textFaint; Layout.alignment: Qt.AlignHCenter }
+                    Text { text: "Пока пусто"; color: Theme2.textMuted; font.family: Theme2.family
+                           font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold; Layout.alignment: Qt.AlignHCenter }
+                    Text { text: "Комментарии к объекту появятся с модулем согласований: отметки, решения и вопросы по месту — не в почте."
+                           color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                           wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
+                }
+            }
         }
     }
 }
