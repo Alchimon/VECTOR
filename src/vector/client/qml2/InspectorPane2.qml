@@ -285,6 +285,10 @@ Rectangle {
                                        font.family: Theme2.family; font.pixelSize: Theme2.fsXs } }
                             Text { text: (modelData.author_name || "—") + " · " + (modelData.created_label || "")
                                    color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+                            Text { visible: (modelData.comment || "") !== ""
+                                   text: "«" + (modelData.comment || "") + "»"
+                                   color: Theme2.text; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                                   font.italic: true; wrapMode: Text.WordWrap; Layout.fillWidth: true }
                             Text { visible: (modelData.sha256 || "") !== ""
                                    text: "SHA-256: " + (modelData.sha256 || "").substring(0, 16) + "…"
                                    color: Theme2.textFaint; font.family: Theme2.mono; font.pixelSize: Theme2.fsXs }
@@ -312,6 +316,10 @@ Rectangle {
                                        font.family: Theme2.mono; font.pixelSize: Theme2.fsXs } }
                             Text { text: (modelData.author_name || "—") + " · " + (modelData.frozen_label || "")
                                    color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+                            Text { visible: (modelData.reason || "") !== ""
+                                   text: "Основание: " + (modelData.reason || "")
+                                   color: Theme2.text; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                                   wrapMode: Text.WordWrap; Layout.fillWidth: true }
                             Text { visible: (modelData.hash_short || "") !== ""
                                    text: "Хэш: " + (modelData.hash_short || "")
                                    color: Theme2.textFaint; font.family: Theme2.mono; font.pixelSize: Theme2.fsXs } }
