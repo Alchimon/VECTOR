@@ -1,6 +1,6 @@
 # ВЕКТОР / VECTOR
 
-<p align="center"><img src="src/vector/client/assets/brand/logo-light.png" alt="ВЕКТОР — единая платформа для инженеров и бизнеса" width="460"></p>
+<p align="center"><img src="assets/vektor/app_icons/logo/vektor_platform_horizontal.png" alt="ВЕКТОР ПЛАТФОРМА — единая платформа для инженеров и бизнеса" width="520"></p>
 
 **Рабочая среда инженерной компании**: от заказчика и тендера до проекта, комплектов, документов,
 производства и эксплуатации — в одном настольном приложении для Windows с собственным сервером компании.

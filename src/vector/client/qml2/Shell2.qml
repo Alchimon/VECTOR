@@ -81,9 +81,22 @@ Item {
     // ---------- выбранный объект (инспектор справа)
     property var selectedObject: null
     property string selectedKind: ""
-    function selectObject(kind, obj) { selectedKind = kind; selectedObject = obj }
+    function selectObject(kind, obj) { selectedKind = kind; selectedObject = obj
+        if (kind === "project" && obj) treeExpandedProject = obj.id
+        if (kind === "kit" && obj) treeExpandedProject = projectOfKit(obj.id) }
     readonly property bool inspectorVisible: selectedObject !== null && activeTab !== null && activeTab.kind === "page"
-    onActiveTabKeyChanged: if (activeTab === null || activeTab.kind !== "page") { /* выбор сохраняется */ }
+    // Дерево проектов слева (концепт A, D-101): развёрнутый проект — проект активной вкладки
+    // (для комплекта — его проект).
+    property string treeExpandedProject: ""
+    function projectOfKit(kitId) {
+        var k = (backend.kits || []).find(function(k) { return k.id === kitId })
+        return k ? k.project_id || "" : ""
+    }
+    onActiveTabKeyChanged: {
+        var t = activeTab
+        if (t !== null && t.kind === "project") treeExpandedProject = t.id
+        else if (t !== null && t.kind === "kit") treeExpandedProject = projectOfKit(t.id)
+    }
 
     // ---------- видимость разделов (та же логика подсказок по правам, что в классике)
     readonly property bool seesStock: backend.hint("stock.read", backend.permRevision)
@@ -248,7 +261,7 @@ Item {
         fillMode: Image.PreserveAspectCrop
         asynchronous: true; smooth: true; mipmap: true
     }
-    Rectangle { anchors.fill: parent; color: Qt.alpha(Theme2.bg, Theme2.dark ? 0.80 : 0.96) }
+    Rectangle { anchors.fill: parent; color: Qt.alpha(Theme2.bg, Theme2.dark ? 0.80 : 0.85) }
 
     ColumnLayout {
         anchors.fill: parent
@@ -552,11 +565,131 @@ Item {
                     Layout.fillWidth: true; Layout.fillHeight: true
                     spacing: 0
 
+                    // ---------- дерево проектов (концепт A, D-101): проект → комплекты и документы.
+                    // Навигация по иерархии работы — не поиском по спискам, а прямо по дереву.
+                    Rectangle {
+                        id: projectTree
+                        objectName: "projectTree"
+                        color: Theme2.surfaceAlt
+                        visible: !backend.lowPerformanceMode
+                        Layout.preferredWidth: visible ? (Theme2.compact ? 196 : 232) : 0
+                        Layout.fillHeight: true
+                        Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: Theme2.border }
+                        ColumnLayout {
+                            anchors.fill: parent; spacing: 0
+                            RowLayout {
+                                Layout.fillWidth: true; Layout.margins: 10; spacing: 8
+                                Icon { name: "folder-kanban"; size: 15; color: Theme2.primary }
+                                Text { text: "Проекты"; color: Theme2.textMuted; font.family: Theme2.family
+                                       font.capitalization: Font.AllUppercase; font.letterSpacing: 1.0
+                                       font.weight: Font.DemiBold; font.pixelSize: Theme2.fsS; Layout.fillWidth: true }
+                                Text { text: backend.projects.length; color: Theme2.textFaint
+                                       font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+                            }
+                            Rectangle { Layout.fillWidth: true; height: 1; color: Theme2.border }
+                            Flickable {
+                                Layout.fillWidth: true; Layout.fillHeight: true
+                                contentWidth: width; contentHeight: treeCol.implicitHeight
+                                clip: true; boundsBehavior: Flickable.StopAtBounds
+                                Column {
+                                    id: treeCol
+                                    width: parent.width
+                                    Repeater {
+                                        model: backend.projects
+                                        delegate: Column {
+                                            id: treeProj
+                                            property var project: modelData
+                                            property bool expanded: shell2.treeExpandedProject === project.id
+                                            width: treeCol.width
+                                            // --- узел проекта
+                                            Rectangle {
+                                                width: parent.width; height: Theme2.compact ? 32 : 36
+                                                color: projNodeMa.containsMouse ? Theme2.hover : "transparent"
+                                                RowLayout {
+                                                    anchors { fill: parent; leftMargin: 8; rightMargin: 8 } spacing: 6
+                                                    Icon { name: "folder-kanban"; size: 14
+                                                           color: treeProj.expanded ? Theme2.primary : Theme2.textMuted }
+                                                    Text { text: (treeProj.project.code ? treeProj.project.code + " · " : "") + treeProj.project.title
+                                                           color: Theme2.text; font.family: Theme2.family; font.pixelSize: Theme2.fsS
+                                                           font.weight: treeProj.expanded ? Font.DemiBold : Font.Normal
+                                                           Layout.fillWidth: true; elide: Text.ElideRight }
+                                                    Icon { name: "chevron-down"; size: 12; color: Theme2.textFaint
+                                                           rotation: treeProj.expanded ? 0 : -90 }
+                                                }
+                                                MouseArea { id: projNodeMa; anchors.fill: parent; hoverEnabled: true
+                                                    cursorShape: Qt.PointingHandCursor
+                                                    onClicked: {
+                                                        if (shell2.treeExpandedProject === treeProj.project.id) shell2.treeExpandedProject = ""
+                                                        else shell2.treeExpandedProject = treeProj.project.id
+                                                    }
+                                                    onDoubleClicked: shell2.openObject("project", treeProj.project.id) }
+                                                VToolTip { visible: projNodeMa.containsMouse; text: treeProj.project.title
+                                                           + " — щелчок раскрывает, двойной щелчок открывает во вкладке" }
+                                            }
+                                            // --- дети: комплекты и документы (без учётных записей в корзине)
+                                            Column {
+                                                visible: treeProj.expanded
+                                                width: parent.width
+                                                Repeater {
+                                                    model: backend.kits.filter(function(k) { return k.project_id === treeProj.project.id })
+                                                    delegate: Rectangle {
+                                                        id: kitNode
+                                                        property var kit: modelData
+                                                        width: parent.width; height: Theme2.compact ? 28 : 32
+                                                        color: kitNodeMa.containsMouse ? Theme2.hover : "transparent"
+                                                        RowLayout {
+                                                            anchors { fill: parent; leftMargin: 22; rightMargin: 8 } spacing: 6
+                                                            Icon { name: "layers"; size: 13; color: Theme2.primary }
+                                                            Text { text: kitNode.kit.code + " · " + kitNode.kit.title
+                                                                   color: Theme2.text; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                                                                   Layout.fillWidth: true; elide: Text.ElideRight }
+                                                        }
+                                                        MouseArea { id: kitNodeMa; anchors.fill: parent; hoverEnabled: true
+                                                            cursorShape: Qt.PointingHandCursor
+                                                            onClicked: shell2.openObject("kit", kitNode.kit.id) }
+                                                        VToolTip { visible: kitNodeMa.containsMouse
+                                                                   text: kitNode.kit.title + " — открыть комплект во вкладке" }
+                                                    }
+                                                }
+                                                Repeater {
+                                                    model: backend.documents.filter(function(d) {
+                                                        var k = backend.kits.find(function(kk) { return kk.id === d.kit_id })
+                                                        return k && k.project_id === treeProj.project.id
+                                                    })
+                                                    delegate: Rectangle {
+                                                        id: docNode
+                                                        property var doc: modelData
+                                                        width: parent.width; height: Theme2.compact ? 26 : 30
+                                                        color: docNodeMa.containsMouse ? Theme2.hover : "transparent"
+                                                        RowLayout {
+                                                            anchors { fill: parent; leftMargin: 36; rightMargin: 8 } spacing: 6
+                                                            Icon { name: docNode.doc.kind === "sheet" ? "table" : "file-text"; size: 12
+                                                                   color: Theme2.warning }
+                                                            Text { text: docNode.doc.code + " · " + docNode.doc.title
+                                                                   color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                                                                   Layout.fillWidth: true; elide: Text.ElideRight }
+                                                        }
+                                                        MouseArea { id: docNodeMa; anchors.fill: parent; hoverEnabled: true
+                                                            cursorShape: Qt.PointingHandCursor
+                                                            onClicked: shell2.selectObject("document", docNode.doc)
+                                                            onDoubleClicked: shell2.openObject("doc", docNode.doc.id) }
+                                                        VToolTip { visible: docNodeMa.containsMouse
+                                                                   text: docNode.doc.title + " — щелчок: предпросмотр, двойной щелчок: редактор" }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // Контент активной вкладки. Все вкладки живут в StackLayout — состояние не теряется
                     // при переключении (как в браузере): черновик в поле останется на месте.
                     Item {
                         Layout.fillWidth: true; Layout.fillHeight: true
-                        Rectangle { anchors.fill: parent; color: Theme2.bg }
+                        // Без глухой подложки: сквозь поля страниц виден фирменный фон оболочки (D-101).
                         // Лицензионная полоса (D-88) — как в классике, поверх контента раздела.
                         Rectangle {
                             id: licenseBanner
