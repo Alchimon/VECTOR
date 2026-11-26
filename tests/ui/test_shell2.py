@@ -255,6 +255,10 @@ def test_v2_inspector_document_preview_and_download(ui):
     assert "ВЕКТОР" in (insp.property("previewNote") or "")
     dl = insp.findChild(QObject, "inspDownload")
     assert dl is not None and dl.property("visible") is True
+    # «Новая задача» по документу (D-109) видна и доступна онлайн
+    nt = insp.findChild(QObject, "inspNewTask")
+    assert nt is not None and nt.property("visible") is True and nt.property("enabled") is True
+    assert insp.findChild(QObject, "inspTaskForm") is not None
 
 
 def test_v2_projects_filter_chips(ui):

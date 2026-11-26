@@ -63,8 +63,20 @@ Rectangle {
     Rectangle { anchors.left: parent.left; width: 1; height: parent.height; color: Theme2.border }
 
     readonly property var selKits: kind === "project" && object ? backend.kits.filter(k => k.project_id === object.id) : []
+    // Команда проекта выбранного объекта (для формы «Новая задача»): участники назначений проекта.
     readonly property var selDocs: kind === "kit" && object ? backend.documents.filter(d => d.kit_id === object.id)
                                    : kind === "project" && object ? backend.documents.filter(d => (backend.kits.find(k => k.id === d.kit_id) || {}).project_id === object.id) : []
+    readonly property var teamOptions: {
+        if (object === null) return [{ id: "", label: "Не назначен" }]
+        var pid = kind === "project" ? object.id
+                : kind === "kit" ? object.project_id
+                : kind === "document" ? ((backend.kits.find(function(k) { return k.id === object.kit_id }) || {}).project_id || "") : ""
+        var seen = {}, out = [{ id: "", label: "Не назначен" }]
+        backend.assignments.forEach(function(a) {
+            if (a.project_id === pid && !seen[a.user_id]) { seen[a.user_id] = true; out.push({ id: a.user_id, label: a.user_name }) }
+        })
+        return out
+    }
 
     Flickable {
         anchors.fill: parent
@@ -249,6 +261,12 @@ Rectangle {
                           iconName: "download"; Layout.fillWidth: true
                           tip: "Файл сохраняется после сверки SHA-256"
                           onClicked: saveDlg2.open() }
+                VButton { objectName: "inspNewTask"
+                          visible: insp.kind === "document" && insp.object !== null
+                          text: "Новая задача"; kind: "soft"; iconName: "list-checks"; Layout.fillWidth: true
+                          tip: "Задача по этому документу в комплект — исполнителю и со сроком"
+                          enabled: backend.online
+                          onClicked: taskForm2.ask(insp.object) }
             }
 
             Text { visible: insp.object !== null; Layout.topMargin: 4
@@ -388,6 +406,37 @@ Rectangle {
                 verForm2.working = false
                 if (r.status === "accepted") verForm2.close()
                 else verForm2.error = r.message_ru || "Версия не создана."
+            }
+        }
+    }
+
+    // ---------- диалог «Новая задача» (D-109): задача по документу — в его комплект, с привязкой к документу.
+    FormDialog {
+        id: taskForm2
+        objectName: "inspTaskForm"
+        property var doc: null
+        property string tag: "insp-task-" + Math.random().toString(36).slice(2)
+        title: "Новая задача по документу"
+        subtitle: doc ? doc.code + " · " + doc.title : ""
+        note: "Задача попадёт в комплект документа и будет видна исполнителю в «Задачах» комплекта и на «Главной»."
+        confirmText: "Поставить задачу"
+        canConfirm: tTitle2.text.trim() !== "" && backend.online
+        function ask(d) { doc = d; tTitle2.text = ""; tDue2.text = ""; tWho2.currentIndex = 0; open() }
+        onConfirmed: { working = true; error = ""
+            backend.execute(tag, "task.create", ({ id: backend.newId(), kit_id: doc.kit_id,
+                title: tTitle2.text.trim(), description: "",
+                assignee_user_id: tWho2.currentValue || null, due_date: tDue2.text.trim() || null,
+                document_id: doc.id }), 0) }
+        VField { id: tTitle2; label: "Что нужно сделать"; required: true; placeholder: "Например: сверить перечень сигналов" }
+        VSelect { id: tWho2; label: "Исполнитель"; model: insp.teamOptions }
+        VField { id: tDue2; label: "Срок"; placeholder: "ГГГГ-ММ-ДД" }
+        Connections {
+            target: backend
+            function onCommandDone(t, r) {
+                if (t !== taskForm2.tag) return
+                taskForm2.working = false
+                if (r.status === "accepted") taskForm2.close()
+                else taskForm2.error = r.message_ru || "Задача не создана."
             }
         }
     }
