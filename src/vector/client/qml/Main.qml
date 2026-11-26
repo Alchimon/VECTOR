@@ -25,6 +25,7 @@ ApplicationWindow {
 
     Binding { target: Theme; property: "dark"; value: backend.theme === "dark" }
     Binding { target: Theme; property: "family"; value: uiFontFamily }
+    Binding { target: Theme; property: "mono"; value: uiMonoFamily }
     // Интерфейс 2.0: та же тема (dark) + плотность из настроек (backend.uiDensity, D-98).
     Binding { target: Theme2; property: "dark"; value: backend.theme === "dark" }
     Binding { target: Theme2; property: "compact"; value: backend.uiDensity === "compact" }

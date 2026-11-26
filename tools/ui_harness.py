@@ -66,7 +66,7 @@ class Harness:
 
         self.tmp = Path(tempfile.mkdtemp(prefix="vector-ui-"))
         self.app = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])
-        family = load_fonts()
+        family, mono_family = load_fonts()
         self.svc = build_server(self.tmp)
         self.ids = seed(self.svc)
         self.transport = LoopbackTransport(self.svc, "10.0.0.20")
@@ -78,7 +78,7 @@ class Harness:
             """Фабрика SyncClient для Backend: loopback-транспорт вместо HTTPS."""
             return SyncClient(self.transport, url, self.tmp / "profiles", store, "ui-device", kdf={"n": 2 ** 10, "r": 8, "p": 1})
         self.backend = Backend(client_factory=factory, settings=settings, auto_timers=False)
-        self.engine = create_engine(self.backend, family)
+        self.engine = create_engine(self.backend, family, mono_family)
         self.win = self.engine.rootObjects()[0]
         self.win.setProperty("width", 1440)
         self.win.setProperty("height", 900)

@@ -40,7 +40,8 @@ Rectangle {
             ColumnLayout { visible: insp.object === null; Layout.fillWidth: true; spacing: Theme2.gap; Layout.topMargin: 40
                 Icon { name: "eye"; size: 34; color: Theme2.textFaint; Layout.alignment: Qt.AlignHCenter }
                 Text { text: "Предпросмотр"; color: Theme2.textMuted; font.family: Theme2.family
-                       font.pixelSize: Theme2.fsM; font.weight: Font.DemiBold; Layout.alignment: Qt.AlignHCenter }
+                       font.capitalization: Font.AllUppercase; font.letterSpacing: 1.0; font.weight: Font.DemiBold
+                       font.pixelSize: Theme2.fsM; Layout.alignment: Qt.AlignHCenter }
                 Text { text: "Выберите объект в списке — здесь появятся его свойства, версии и действия."
                        color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsS
                        wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
@@ -75,7 +76,8 @@ Rectangle {
             // ---------- команда проекта (аватарки)
             ColumnLayout { visible: insp.kind === "project" && insp.team.length > 0; Layout.fillWidth: true; spacing: 6
                 Text { text: "Команда"; color: Theme2.textMuted; font.family: Theme2.family
-                       font.pixelSize: Theme2.fsXs; font.weight: Font.Bold; font.letterSpacing: 0.6 }
+                       font.capitalization: Font.AllUppercase; font.letterSpacing: 1.0; font.weight: Font.DemiBold
+                       font.pixelSize: Theme2.fsXs }
                 Flow { Layout.fillWidth: true; spacing: 6
                     Repeater {
                         model: insp.team
@@ -96,7 +98,8 @@ Rectangle {
             // ---------- комплекты проекта (мини-предпросмотр)
             ColumnLayout { visible: insp.kind === "project" && insp.selKits.length > 0; Layout.fillWidth: true; spacing: 6
                 Text { text: "Комплекты"; color: Theme2.textMuted; font.family: Theme2.family
-                       font.pixelSize: Theme2.fsXs; font.weight: Font.Bold; font.letterSpacing: 0.6 }
+                       font.capitalization: Font.AllUppercase; font.letterSpacing: 1.0; font.weight: Font.DemiBold
+                       font.pixelSize: Theme2.fsXs }
                 Repeater {
                     model: insp.selKits
                     delegate: Rectangle {

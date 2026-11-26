@@ -240,6 +240,16 @@ Item {
         finance: "analytics", analytics: "analytics", stock: "supply", procurement: "supply",
         worktime: "hr", production: "production", products: "service", quality: "quality" })
 
+    // Фирменный фон рабочей области (D-99): «космос/чертёж» под вуалью цвета холста — виден в полях
+    // между карточками и за панелями; карточки и панели непрозрачны, данные не страдают.
+    Image {
+        anchors.fill: parent
+        source: Theme2.backdrop
+        fillMode: Image.PreserveAspectCrop
+        asynchronous: true; smooth: true; mipmap: true
+    }
+    Rectangle { anchors.fill: parent; color: Qt.alpha(Theme2.bg, Theme2.dark ? 0.80 : 0.96) }
+
     ColumnLayout {
         anchors.fill: parent
         spacing: 0

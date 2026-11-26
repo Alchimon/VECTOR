@@ -110,23 +110,32 @@ class IconProvider(QQuickImageProvider):
         return img
 
 
-def load_fonts() -> str:
-    """Подключить встроенный шрифт Inter (одинаковый вид на всех ПК); если не загрузился — Segoe UI (системный шрифт
-    Windows). Возвращает имя семейства для QML.
+def load_fonts() -> tuple[str, str]:
+    """Подключить встроенные шрифты (одинаковый вид на всех ПК): Inter — интерфейсный, JetBrains Mono —
+    моноширинный для шифров/артикулов/кодов (дизайн-система D-99). Если не загрузились — Segoe UI / Consolas.
+    Возвращает (семейство UI, семейство моно).
     """
     fid = QFontDatabase.addApplicationFont(str(ASSETS / "fonts" / "InterVariable.ttf"))
     fams = QFontDatabase.applicationFontFamilies(fid) if fid >= 0 else []
-    return fams[0] if fams else "Segoe UI"
+    ui_fam = fams[0] if fams else "Segoe UI"
+    mono_fam = "Consolas"
+    for f in ("JetBrainsMono-Regular.ttf", "JetBrainsMono-Bold.ttf"):
+        mid = QFontDatabase.addApplicationFont(str(ASSETS / "fonts" / f))
+        mfams = QFontDatabase.applicationFontFamilies(mid) if mid >= 0 else []
+        if mfams:
+            mono_fam = mfams[0]
+    return ui_fam, mono_fam
 
 
-def create_engine(backend, family: str) -> QQmlApplicationEngine:
-    """Создать движок QML: провайдер иконок, объект backend (вся логика клиента) и имя шрифта в контексте, загрузка
-    Main.qml.
+def create_engine(backend, family: str, mono_family: str = "Consolas") -> QQmlApplicationEngine:
+    """Создать движок QML: провайдер иконок, объект backend (вся логика клиента), семейства шрифтов
+    (интерфейсный и моноширинный) в контексте, загрузка Main.qml.
     """
     engine = QQmlApplicationEngine()
     engine.addImageProvider("icon", IconProvider())
     engine.rootContext().setContextProperty("backend", backend)
     engine.rootContext().setContextProperty("uiFontFamily", family)
+    engine.rootContext().setContextProperty("uiMonoFamily", mono_family)
     engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
     return engine
 
@@ -144,11 +153,12 @@ def main(argv=None) -> int:
     app.setOrganizationName("VECTOR")
     # Значок окна и панели задач — эмблема экосистемы из графического пака (D-99, vektor_platform.ico).
     ico = VEKTOR / "app_icons" / "ico" / "vektor_platform.ico"
-    app.setWindowIcon(QIcon(str(ico)) if ico.exists() else QIcon(str(ASSETS / "brand" / "mark-light.png")))
-    family = load_fonts()
+    app.setWindowIcon(QIcon(str(ico)) if ico.exists()
+                      else QIcon(str(VEKTOR / "app_icons" / "png_128" / "vektor_platform.png")))
+    family, mono_family = load_fonts()
     from .backend import Backend
     backend = Backend()
-    engine = create_engine(backend, family)
+    engine = create_engine(backend, family, mono_family)
     if not engine.rootObjects():
         return 1
     rc = app.exec()

@@ -14,6 +14,8 @@ import QtQuick
 QtObject {
     property bool dark: false
     property string family: "Inter"
+    // Моноширинный шрифт (шифры проектов, артикулы, коды документов, числа-колонки) — D-99.
+    property string mono: "JetBrains Mono"
 
     readonly property color bg:          dark ? "#121417" : "#F4F6F8"
     readonly property color sidebar:     dark ? "#181B20" : "#FAFBFC"
@@ -68,9 +70,10 @@ QtObject {
     readonly property color brandText:  dark ? "#E6EDF3" : "#E6EDF3"
     readonly property color brandMuted: dark ? "#8B949E" : "#8B949E"
 
-    readonly property int radiusS: 6
-    readonly property int radius: 10
-    readonly property int radiusL: 14
+    // Радиусы Neo-Utilitarian (D-99): плоские поверхности, скругления 4–8 px, без тяжёлых теней и градиентов.
+    readonly property int radiusS: 4
+    readonly property int radius: 6
+    readonly property int radiusL: 8
     readonly property int gap: 8
     readonly property int pad: 16
     readonly property int padL: 24

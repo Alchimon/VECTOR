@@ -15,8 +15,9 @@ AbstractButton {
         id: label
         text: t.text
         color: t.active ? Theme2.primary : t.hovered ? Theme2.text : Theme2.textMuted
-        font.family: Theme2.family; font.pixelSize: Theme2.fsS
-        font.weight: t.active ? Font.DemiBold : Font.Normal
+        font.family: Theme2.family; font.pixelSize: Theme2.compact ? 11 : 12
+        font.weight: t.active ? Font.DemiBold : Font.Medium
+        font.capitalization: Font.AllUppercase; font.letterSpacing: 0.9
         anchors.centerIn: parent
     }
     background: Rectangle {

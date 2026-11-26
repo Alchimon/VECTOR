@@ -88,7 +88,7 @@ Item {
 
                     ColumnLayout { spacing: Theme2.compact ? 2 : 4; Layout.fillWidth: true
                         RowLayout { spacing: 10
-                            Text { text: modelData.code; color: Theme2.primary; font.family: Theme2.family
+                            Text { text: modelData.code; color: Theme2.primary; font.family: Theme2.mono
                                    font.pixelSize: Theme2.fsM; font.weight: Font.Bold }
                             Text { text: modelData.title; color: Theme2.text; font.family: Theme2.family
                                    font.pixelSize: Theme2.fsM; font.weight: Font.DemiBold
