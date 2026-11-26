@@ -30,6 +30,8 @@ Item {
     readonly property var activeTab: openTabs.find(t => t.key === activeTabKey) || null
 
     function tabFor(key) { return openTabs.find(t => t.key === key) || null }
+    // Вкладка → модуль экосистемы (D-99): комплект — таблицы Меркурия, остальные разделы и объекты — ХАБ.
+    function moduleOf(t) { return t && (t.kind === "kit" || t.kind === "doc") ? "mercury" : "hub" }
     function activateTab(key) {
         if (tabFor(key) === null) return
         activeTabKey = key
@@ -251,13 +253,71 @@ Item {
                 anchors { fill: parent; leftMargin: Theme2.pad; rightMargin: Theme2.pad }
                 spacing: Theme2.pad
                 RowLayout { spacing: 10
-                    // Фирменный знак: «V» на мягкой подложке (компактный вариант логотипа; полный — на входе).
+                    // Эмблема экосистемы из графического пака (D-99) на мягкой подложке (полный логотип — на входе).
+                    // Подпись-лейбл не нужна: имена модулей — в переключателе рядом (место в верхней панели дорогое).
                     Rectangle { Layout.preferredWidth: Theme2.compact ? 28 : 34; Layout.preferredHeight: width
-                        radius: Theme2.radiusS; color: Theme2.primarySoft
-                        Text { anchors.centerIn: parent; text: "V"; color: Theme2.primary; font.family: Theme2.family
-                               font.pixelSize: Theme2.fsM; font.weight: Font.Bold } }
-                    Text { text: "ВЕКТОР"; color: Theme2.text; font.family: Theme2.family
-                           font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold; font.letterSpacing: 1.6 } }
+                                radius: Theme2.radiusS; color: Theme2.primarySoft
+                        Image { objectName: "shell2Emblem"; source: Theme2.emblem
+                                anchors.centerIn: parent; width: parent.width - 8; height: width
+                                sourceSize: Qt.size(96, 96); fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true
+                                Accessible.name: "ВЕКТОР ПЛАТФОРМА" }
+                        VTipArea { text: "ВЕКТОР ПЛАТФОРМА — единая платформа для инженеров и бизнеса" } } }
+                // Переключатель модулей экосистемы (D-99): акцентная иконка + название. Сегодня работают ХАБ и
+                // Меркурий (таблицы расчётов в комплектах); МАРС, Юпитер, Венера — в разработке, пункты отключены.
+                RowLayout { spacing: 4
+                    Repeater {
+                        model: [
+                            { id: "hub",     label: "ХАБ",      accent: Theme2.accHub,     enabled: true,
+                              page: "projects", icon: "vmod/vektor_hub",
+                              tip: "ВЕКТОР ХАБ — ядро платформы: проекты, комплекты, PDM" },
+                            { id: "mercury", label: "Меркурий", accent: Theme2.accMercury, enabled: true,
+                              page: "projects", icon: "vmod/vektor_mercury",
+                              tip: "ВЕКТОР Меркурий — таблицы и спецификации (расчёты комплектов)" },
+                            { id: "mars",    label: "МАРС",     accent: Theme2.accMars,    enabled: false,
+                              page: "", icon: "vmod/vektor_mars",
+                              tip: "ВЕКТОР МАРС — электротехнический проект (в разработке)" },
+                            { id: "jupiter", label: "Юпитер",   accent: Theme2.accJupiter, enabled: false,
+                              page: "", icon: "vmod/vektor_jupiter",
+                              tip: "ВЕКТОР Юпитер — черчение и CAD (в разработке)" },
+                            { id: "venus",   label: "Венера",   accent: Theme2.accVenus,   enabled: false,
+                              page: "", icon: "vmod/vektor_venus",
+                              tip: "ВЕКТОР Венера — конструкторские документы (в разработке)" }
+                        ]
+                        delegate: AbstractButton {
+                            required property var modelData
+                            // Активный модуль = модуль активной вкладки (комплект → Меркурий, остальное → ХАБ).
+                            property bool current: modelData.enabled
+                                && shell2.moduleOf(shell2.activeTab) === modelData.id
+                            implicitHeight: Theme2.compact ? 26 : 30
+                            implicitWidth: mi.implicitWidth + 14
+                            enabled: modelData.enabled
+                            opacity: enabled ? 1.0 : 0.45
+                            Accessible.name: "Модуль " + modelData.label
+                            VTipArea { text: modelData.tip }
+                            onClicked: {
+                                // ХАБ — раздел «Проекты»; Меркурий — первый доступный комплект (таблицы расчётов).
+                                if (modelData.id === "mercury") {
+                                    var ks = backend.kits || []
+                                    if (ks.length > 0) shell2.openObject("kit", ks[0].id)
+                                    else shell2.go("projects")
+                                } else shell2.go(modelData.page)
+                            }
+                            background: Rectangle {
+                                radius: Theme2.radiusS
+                                color: parent.current ? Theme2.neutralSoft
+                                     : parent.hovered ? Theme2.hover : "transparent" }
+                            contentItem: RowLayout { id: mi; spacing: 6; anchors.centerIn: parent
+                                Image { source: "image://icon/" + modelData.icon
+                                        sourceSize: Qt.size(32, 32)
+                                        Layout.preferredWidth: 13; Layout.preferredHeight: 13
+                                        fillMode: Image.PreserveAspectFit; smooth: true }
+                                Text { text: modelData.label.toUpperCase()
+                                       color: parent.parent.parent.current ? modelData.accent : Theme2.textMuted
+                                       font.family: Theme2.family; font.pixelSize: 9; font.weight: Font.DemiBold
+                                       font.letterSpacing: 0.6 } }
+                        }
+                    }
+                }
                 // Хлебные крошки: раздел → открытый объект
                 RowLayout { spacing: 6; Layout.fillWidth: true
                     Text { objectName: "crumbPage"; text: ({ customers: "Заказчики", tenders: "Тендеры и ТКП", leads: "Лиды",

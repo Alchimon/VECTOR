@@ -13,7 +13,7 @@ ApplicationWindow {
     width: 1360; height: 860
     minimumWidth: 1100; minimumHeight: 700
     visible: true
-    title: "ВЕКТОР"
+    title: "ВЕКТОР ПЛАТФОРМА"
     color: Theme.bg
     font.family: Theme.family
     // Стандартные элементы Qt (галочки CheckBox и т. п.) берут цвет подписи из палитры окна — задаём его из темы,

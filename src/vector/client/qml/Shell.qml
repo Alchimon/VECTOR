@@ -83,12 +83,12 @@ Item {
                     // Знак «V» из логотипа владельца (D-28) и название; полный логотип — на экране входа.
                     Image { objectName: "shellMark"; source: Theme.mark; Layout.preferredWidth: 46; Layout.preferredHeight: 46
                             sourceSize: Qt.size(128, 128); fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true
-                            Accessible.name: "ВЕКТОР"
-                            VTipArea { text: "ВЕКТОР — единая платформа для инженеров и бизнеса: тендеры, проекты, расчёты, склад, закупка, производство, качество, рабочее время" } }
+                            Accessible.name: "ВЕКТОР ПЛАТФОРМА"
+                            VTipArea { text: "ВЕКТОР ПЛАТФОРМА — единая платформа для инженеров и бизнеса: тендеры, проекты, расчёты, склад, закупка, производство, качество, рабочее время" } }
                     // Подпись — полностью, как в логотипе владельца (D-28): «Единая платформа / для инженеров и бизнеса»,
                     // в две строки, чтобы поместиться в ширину боковой панели и не обрезаться.
                     ColumnLayout { spacing: 0
-                        Text { text: "ВЕКТОР"; color: Theme.text; font.family: Theme.family; font.pixelSize: 17; font.weight: Font.DemiBold; font.letterSpacing: 2 }
+                        Text { text: "ВЕКТОР ПЛАТФОРМА"; color: Theme.text; font.family: Theme.family; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: 1.2 }
                         Text { objectName: "shellTagline"; text: "Единая платформа\nдля инженеров и бизнеса"; color: Theme.textFaint; font.family: Theme.family
                                font.pixelSize: Theme.fsXs; lineHeight: 0.95 } }
                 }
@@ -177,15 +177,13 @@ Item {
 
         Item {
             Layout.fillWidth: true; Layout.fillHeight: true
-            // Фон рабочей области — та же «чертёжная» композиция, приглушённая: видна в полях между карточками,
-            // сами карточки непрозрачны, поэтому данные читаются как прежде.
-            Image {
+            // Фон рабочей области — сплошной холст темы: по дизайн-системе D-99 фирменное фоновое изображение
+            // живёт только на входе/splash и в пустых состояниях; рабочие экраны чистые, чтобы ничто не спорило
+            // с данными. (До D-99 здесь была приглушённая «чертёжная» композиция в полях между карточками.)
+            Rectangle {
                 objectName: "shellBackdrop"
                 anchors.fill: parent
-                source: Theme.backdrop
-                fillMode: Image.PreserveAspectCrop
-                opacity: Theme.backdropOpacity
-                asynchronous: true; smooth: true; mipmap: true
+                color: Theme.bg
             }
         Loader {
             anchors.fill: parent

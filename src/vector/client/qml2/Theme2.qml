@@ -66,6 +66,15 @@ QtObject {
     readonly property int rowH:      compact ? 38 : 52   // строка списка
     readonly property int cardMinH:  compact ? 64 : 88   // минимальная высота карточки списка
     readonly property int topBarH:   compact ? 46 : 56   // верхняя панель (крошки, палитра, пользователь)
+
+    // Акценты модулей экосистемы (D-99) — цветовая индикация переключателя модулей в верхней панели.
+    readonly property color accHub: Theme.accHub
+    readonly property color accMars: Theme.accMars
+    readonly property color accJupiter: Theme.accJupiter
+    readonly property color accMercury: Theme.accMercury
+    readonly property color accVenus: Theme.accVenus
+    // Эмблема экосистемы для верхней панели (компактный логотип; полный — на экране входа).
+    readonly property url emblem: Theme.mark
     readonly property int ribbonH:   compact ? 82 : 106  // лента команд
     readonly property int ribbonTabsH: compact ? 34 : 40 // высота полосы разделов ленты
     readonly property int railW:     compact ? 56 : 64   // узкая иконка-рейл слева

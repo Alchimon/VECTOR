@@ -224,7 +224,7 @@ Item {
                     ColumnLayout {
                         anchors.left: parent.left; anchors.right: parent.right; anchors.margins: 20
                         spacing: 6
-                        SectionTitle { text: "ВЕКТОР — рабочая среда инженерной компании"; iconName: "info" }
+                        SectionTitle { text: "ВЕКТОР ПЛАТФОРМА — рабочая среда инженерной компании"; iconName: "info" }
                         KeyValue { k: "Версия программы"; v: backend.licenseInfo.app_version || "" }
                         KeyValue { k: "Режим"; v: backend.licenseInfo.mode === "licensed" ? "Лицензия" : "Демо / тестовый стенд" }
                         KeyValue { visible: backend.licenseInfo.mode === "licensed"; k: "Заказчик"; v: backend.licenseInfo.customer || "" }

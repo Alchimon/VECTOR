@@ -80,9 +80,11 @@ Item {
                     spacing: Theme2.pad
 
                     Rectangle { Layout.preferredWidth: Theme2.compact ? 40 : 52; Layout.preferredHeight: width
-                        radius: Theme2.radiusS; color: Theme2.infoSoft
-                        Icon { anchors.centerIn: parent; name: "folder-kanban"
-                               size: Theme2.compact ? 20 : 26; color: Theme2.info } }
+                        radius: Theme2.radiusS; color: Theme2.surfaceAlt
+                        // Бейдж модуля ХАБ из графического пака (D-99): проекты — раздел ядра платформы.
+                        Image { anchors.centerIn: parent; width: parent.width - (Theme2.compact ? 10 : 14); height: width
+                                source: "../assets/vektor/app_icons/png_64/vektor_hub.png"
+                                sourceSize: Qt.size(64, 64); fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true } }
 
                     ColumnLayout { spacing: Theme2.compact ? 2 : 4; Layout.fillWidth: true
                         RowLayout { spacing: 10

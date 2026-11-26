@@ -4,6 +4,7 @@ import QtQuick.Layouts
 // Пустое состояние списка или карточки: иконка, title, пояснение text и необязательная кнопка
 // (actionText → сигнал action()). Отличает «ещё ничего нет» от ошибки и от «нет доступа».
 // Подсказка при наведении на текст (D-37) — расшифровка сокращений из заголовка и пояснения.
+// В тёмной теме фон экосистемы (D-99) легально живёт и в Empty State — за вуалью цвета окна (≈0,82).
 ColumnLayout {
     id: e
     property string iconName: "inbox"
@@ -17,6 +18,10 @@ ColumnLayout {
         Layout.alignment: Qt.AlignHCenter
         width: 56; height: 56; radius: 28
         color: Theme.tone(e.tone).bg
+        clip: true
+        Image { anchors.fill: parent; source: Theme.dark ? Theme.backdrop : ""
+                fillMode: Image.PreserveAspectCrop; opacity: 0.9; asynchronous: true; smooth: true }
+        Rectangle { anchors.fill: parent; color: Qt.alpha(Theme.bg, 0.82); visible: Theme.dark }
         Icon { anchors.centerIn: parent; name: e.iconName; size: 24; color: Theme.tone(e.tone).fg }
     }
     Text { Layout.alignment: Qt.AlignHCenter; text: e.title; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsM; font.weight: Font.DemiBold }

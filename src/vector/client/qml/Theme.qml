@@ -1,52 +1,63 @@
 pragma Singleton
 import QtQuick
 
-// Токены дизайна ВЕКТОР: светлая и тёмная темы. Компоненты используют только токены (жёстких цветов в экранах нет).
+// Токены дизайна ВЕКТОР ПЛАТФОРМА: светлая и тёмная темы. Компоненты используют только токены (жёстких цветов
+// в экранах нет).
 //
-// Палитра выведена из фирменного стиля владельца (D-28, docs/brand/source/):
-//  * основной цвет (primary) — сланцево-синий из надписи и сетки логотипа;
-//  * мята / бирюза (info, accent-гамма знака), персик (warning), коралл (danger), лаванда (accent) — из знака «V»
-//    и фоновой «чертёжной» композиции; фон окна — светлая «бумага» фонового изображения.
+// Тёмная тема — дизайн-система «Neo-Utilitarian» экосистемы ВЕКТОР (D-99, assets/vektor/manifest.json):
+//  * тёмный холст, плоские поверхности, акценты модулей (ХАБ — сланец, МАРС — терракота, Юпитер — охра,
+//    Меркурий — малахит, Венера — стальной синий); семантика наследует акценты модулей.
+// Светлая тема — палитра D-28 из фирменного стиля владельца (docs/brand/source/): сланцево-синий из надписи
+// и сетки логотипа; мята/бирюза, персик, коралл, лаванда — из знака «V» и «чертёжной» композиции.
 // Контраст проверяет тест tests/client/test_theme_contrast.py (WCAG 2.1 AA): основной и вторичный текст ≥ 4,5:1
 // на всех поверхностях, бледные подписи ≥ 3:1, цвет каждого тона на своей подложке ≥ 4,5:1.
 QtObject {
     property bool dark: false
     property string family: "Inter"
 
-    readonly property color bg:          dark ? "#12161C" : "#F4F6F8"
-    readonly property color sidebar:     dark ? "#161B22" : "#FAFBFC"
-    readonly property color surface:     dark ? "#1B212A" : "#FFFFFF"
-    readonly property color surfaceAlt:  dark ? "#212833" : "#EFF2F5"
-    readonly property color hover:       dark ? "#27303C" : "#E8EDF2"
-    readonly property color border:      dark ? "#2D3643" : "#DDE3EA"
-    readonly property color borderStrong:dark ? "#3B4655" : "#C5CED8"
-    readonly property color text:        dark ? "#E6EBF0" : "#2E3846"
-    readonly property color textMuted:   dark ? "#9DA9B6" : "#566273"
-    readonly property color textFaint:   dark ? "#7A8694" : "#7F8A99"
+    readonly property color bg:          dark ? "#121417" : "#F4F6F8"
+    readonly property color sidebar:     dark ? "#181B20" : "#FAFBFC"
+    readonly property color surface:     dark ? "#181B20" : "#FFFFFF"
+    readonly property color surfaceAlt:  dark ? "#1F242B" : "#EFF2F5"
+    readonly property color hover:       dark ? "#21262D" : "#E8EDF2"
+    readonly property color border:      dark ? "#2A303A" : "#DDE3EA"
+    readonly property color borderStrong:dark ? "#39424E" : "#C5CED8"
+    readonly property color text:        dark ? "#E6EDF3" : "#2E3846"
+    readonly property color textMuted:   dark ? "#8B949E" : "#566273"
+    readonly property color textFaint:   dark ? "#6E7681" : "#7F8A99"
 
-    readonly property color primary:     dark ? "#9DBCDD" : "#3E6188"
-    readonly property color primaryHover:dark ? "#B5CDE7" : "#33547A"
-    readonly property color primarySoft: dark ? "#22324A" : "#E3EBF4"
-    readonly property color textOnPrimary:   dark ? "#0E1621" : "#FFFFFF"
-    readonly property color accent:      dark ? "#B6A6E3" : "#6E5CA8"
+    readonly property color primary:     dark ? "#E2E8F0" : "#3E6188"
+    readonly property color primaryHover:dark ? "#EDF2F8" : "#33547A"
+    readonly property color primarySoft: dark ? "#262D36" : "#E3EBF4"
+    readonly property color textOnPrimary:   dark ? "#121417" : "#FFFFFF"
+    readonly property color accent:      dark ? "#9AA7B8" : "#6E5CA8"
 
-    readonly property color success:     dark ? "#7DD0A0" : "#297649"
-    readonly property color successSoft: dark ? "#1B3A2A" : "#E0F2E7"
-    readonly property color warning:     dark ? "#EBC08E" : "#8A561A"
-    readonly property color warningSoft: dark ? "#3A2E20" : "#FBEEDD"
-    readonly property color danger:      dark ? "#F0A096" : "#B03F37"
-    readonly property color dangerSoft:  dark ? "#44282A" : "#F9E4E1"
-    readonly property color info:        dark ? "#8FD3CC" : "#28717C"
-    readonly property color infoSoft:    dark ? "#193638" : "#DFF1F1"
-    readonly property color neutralSoft: dark ? "#242C37" : "#ECEFF3"
+    // Семантика наследует акценты модулей экосистемы (темн.: светлый тон того же цвета, чтобы держать AA).
+    readonly property color success:     dark ? "#2E9E76" : "#297649"
+    readonly property color successSoft: dark ? "#1A2728" : "#E0F2E7"
+    readonly property color warning:     dark ? "#D99B26" : "#8A561A"
+    readonly property color warningSoft: dark ? "#2F2A21" : "#FBEEDD"
+    readonly property color danger:      dark ? "#E56B55" : "#B03F37"
+    readonly property color dangerSoft:  dark ? "#2C2325" : "#F9E4E1"
+    readonly property color info:        dark ? "#6B93E0" : "#28717C"
+    readonly property color infoSoft:    dark ? "#202733" : "#DFF1F1"
+    readonly property color neutralSoft: dark ? "#232830" : "#ECEFF3"
+
+    // Акценты модулей экосистемы (темн.) — переключатель модулей, цветовая индикация разделов, карточки.
+    readonly property color accHub:      dark ? "#E2E8F0" : "#3E6188"
+    readonly property color accMars:     dark ? "#E05A47" : "#B03F37"
+    readonly property color accJupiter:  dark ? "#D99B26" : "#8A561A"
+    readonly property color accMercury:  dark ? "#2E9E76" : "#297649"
+    readonly property color accVenus:    dark ? "#4A77D4" : "#3E6188"
 
     readonly property color focus:       primary
     readonly property color scrim:       dark ? "#99000000" : "#5C2E3846"
 
-    // Фирменные изображения (строит tools/brand_assets.py из исходников владельца). Пути — от этого файла.
-    readonly property url logo:     Qt.resolvedUrl(dark ? "../assets/brand/logo-dark.png" : "../assets/brand/logo-light.png")
-    readonly property url mark:     Qt.resolvedUrl(dark ? "../assets/brand/mark-dark.png" : "../assets/brand/mark-light.png")
-    readonly property url backdrop: Qt.resolvedUrl(dark ? "../assets/brand/bg-dark.jpg" : "../assets/brand/bg-light.jpg")
+    // Фирменные изображения. Пути — от этого файла.
+    // Логотип и фон — графический пак экосистемы (D-99, assets/vektor/); светлые варианты — прежние (D-28).
+    readonly property url logo:     Qt.resolvedUrl(dark ? "../assets/vektor/app_icons/logo/vektor_platform_horizontal.png" : "../assets/brand/logo-light.png")
+    readonly property url mark:     Qt.resolvedUrl(dark ? "../assets/vektor/app_icons/logo/vektor_emblem_only.png" : "../assets/brand/mark-light.png")
+    readonly property url backdrop: Qt.resolvedUrl(dark ? "../assets/vektor/backgrounds/space.jpg" : "../assets/brand/bg-light.jpg")
     // Насколько заметен фон под рабочими экранами: «чертёж» не должен спорить с данными (на входе — сильнее).
     readonly property real backdropOpacity: dark ? 0.45 : 0.45
 

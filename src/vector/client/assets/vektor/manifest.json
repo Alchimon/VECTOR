@@ -1,0 +1,171 @@
+{
+  "ecosystem": "ВЕКТОР",
+  "style": "Neo-Utilitarian / Industrial Modern",
+  "grid": "24x24",
+  "stroke_width": "1.5px",
+  "tokens": {
+    "canvas": "#121417",
+    "surface": "#181B20",
+    "elevated": "#1F242B",
+    "border": "#2A303A",
+    "text_primary": "#E6EDF3",
+    "text_secondary": "#8B949E",
+    "text_muted": "#586069",
+    "accents": {
+      "vektor_platform": "#E2E8F0",
+      "vektor_hub": "#E2E8F0",
+      "vektor_mars": "#E05A47",
+      "vektor_jupiter": "#D99B26",
+      "vektor_mercury": "#2E9E76",
+      "vektor_venus": "#4A77D4"
+    }
+  },
+  "app_icons": {
+    "formats": [
+      "png_512",
+      "png_256",
+      "png_128",
+      "png_64",
+      "ico"
+    ],
+    "modules": [
+      "vektor_platform",
+      "vektor_hub",
+      "vektor_mars",
+      "vektor_jupiter",
+      "vektor_mercury",
+      "vektor_venus"
+    ],
+    "logos": [
+      "app_icons/logo/vektor_platform_horizontal.png",
+      "app_icons/logo/vektor_emblem_only.png"
+    ]
+  },
+  "ui_icons": {
+    "01_modules": [
+      "ui_icons/01_modules/vektor_platform.svg",
+      "ui_icons/01_modules/vektor_hub.svg",
+      "ui_icons/01_modules/vektor_mars.svg",
+      "ui_icons/01_modules/vektor_jupiter.svg",
+      "ui_icons/01_modules/vektor_mercury.svg",
+      "ui_icons/01_modules/vektor_venus.svg"
+    ],
+    "02_navigation": [
+      "ui_icons/02_navigation/project_tree.svg",
+      "ui_icons/02_navigation/folder.svg",
+      "ui_icons/02_navigation/folder_open.svg",
+      "ui_icons/02_navigation/file.svg",
+      "ui_icons/02_navigation/search.svg",
+      "ui_icons/02_navigation/command_palette.svg",
+      "ui_icons/02_navigation/sidebar_left.svg",
+      "ui_icons/02_navigation/sidebar_right.svg",
+      "ui_icons/02_navigation/split_vertical.svg",
+      "ui_icons/02_navigation/split_horizontal.svg",
+      "ui_icons/02_navigation/home.svg",
+      "ui_icons/02_navigation/dashboard.svg",
+      "ui_icons/02_navigation/settings.svg",
+      "ui_icons/02_navigation/user.svg",
+      "ui_icons/02_navigation/bell.svg",
+      "ui_icons/02_navigation/chevron_right.svg",
+      "ui_icons/02_navigation/chevron_down.svg",
+      "ui_icons/02_navigation/close.svg",
+      "ui_icons/02_navigation/menu.svg",
+      "ui_icons/02_navigation/more_vertical.svg"
+    ],
+    "03_actions": [
+      "ui_icons/03_actions/plus.svg",
+      "ui_icons/03_actions/minus.svg",
+      "ui_icons/03_actions/save.svg",
+      "ui_icons/03_actions/undo.svg",
+      "ui_icons/03_actions/redo.svg",
+      "ui_icons/03_actions/copy.svg",
+      "ui_icons/03_actions/paste.svg",
+      "ui_icons/03_actions/cut.svg",
+      "ui_icons/03_actions/trash.svg",
+      "ui_icons/03_actions/edit.svg",
+      "ui_icons/03_actions/download.svg",
+      "ui_icons/03_actions/upload.svg",
+      "ui_icons/03_actions/export_file.svg",
+      "ui_icons/03_actions/print.svg",
+      "ui_icons/03_actions/refresh.svg",
+      "ui_icons/03_actions/filter.svg",
+      "ui_icons/03_actions/lock.svg",
+      "ui_icons/03_actions/unlock.svg",
+      "ui_icons/03_actions/eye.svg",
+      "ui_icons/03_actions/eye_off.svg",
+      "ui_icons/03_actions/check.svg",
+      "ui_icons/03_actions/alert_triangle.svg",
+      "ui_icons/03_actions/info.svg",
+      "ui_icons/03_actions/link.svg"
+    ],
+    "04_hub_pdm": [
+      "ui_icons/04_hub_pdm/database.svg",
+      "ui_icons/04_hub_pdm/component_box.svg",
+      "ui_icons/04_hub_pdm/cabinet.svg",
+      "ui_icons/04_hub_pdm/git_branch.svg",
+      "ui_icons/04_hub_pdm/tag.svg",
+      "ui_icons/04_hub_pdm/barcode.svg",
+      "ui_icons/04_hub_pdm/checklist.svg",
+      "ui_icons/04_hub_pdm/workflow.svg",
+      "ui_icons/04_hub_pdm/archive.svg",
+      "ui_icons/04_hub_pdm/shield_check.svg"
+    ],
+    "05_mars_electro": [
+      "ui_icons/05_mars_electro/circuit_breaker.svg",
+      "ui_icons/05_mars_electro/relay_coil.svg",
+      "ui_icons/05_mars_electro/terminal_block.svg",
+      "ui_icons/05_mars_electro/wire_cable.svg",
+      "ui_icons/05_mars_electro/ground.svg",
+      "ui_icons/05_mars_electro/power_lightning.svg",
+      "ui_icons/05_mars_electro/plc_controller.svg",
+      "ui_icons/05_mars_electro/sensor.svg",
+      "ui_icons/05_mars_electro/motor.svg",
+      "ui_icons/05_mars_electro/switch_contact.svg",
+      "ui_icons/05_mars_electro/fuse.svg",
+      "ui_icons/05_mars_electro/busbar.svg"
+    ],
+    "06_jupiter_cad": [
+      "ui_icons/06_jupiter_cad/line.svg",
+      "ui_icons/06_jupiter_cad/polyline.svg",
+      "ui_icons/06_jupiter_cad/circle.svg",
+      "ui_icons/06_jupiter_cad/arc.svg",
+      "ui_icons/06_jupiter_cad/rectangle.svg",
+      "ui_icons/06_jupiter_cad/dimension.svg",
+      "ui_icons/06_jupiter_cad/angle.svg",
+      "ui_icons/06_jupiter_cad/layers.svg",
+      "ui_icons/06_jupiter_cad/snap_grid.svg",
+      "ui_icons/06_jupiter_cad/move.svg",
+      "ui_icons/06_jupiter_cad/rotate.svg",
+      "ui_icons/06_jupiter_cad/mirror.svg",
+      "ui_icons/06_jupiter_cad/trim.svg",
+      "ui_icons/06_jupiter_cad/measure_ruler.svg",
+      "ui_icons/06_jupiter_cad/zoom_in.svg",
+      "ui_icons/06_jupiter_cad/zoom_out.svg",
+      "ui_icons/06_jupiter_cad/zoom_fit.svg"
+    ],
+    "07_mercury_tables": [
+      "ui_icons/07_mercury_tables/table.svg",
+      "ui_icons/07_mercury_tables/add_row.svg",
+      "ui_icons/07_mercury_tables/add_column.svg",
+      "ui_icons/07_mercury_tables/formula_fx.svg",
+      "ui_icons/07_mercury_tables/sum_sigma.svg",
+      "ui_icons/07_mercury_tables/merge_cells.svg",
+      "ui_icons/07_mercury_tables/sort_asc.svg",
+      "ui_icons/07_mercury_tables/sort_desc.svg",
+      "ui_icons/07_mercury_tables/bom_spec.svg",
+      "ui_icons/07_mercury_tables/cable_journal.svg"
+    ],
+    "08_venus_docs": [
+      "ui_icons/08_venus_docs/document.svg",
+      "ui_icons/08_venus_docs/gost_frame.svg",
+      "ui_icons/08_venus_docs/heading.svg",
+      "ui_icons/08_venus_docs/align_left.svg",
+      "ui_icons/08_venus_docs/align_center.svg",
+      "ui_icons/08_venus_docs/align_justify.svg",
+      "ui_icons/08_venus_docs/list_bullet.svg",
+      "ui_icons/08_venus_docs/list_number.svg",
+      "ui_icons/08_venus_docs/variable_token.svg",
+      "ui_icons/08_venus_docs/stamp_approve.svg"
+    ]
+  }
+}
