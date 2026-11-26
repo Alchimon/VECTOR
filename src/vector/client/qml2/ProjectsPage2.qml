@@ -79,12 +79,12 @@ Item {
                               topMargin: Theme2.pad - 4; bottomMargin: Theme2.pad - 4 }
                     spacing: Theme2.pad
 
-                    Rectangle { Layout.preferredWidth: Theme2.compact ? 40 : 52; Layout.preferredHeight: width
-                        radius: Theme2.radiusS; color: Theme2.surfaceAlt
-                        // Бейдж модуля ХАБ из графического пака (D-99): проекты — раздел ядра платформы.
-                        Image { anchors.centerIn: parent; width: parent.width - (Theme2.compact ? 10 : 14); height: width
-                                source: "../assets/vektor/app_icons/png_64/vektor_hub.png"
-                                sourceSize: Qt.size(64, 64); fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true } }
+                    // Бейдж модуля ХАБ из графического пака (D-99): проекты — раздел ядра платформы.
+                    // Без подложки и побольше: эмблема сама тёмно-сланцевая, на тёмной подложке терялась.
+                    Image { Layout.preferredWidth: Theme2.compact ? 40 : 52; Layout.preferredHeight: width
+                            Layout.leftMargin: 4
+                            source: "../assets/vektor/app_icons/png_64/vektor_hub.png"
+                            sourceSize: Qt.size(64, 64); fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
 
                     ColumnLayout { spacing: Theme2.compact ? 2 : 4; Layout.fillWidth: true
                         RowLayout { spacing: 10
