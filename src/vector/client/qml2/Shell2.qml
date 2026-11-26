@@ -591,6 +591,17 @@ Item {
                                        font.weight: Font.DemiBold; font.pixelSize: Theme2.fsS; Layout.fillWidth: true }
                                 Text { text: backend.projects.length; color: Theme2.textFaint
                                        font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+                                // Свернуть все узлы дерева
+                                AbstractButton {
+                                    id: collapseAll
+                                    implicitWidth: 22; implicitHeight: 22; hoverEnabled: true
+                                    visible: shell2.treeExpandedProject !== ""
+                                    Accessible.name: "Свернуть все проекты"
+                                    onClicked: shell2.treeExpandedProject = ""
+                                    background: Rectangle { radius: 4; color: collapseAll.hovered ? Theme2.hover : "transparent" }
+                                    contentItem: Icon { name: "chevron-down"; size: 13; color: Theme2.textMuted; rotation: -90 }
+                                    VToolTip { visible: collapseAll.hovered; text: "Свернуть все проекты" }
+                                }
                             }
                             Rectangle { Layout.fillWidth: true; height: 1; color: Theme2.border }
                             Flickable {
@@ -649,6 +660,8 @@ Item {
                                                             Text { text: kitNode.kit.code + " · " + kitNode.kit.title
                                                                    color: Theme2.text; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
                                                                    Layout.fillWidth: true; elide: Text.ElideRight }
+                                                            Rectangle { visible: kitNode.kit.pending === true; width: 7; height: 7; radius: 4
+                                                                        color: Theme2.warning }
                                                         }
                                                         MouseArea { id: kitNodeMa; anchors.fill: parent; hoverEnabled: true
                                                             cursorShape: Qt.PointingHandCursor
@@ -674,6 +687,8 @@ Item {
                                                             Text { text: docNode.doc.code + " · " + docNode.doc.title
                                                                    color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
                                                                    Layout.fillWidth: true; elide: Text.ElideRight }
+                                                            Rectangle { visible: docNode.doc.pending === true; width: 7; height: 7; radius: 4
+                                                                        color: Theme2.warning }
                                                         }
                                                         MouseArea { id: docNodeMa; anchors.fill: parent; hoverEnabled: true
                                                             cursorShape: Qt.PointingHandCursor
