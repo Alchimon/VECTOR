@@ -31,13 +31,13 @@ def test_v2_loads_with_ribbon_tabs_statusbar(ui):
     """Каркас 2.0: лента, вкладки, статус-бар видны; домашний раздел — проекты (у РП)."""
     ui.login("a.smirnova")
     sh = _to_v2(ui)
-    assert sh.property("page") == "projects"
+    assert sh.property("page") == "home"          # D-108: стартовая — рабочий стол «Главная»
     assert ui.find("ribbon").isVisible()
     assert ui.find("objectTabs").isVisible()
     assert ui.find("statusBar2").isVisible()
-    # Домашняя вкладка раздела создана и не закрывается
+    # Домашняя вкладка создана и не закрывается
     tabs = _tabs(sh)
-    assert [t["key"] for t in tabs] == ["page:projects"]
+    assert [t["key"] for t in tabs] == ["page:home"]
     assert tabs[0]["closable"] is False
 
 
@@ -50,8 +50,9 @@ def test_v2_object_tabs_open_activate_close(ui):
     _open_object(sh, "kit", ui.ids["kits"]["АТХ"])
     ui.wait_idle()
     tabs = _tabs(sh)
+    assert tabs[0]["key"] == "page:home"
     keys = [t["key"] for t in tabs]
-    assert keys == ["page:projects", "project:" + ui.ids["project"], "kit:" + ui.ids["kits"]["АТХ"]]
+    assert keys == ["page:home", "project:" + ui.ids["project"], "kit:" + ui.ids["kits"]["АТХ"]]
     assert sh.property("activeTabKey") == keys[-1]
     # Вкладка комплекта показывает KitWork с задачами (Repeater-делегаты findChild не видит — ищем визуально)
     assert any(i.isVisible() for i in ui.items("kitTasks"))
@@ -261,6 +262,10 @@ def test_v2_projects_filter_chips(ui):
     ui.login("a.smirnova")
     sh = _to_v2(ui)
     # Страница — делегат Repeater вкладок: findChild её не видит, ищем визуальным обходом (ui.items).
+    # Стартовая вкладка — «Главная» (D-108); раздел «Проекты» открываем явно.
+    from PySide6.QtCore import QMetaObject, Q_ARG
+    QMetaObject.invokeMethod(sh, "go", Q_ARG("QVariant", "projects"), Q_ARG("QVariant", ""))
+    ui.wait_idle()
     page = next((i for i in ui.items("filter") if i.property("objectName") == "projectsPage2"), None)
     assert page is not None
     # По умолчанию — активные: оба демо-проекта в разработке РКД
@@ -272,3 +277,15 @@ def test_v2_projects_filter_chips(ui):
     page.setProperty("filter", "all")
     ui.pump(0.2)
     assert len(_plain(page.property("items"))) == 2
+
+
+def test_v2_home_page(ui):
+    """«Главная» 2.0 (D-108): рабочий стол открывается стартовой вкладкой, счётчики честные."""
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    assert _plain(sh.property("activeTabKey")) == "page:home"
+    home = next((i for i in ui.items("myOpenTasks") if i.property("objectName") == "homePage2"), None)
+    assert home is not None
+    # У a.smirnova (РП) в демо нет назначенных открытых задач — честный 0
+    assert len(_plain(home.property("myOpenTasks"))) == 0
+    assert len(_plain(home.property("activeProjects"))) == 2
