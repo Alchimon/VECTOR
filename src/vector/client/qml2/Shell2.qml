@@ -69,6 +69,12 @@ Item {
         }
         activateTab(key)
     }
+    // Документ: выбрать в инспекторе и открыть в редакторе ВЕКТОР (дерево проекта, карточки проекта).
+    function openDocument(doc) {
+        if (!doc) return
+        selectObject("document", doc)
+        officeEd.openFor(doc, doc.current_version_no || 1)
+    }
     function closeTab(key) {
         var t = tabFor(key)
         if (t === null || t.closable !== true) return
@@ -672,7 +678,7 @@ Item {
                                                         MouseArea { id: docNodeMa; anchors.fill: parent; hoverEnabled: true
                                                             cursorShape: Qt.PointingHandCursor
                                                             onClicked: shell2.selectObject("document", docNode.doc)
-                                                            onDoubleClicked: shell2.openObject("doc", docNode.doc.id) }
+                                                            onDoubleClicked: shell2.openDocument(docNode.doc) }
                                                         VToolTip { visible: docNodeMa.containsMouse
                                                                    text: docNode.doc.title + " — щелчок: предпросмотр, двойной щелчок: редактор" }
                                                     }

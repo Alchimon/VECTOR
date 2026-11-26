@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
+import QtQuick.Dialogs
 import "../qml"
 
 // Инспектор справа (интерфейс 2.0, D-98/D-101): предпросмотр и свойства выбранного объекта — то, чего
@@ -180,6 +181,13 @@ Rectangle {
                           Layout.fillWidth: true; implicitHeight: Theme2.compact ? 36 : 44
                           onClicked: insp.kind === "document" ? insp.editDocument(insp.object)
                                      : insp.openRequested(insp.kind, insp.object ? insp.object.id : "") }
+                VButton { objectName: "inspNewVersion"
+                          visible: insp.kind === "document" && insp.object !== null
+                          text: (insp.object && (insp.object.current_version_no || 0) > 0 ? "Новая версия" : "Загрузить файл")
+                          kind: "soft"; iconName: "upload"; Layout.fillWidth: true
+                          tip: "Файл проверяется по SHA-256; в офлайн-очередь не ставится — нужна связь"
+                          enabled: backend.online && insp.object && insp.object.pending !== true && (insp.object.version || 0) > 0
+                          onClicked: verForm2.ask(insp.object) }
                 VButton { visible: insp.kind === "project" && insp.object && insp.object.tender_id
                           text: "Тендер-основание"; kind: "soft"; iconName: "gavel"; Layout.fillWidth: true
                           onClicked: insp.goPage("tenders", insp.object.tender_id) }
@@ -289,5 +297,43 @@ Rectangle {
                 }
             }
         }
+    }
+
+    // ---------- диалог «Новая версия» (D-102): тот же контур, что и в классике (KitWork):
+    // файл выбирается с диска, SHA-256 считает клиент, сервер пересчитывает; в очередь не ставится.
+    FormDialog {
+        id: verForm2
+        objectName: "inspVersionForm"
+        property var doc: null
+        property alias path: vPath2.text
+        property string tag: "insp-ver-" + Math.random().toString(36).slice(2)
+        title: "Новая версия документа"
+        subtitle: doc ? doc.code + " · " + doc.title + ((doc.current_version_no || 0) > 0 ? " — станет версией " + (doc.current_version_no + 1)
+                                                                                          : " — первая версия") : ""
+        note: "Файл проверяется по SHA-256 при загрузке и при каждом скачивании. Если коллега успеет загрузить свою версию раньше, вы увидите конфликт — ничего не перезапишется."
+        confirmText: "Загрузить"
+        canConfirm: vPath2.text.trim() !== "" && backend.online
+        function ask(d) { doc = d; vPath2.text = ""; vComment2.text = ""; open() }
+        onConfirmed: { working = true; error = ""; backend.addDocumentVersion(tag, doc.id, vPath2.text.trim(), vComment2.text, doc.version) }
+        RowLayout { Layout.fillWidth: true; spacing: 8
+            VField { id: vPath2; label: "Файл"; required: true; readOnly: true; placeholder: "Выберите файл…"; Layout.fillWidth: true }
+            VButton { text: "Выбрать…"; iconName: "paperclip"; Layout.alignment: Qt.AlignBottom; onClicked: openDlg2.open() } }
+        VField { id: vComment2; label: "Комментарий к версии"; placeholder: "Что изменилось" }
+        Connections {
+            target: backend
+            function onCommandDone(t, r) {
+                if (t !== verForm2.tag) return
+                verForm2.working = false
+                if (r.status === "accepted") verForm2.close()
+                else verForm2.error = r.message_ru || "Версия не создана."
+            }
+        }
+    }
+
+    FileDialog {
+        id: openDlg2
+        title: "Файл новой версии"
+        fileMode: FileDialog.OpenFile
+        onAccepted: vPath2.text = selectedFile.toString()
     }
 }

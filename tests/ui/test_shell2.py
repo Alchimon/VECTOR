@@ -183,3 +183,56 @@ def test_v2_inspector_versions_tab(ui):
     versions = _plain(insp.property("kitCalcVersions"))
     assert versions and versions[0]["author_name"], "версии расчёта комплекта не показаны"
     assert versions[0]["label"].startswith("v") and versions[0]["total_label"]
+
+
+def test_v2_project_tab_lists_documents(ui):
+    """Вкладка проекта (концепт A, D-102): под комплектами — раздел «Документы» с версиями файлов;
+    документ из дерева/списка открывается в редакторе через shell2.openDocument."""
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    _open_object(sh, "project", ui.ids["project"])
+    ui.wait_idle()
+    # Вкладка проекта активна, документы комплектов собраны в раздел (ищем делегат с кодом документа)
+    codes = [str(i.property("text") or "") for i in ui.items("text")]
+    assert any("АТХ-001" == c for c in codes), "раздел документов проекта не показан"
+    # Двойной щелчок по документу → openDocument: выбор в инспекторе + редактор (здесь просто не падает)
+    from PySide6.QtCore import Q_ARG, QMetaObject
+    doc = next(d for d in _plain(ui.backend.property("documents")) if d.get("code") == "АТХ-001")
+    QMetaObject.invokeMethod(sh, "openDocument", Q_ARG("QVariant", doc))
+    ui.wait_idle()
+    assert sh.property("selectedKind") == "document"
+
+
+def test_v2_inspector_new_version_button(ui):
+    """Инспектор документа (концепт A): действие «Новая версия» на виду — тот же контур загрузки,
+    что и в классике (SHA-256, только онлайн)."""
+    from PySide6.QtCore import Q_ARG, QMetaObject
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    doc = next(d for d in _plain(ui.backend.property("documents")) if d.get("code") == "АТХ-001")
+    QMetaObject.invokeMethod(sh, "selectObject", Q_ARG("QVariant", "document"), Q_ARG("QVariant", doc))
+    ui.wait_idle()
+    insp = ui.find("inspector2")
+    btn = insp.findChild(type(insp), "inspNewVersion")
+    assert btn is not None and btn.property("visible") is True
+    assert btn.property("enabled") is True  # онлайн-стенд, карточка на сервере
+
+
+def test_v2_rail_flyout(ui):
+    """Рейл чисто иконочный (концепт B): при наведении всплывает flyout-панель с названием раздела."""
+    from PySide6.QtCore import QObject, QPointF
+    from PySide6.QtQuick import QQuickItem
+    from PySide6.QtTest import QTest
+    ui.login("a.smirnova")
+    _to_v2(ui)
+    # Фильтр isVisible: после переключения классика→2.0 старый («призрачный») экземпляр рейла
+    # остаётся в QObject-дереве — как и в стенде сцен 77 (см. ui_harness).
+    rail_items = [i for i in ui.win.findChildren(QQuickItem)
+                  if i.property("iconName") is not None and i.property("badge") is not None and i.isVisible()]
+    assert rail_items, "рейл не найден"
+    ri = rail_items[1]
+    c = ri.mapToScene(QPointF(ri.width() / 2, ri.height() / 2)).toPoint()
+    QTest.mouseMove(ui.win, c)
+    ui.pump(0.4)
+    fly = ri.findChild(QObject, "railFlyout")
+    assert fly is not None and fly.property("visible") is True
