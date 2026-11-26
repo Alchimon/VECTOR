@@ -920,7 +920,10 @@ def main():
         h.backend.uiMode = "v2"
         h.wait_idle()
         from PySide6.QtCore import QMetaObject as _QMo, QObject as _QO, Q_ARG as _QA
-        sh2 = h.win.findChild(_QO, "shell2")
+        # findChild может вернуть «призрак»: старый экземпляр shell2 остаётся в QObject-дереве после
+        # выгрузки Loader'ом (на старте стенда умолчание D-100 — v2, затем сцены 01–76 в классике).
+        # Берём ВИДИМЫй экземпляр.
+        sh2 = next(x for x in h.win.findChildren(_QO, "shell2") if x.isVisible())
         _p = next(x for x in _plain(h.backend.property("projects")) if x["id"] == h.ids["project"])
         _QMo.invokeMethod(sh2, "selectObject", _QA("QVariant", "project"), _QA("QVariant", _p))
         h.wait_idle()
