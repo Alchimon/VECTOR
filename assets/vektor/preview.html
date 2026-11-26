@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>ВЕКТОР — Набор иконок экосистемы</title>
+<style>
+  :root {
+    --canvas: #121417;
+    --surface: #181B20;
+    --elevated: #1F242B;
+    --border: #2A303A;
+    --text: #E6EDF3;
+    --muted: #8B949E;
+    --accent: #E2E8F0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px;
+    background: var(--canvas); color: var(--text);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+    gap: 16px; padding-bottom: 24px; border-bottom: 1px solid var(--border); margin-bottom: 32px;
+  }
+  .brand { display: flex; align-items: center; gap: 16px; }
+  .brand img { height: 42px; }
+  .switcher { display: flex; gap: 8px; flex-wrap: wrap; }
+  .switcher button {
+    background: var(--surface); color: var(--text); border: 1px solid var(--border);
+    padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .switcher button:hover { background: var(--elevated); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--muted); margin: 32px 0 14px; font-weight: 600;
+  }
+  h2 span { color: var(--accent); }
+  .app-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 16px;
+  }
+  .app-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 18px; text-align: center;
+  }
+  .app-card img { width: 96px; height: 96px; border-radius: 20px; margin-bottom: 10px; }
+  .app-card .title { font-size: 13px; font-weight: 600; }
+  .app-card .sub { font-size: 11px; color: var(--muted); margin-top: 4px; font-family: monospace; }
+  .icon-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px;
+  }
+  .icon-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 16px 8px; display: flex; flex-direction: column; align-items: center; gap: 10px;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .icon-card:hover { border-color: var(--accent); background: var(--elevated); }
+  .svg-wrap { color: var(--accent); width: 24px; height: 24px; }
+  .icon-name {
+    font-size: 11px; color: var(--muted); font-family: 'JetBrains Mono', monospace;
+    text-align: center; word-break: break-all;
+  }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <img src="app_icons/logo/vektor_platform_horizontal.png" alt="ВЕКТОР">
+    </div>
+    <div class="switcher">
+      <button onclick="setAccent('#E2E8F0')"><span class="dot" style="background:#E2E8F0"></span>Ядро</button>
+      <button onclick="setAccent('#E05A47')"><span class="dot" style="background:#E05A47"></span>МАРС</button>
+      <button onclick="setAccent('#D99B26')"><span class="dot" style="background:#D99B26"></span>Юпитер</button>
+      <button onclick="setAccent('#2E9E76')"><span class="dot" style="background:#2E9E76"></span>Меркурий</button>
+      <button onclick="setAccent('#4A77D4')"><span class="dot" style="background:#4A77D4"></span>Венера</button>
+    </div>
+  </header>
+
+  <section>
+    <h2>Иконки приложений (PNG 64–512px + Windows ICO) <span>(6)</span></h2>
+    <div class="app-grid">
+    <div class="app-card">
+      <img src="app_icons/png_256/vektor_platform.png" alt="ВЕКТОР Платформа">
+      <div class="title">ВЕКТОР Платформа</div>
+      <div class="sub">Main Brand · PNG / ICO</div>
+    </div>
+    <div class="app-card">
+      <img src="app_icons/png_256/vektor_hub.png" alt="ВЕКТОР ХАБ">
+      <div class="title">ВЕКТОР ХАБ</div>
+      <div class="sub">Core / PDM · PNG / ICO</div>
+    </div>
+    <div class="app-card">
+      <img src="app_icons/png_256/vektor_mars.png" alt="ВЕКТОР МАРС">
+      <div class="title">ВЕКТОР МАРС</div>
+      <div class="sub">Electro · PNG / ICO</div>
+    </div>
+    <div class="app-card">
+      <img src="app_icons/png_256/vektor_jupiter.png" alt="ВЕКТОР Юпитер">
+      <div class="title">ВЕКТОР Юпитер</div>
+      <div class="sub">CAD · PNG / ICO</div>
+    </div>
+    <div class="app-card">
+      <img src="app_icons/png_256/vektor_mercury.png" alt="ВЕКТОР Меркурий">
+      <div class="title">ВЕКТОР Меркурий</div>
+      <div class="sub">Tables · PNG / ICO</div>
+    </div>
+    <div class="app-card">
+      <img src="app_icons/png_256/vektor_venus.png" alt="ВЕКТОР Венера">
+      <div class="title">ВЕКТОР Венера</div>
+      <div class="sub">Docs · PNG / ICO</div>
+    </div></div>
+  </section>
+
+  
+    <section>
+      <h2>01 · Модули экосистемы (Top Bar / Sidebar) <span>(6)</span></h2>
+      <div class="icon-grid">
+        <div class="icon-card" title="ui_icons/01_modules/vektor_platform.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 19L19 5"/><path d="M13 5h6v6"/><path d="M5 5h6a3 3 0 0 1 0 6H5V5z"/><path d="M5 11h7a3 3 0 0 1 0 6H9"/>
+</svg>
+</div>
+          <div class="icon-name">vektor_platform</div>
+        </div>
+        <div class="icon-card" title="ui_icons/01_modules/vektor_hub.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="2.5"/><ellipse cx="12" cy="12" rx="9" ry="4" transform="rotate(-35 12 12)"/><ellipse cx="12" cy="12" rx="9" ry="4" transform="rotate(35 12 12)"/>
+</svg>
+</div>
+          <div class="icon-name">vektor_hub</div>
+        </div>
+        <div class="icon-card" title="ui_icons/01_modules/vektor_mars.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="5"/><ellipse cx="12" cy="12" rx="9.5" ry="3.2" transform="rotate(-25 12 12)"/><path d="M13 8l-2 4h3l-2 4"/>
+</svg>
+</div>
+          <div class="icon-name">vektor_mars</div>
+        </div>
+        <div class="icon-card" title="ui_icons/01_modules/vektor_jupiter.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="5.5"/><path d="M12 2v20"/><path d="M2 12h20"/><ellipse cx="12" cy="12" rx="9.5" ry="3.2" transform="rotate(-30 12 12)"/>
+</svg>
+</div>
+          <div class="icon-name">vektor_jupiter</div>
+        </div>
+        <div class="icon-card" title="ui_icons/01_modules/vektor_mercury.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M3 14h18"/><path d="M9 4v16"/><path d="M15 4v16"/>
+</svg>
+</div>
+          <div class="icon-name">vektor_mercury</div>
+        </div>
+        <div class="icon-card" title="ui_icons/01_modules/vektor_venus.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/><path d="M8 9h2"/>
+</svg>
+</div>
+          <div class="icon-name">vektor_venus</div>
+        </div></div>
+    </section>
+    <section>
+      <h2>02 · Навигация и каркас (Unified Shell) <span>(20)</span></h2>
+      <div class="icon-grid">
+        <div class="icon-card" title="ui_icons/02_navigation/project_tree.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 4h6v4H4z"/><path d="M14 10h6v4h-6z"/><path d="M14 17h6v4h-6z"/><path d="M7 8v11h7"/><path d="M7 12h7"/>
+</svg>
+</div>
+          <div class="icon-name">project_tree</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/folder.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z"/>
+</svg>
+</div>
+          <div class="icon-name">folder</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/folder_open.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v1H3V7z"/><path d="M3 10h18l-1.5 8.5a2 2 0 0 1-2 1.5H6.5a2 2 0 0 1-2-1.5L3 10z"/>
+</svg>
+</div>
+          <div class="icon-name">folder_open</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/file.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>
+</svg>
+</div>
+          <div class="icon-name">file</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/search.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.8-3.8"/>
+</svg>
+</div>
+          <div class="icon-name">search</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/command_palette.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/>
+</svg>
+</div>
+          <div class="icon-name">command_palette</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/sidebar_left.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/>
+</svg>
+</div>
+          <div class="icon-name">sidebar_left</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/sidebar_right.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>
+</svg>
+</div>
+          <div class="icon-name">sidebar_right</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/split_vertical.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/>
+</svg>
+</div>
+          <div class="icon-name">split_vertical</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/split_horizontal.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 12h18"/>
+</svg>
+</div>
+          <div class="icon-name">split_horizontal</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/home.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 10.5L12 3l9 7.5"/><path d="M5 9.5V19a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.5"/><path d="M9 20v-6h6v6"/>
+</svg>
+</div>
+          <div class="icon-name">home</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/dashboard.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>
+</svg>
+</div>
+          <div class="icon-name">dashboard</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/settings.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+</svg>
+</div>
+          <div class="icon-name">settings</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/user.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="8" r="4"/><path d="M5 20a7 7 0 0 1 14 0"/>
+</svg>
+</div>
+          <div class="icon-name">user</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/bell.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M18 8a6 6 0 0 0-12 0c0 7-3 8-3 8h18s-3-1-3-8"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+</svg>
+</div>
+          <div class="icon-name">bell</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/chevron_right.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M9 6l6 6-6 6"/>
+</svg>
+</div>
+          <div class="icon-name">chevron_right</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/chevron_down.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 9l6 6 6-6"/>
+</svg>
+</div>
+          <div class="icon-name">chevron_down</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/close.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M18 6L6 18"/><path d="M6 6l12 12"/>
+</svg>
+</div>
+          <div class="icon-name">close</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/menu.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/>
+</svg>
+</div>
+          <div class="icon-name">menu</div>
+        </div>
+        <div class="icon-card" title="ui_icons/02_navigation/more_vertical.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>
+</svg>
+</div>
+          <div class="icon-name">more_vertical</div>
+        </div></div>
+    </section>
+    <section>
+      <h2>03 · Общие действия <span>(24)</span></h2>
+      <div class="icon-grid">
+        <div class="icon-card" title="ui_icons/03_actions/plus.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 5v14"/><path d="M5 12h14"/>
+</svg>
+</div>
+          <div class="icon-name">plus</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/minus.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 12h14"/>
+</svg>
+</div>
+          <div class="icon-name">minus</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/save.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-7H7v7"/><path d="M7 3v5h8"/>
+</svg>
+</div>
+          <div class="icon-name">save</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/undo.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>
+</svg>
+</div>
+          <div class="icon-name">undo</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/redo.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M15 14l5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>
+</svg>
+</div>
+          <div class="icon-name">redo</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/copy.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+</svg>
+</div>
+          <div class="icon-name">copy</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/paste.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+</svg>
+</div>
+          <div class="icon-name">paste</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/cut.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><path d="M20 4L8.12 15.88"/><path d="M14.47 14.48L20 20"/><path d="M8.12 8.12L12 12"/>
+</svg>
+</div>
+          <div class="icon-name">cut</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/trash.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>
+</svg>
+</div>
+          <div class="icon-name">trash</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/edit.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+</svg>
+</div>
+          <div class="icon-name">edit</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/download.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>
+</svg>
+</div>
+          <div class="icon-name">download</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/upload.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>
+</svg>
+</div>
+          <div class="icon-name">upload</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/export_file.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/><path d="M14 2v6h6"/><path d="M12 15l7-7"/><path d="M15 8h4v4"/>
+</svg>
+</div>
+          <div class="icon-name">export_file</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/print.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 9V3h12v6"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="7"/>
+</svg>
+</div>
+          <div class="icon-name">print</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/refresh.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/>
+</svg>
+</div>
+          <div class="icon-name">refresh</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/filter.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 4h18l-7 8v6l-4 2v-8L3 4z"/>
+</svg>
+</div>
+          <div class="icon-name">filter</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/lock.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>
+</svg>
+</div>
+          <div class="icon-name">lock</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/unlock.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.5-2"/>
+</svg>
+</div>
+          <div class="icon-name">unlock</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/eye.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>
+</svg>
+</div>
+          <div class="icon-name">eye</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/eye_off.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-6 0-10-7-10-7a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 5c6 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19"/><path d="M3 3l18 18"/>
+</svg>
+</div>
+          <div class="icon-name">eye_off</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/check.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 13l4 4L19 7"/>
+</svg>
+</div>
+          <div class="icon-name">check</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/alert_triangle.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>
+</svg>
+</div>
+          <div class="icon-name">alert_triangle</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/info.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="9"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+</svg>
+</div>
+          <div class="icon-name">info</div>
+        </div>
+        <div class="icon-card" title="ui_icons/03_actions/link.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M10 13a5 5 0 0 0 7.54.54l2-2a5 5 0 0 0-7.07-7.07l-1.15 1.15"/><path d="M14 11a5 5 0 0 0-7.54-.54l-2 2a5 5 0 0 0 7.07 7.07l1.15-1.15"/>
+</svg>
+</div>
+          <div class="icon-name">link</div>
+        </div></div>
+    </section>
+    <section>
+      <h2>04 · ВЕКТОР ХАБ (PDM / База изделий) <span>(10)</span></h2>
+      <div class="icon-grid">
+        <div class="icon-card" title="ui_icons/04_hub_pdm/database.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/>
+</svg>
+</div>
+          <div class="icon-name">database</div>
+        </div>
+        <div class="icon-card" title="ui_icons/04_hub_pdm/component_box.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z"/><path d="M3 7l9 5 9-5"/><path d="M12 12v10"/>
+</svg>
+</div>
+          <div class="icon-name">component_box</div>
+        </div>
+        <div class="icon-card" title="ui_icons/04_hub_pdm/cabinet.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M5 8h14"/><path d="M5 14h14"/><path d="M15 11h1"/><path d="M8 5.5h3"/>
+</svg>
+</div>
+          <div class="icon-name">cabinet</div>
+        </div>
+        <div class="icon-card" title="ui_icons/04_hub_pdm/git_branch.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><path d="M6 8.5v7"/><path d="M18 8.5a6 6 0 0 1-6 6H6"/>
+</svg>
+</div>
+          <div class="icon-name">git_branch</div>
+        </div>
+        <div class="icon-card" title="ui_icons/04_hub_pdm/tag.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L3 13V3h10l7.59 7.59a2 2 0 0 1 0 2.82z"/><circle cx="8" cy="8" r="1.2"/>
+</svg>
+</div>
+          <div class="icon-name">tag</div>
+        </div>
+        <div class="icon-card" title="ui_icons/04_hub_pdm/barcode.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 6v12"/><path d="M8 6v12"/><path d="M11 6v12"/><path d="M15 6v12"/><path d="M18 6v12"/><path d="M20 6v12"/>
+</svg>
+</div>
+          <div class="icon-name">barcode</div>
+        </div>
+        <div class="icon-card" title="ui_icons/04_hub_pdm/checklist.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 7l2 2 4-4"/><path d="M13 7h7"/><path d="M4 17l2 2 4-4"/><path d="M13 17h7"/>
+</svg>
+</div>
+          <div class="icon-name">checklist</div>
+        </div>
+        <div class="icon-card" title="ui_icons/04_hub_pdm/workflow.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="3" width="6" height="5" rx="1"/><rect x="15" y="16" width="6" height="5" rx="1"/><rect x="15" y="3" width="6" height="5" rx="1"/><path d="M9 5.5h6"/><path d="M6 8v5a3 3 0 0 0 3 3h6"/>
+</svg>
+</div>
+          <div class="icon-name">workflow</div>
+        </div>
+        <div class="icon-card" title="ui_icons/04_hub_pdm/archive.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>
+</svg>
+</div>
+          <div class="icon-name">archive</div>
+        </div>
+        <div class="icon-card" title="ui_icons/04_hub_pdm/shield_check.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 2l8 4v6c0 5.25-3.4 9.74-8 11-4.6-1.26-8-5.75-8-11V6l8-4z"/><path d="M9 12l2 2 4-4"/>
+</svg>
+</div>
+          <div class="icon-name">shield_check</div>
+        </div></div>
+    </section>
+    <section>
+      <h2>05 · ВЕКТОР МАРС (Электротехника) <span>(12)</span></h2>
+      <div class="icon-grid">
+        <div class="icon-card" title="ui_icons/05_mars_electro/circuit_breaker.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 3v5"/><path d="M12 16v5"/><path d="M12 16l4-7"/><path d="M10.5 6.5l3 3"/><path d="M13.5 6.5l-3 3"/>
+</svg>
+</div>
+          <div class="icon-name">circuit_breaker</div>
+        </div>
+        <div class="icon-card" title="ui_icons/05_mars_electro/relay_coil.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="6" y="7" width="12" height="10" rx="1"/><path d="M12 3v4"/><path d="M12 17v4"/><path d="M6 15l12-6"/>
+</svg>
+</div>
+          <div class="icon-name">relay_coil</div>
+        </div>
+        <div class="icon-card" title="ui_icons/05_mars_electro/terminal_block.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="4" y="6" width="16" height="12" rx="1.5"/><circle cx="8" cy="12" r="2"/><circle cx="16" cy="12" r="2"/><path d="M12 6v12"/>
+</svg>
+</div>
+          <div class="icon-name">terminal_block</div>
+        </div>
+        <div class="icon-card" title="ui_icons/05_mars_electro/wire_cable.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="5" cy="18" r="2"/><circle cx="19" cy="6" r="2"/><path d="M7 18h5v-12h5"/>
+</svg>
+</div>
+          <div class="icon-name">wire_cable</div>
+        </div>
+        <div class="icon-card" title="ui_icons/05_mars_electro/ground.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 3v10"/><path d="M5 13h14"/><path d="M8 17h8"/><path d="M10.5 21h3"/>
+</svg>
+</div>
+          <div class="icon-name">ground</div>
+        </div>
+        <div class="icon-card" title="ui_icons/05_mars_electro/power_lightning.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/>
+</svg>
+</div>
+          <div class="icon-name">power_lightning</div>
+        </div>
+        <div class="icon-card" title="ui_icons/05_mars_electro/plc_controller.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="4" y="4" width="16" height="16" rx="1.5"/><path d="M8 4v16"/><path d="M12 8h4"/><path d="M12 12h4"/><path d="M12 16h2"/><circle cx="6" cy="8" r="0.8"/><circle cx="6" cy="12" r="0.8"/>
+</svg>
+</div>
+          <div class="icon-name">plc_controller</div>
+        </div>
+        <div class="icon-card" title="ui_icons/05_mars_electro/sensor.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="5"/><path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><circle cx="12" cy="12" r="1.5"/>
+</svg>
+</div>
+          <div class="icon-name">sensor</div>
+        </div>
+        <div class="icon-card" title="ui_icons/05_mars_electro/motor.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="7"/><path d="M9 15V9l3 3 3-3v6"/><path d="M12 2v3"/><path d="M12 19v3"/>
+</svg>
+</div>
+          <div class="icon-name">motor</div>
+        </div>
+        <div class="icon-card" title="ui_icons/05_mars_electro/switch_contact.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="6" cy="15" r="2"/><circle cx="18" cy="15" r="2"/><path d="M8 14l9-5"/><path d="M2 15h2"/><path d="M20 15h2"/>
+</svg>
+</div>
+          <div class="icon-name">switch_contact</div>
+        </div>
+        <div class="icon-card" title="ui_icons/05_mars_electro/fuse.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="6" y="8" width="12" height="8" rx="1"/><path d="M2 12h20"/>
+</svg>
+</div>
+          <div class="icon-name">fuse</div>
+        </div>
+        <div class="icon-card" title="ui_icons/05_mars_electro/busbar.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 7h18"/><path d="M3 12h18"/><path d="M3 17h18"/><circle cx="8" cy="7" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="16" cy="17" r="1.2"/>
+</svg>
+</div>
+          <div class="icon-name">busbar</div>
+        </div></div>
+    </section>
+    <section>
+      <h2>06 · ВЕКТОР Юпитер (САПР / Черчение) <span>(17)</span></h2>
+      <div class="icon-grid">
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/line.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="5" cy="19" r="2"/><circle cx="19" cy="5" r="2"/><path d="M6.4 17.6L17.6 6.4"/>
+</svg>
+</div>
+          <div class="icon-name">line</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/polyline.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="4" cy="18" r="1.8"/><circle cx="10" cy="8" r="1.8"/><circle cx="15" cy="15" r="1.8"/><circle cx="20" cy="6" r="1.8"/><path d="M5 16.5L9 9.5"/><path d="M11 9.5l3 4"/><path d="M16 13.5L19 7.5"/>
+</svg>
+</div>
+          <div class="icon-name">polyline</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/circle.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="1.2"/>
+</svg>
+</div>
+          <div class="icon-name">circle</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/arc.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 18A14 14 0 0 1 18 4"/><circle cx="4" cy="18" r="1.5"/><circle cx="18" cy="4" r="1.5"/>
+</svg>
+</div>
+          <div class="icon-name">arc</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/rectangle.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="4" y="5" width="16" height="14" rx="1"/><circle cx="4" cy="5" r="1.2"/><circle cx="20" cy="19" r="1.2"/>
+</svg>
+</div>
+          <div class="icon-name">rectangle</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/dimension.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 6v12"/><path d="M20 6v12"/><path d="M4 12h16"/><path d="M7 9l-3 3 3 3"/><path d="M17 9l3 3-3 3"/>
+</svg>
+</div>
+          <div class="icon-name">dimension</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/angle.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M19 19H5L16 5"/><path d="M11 19a6 6 0 0 0-2.5-4.9"/>
+</svg>
+</div>
+          <div class="icon-name">angle</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/layers.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 3l9 4.5-9 4.5-9-4.5L12 3z"/><path d="M3 12l9 4.5 9-4.5"/><path d="M3 16.5L12 21l9-4.5"/>
+</svg>
+</div>
+          <div class="icon-name">layers</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/snap_grid.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 8h16"/><path d="M4 16h16"/><path d="M8 4v16"/><path d="M16 4v16"/><circle cx="16" cy="8" r="2"/>
+</svg>
+</div>
+          <div class="icon-name">snap_grid</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/move.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 3v18"/><path d="M3 12h18"/><path d="M9 6l3-3 3 3"/><path d="M9 18l3 3 3-3"/><path d="M6 9l-3 3 3 3"/><path d="M18 9l3 3-3 3"/>
+</svg>
+</div>
+          <div class="icon-name">move</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/rotate.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/><circle cx="12" cy="12" r="1.5"/>
+</svg>
+</div>
+          <div class="icon-name">rotate</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/mirror.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 3v18"/><path d="M9 7L4 17h5V7z"/><path d="M15 7l5 10h-5V7z"/>
+</svg>
+</div>
+          <div class="icon-name">mirror</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/trim.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 19L19 4"/><path d="M4 4l6 6"/><path d="M14 14l6 6"/>
+</svg>
+</div>
+          <div class="icon-name">trim</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/measure_ruler.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 17L17 3l4 4L7 21l-4-4z"/><path d="M14 6l2 2"/><path d="M11 9l2 2"/><path d="M8 12l2 2"/>
+</svg>
+</div>
+          <div class="icon-name">measure_ruler</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/zoom_in.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.8-3.8"/><path d="M11 8v6"/><path d="M8 11h6"/>
+</svg>
+</div>
+          <div class="icon-name">zoom_in</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/zoom_out.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="11" cy="11" r="7"/><path d="M20 20l-3.8-3.8"/><path d="M8 11h6"/>
+</svg>
+</div>
+          <div class="icon-name">zoom_out</div>
+        </div>
+        <div class="icon-card" title="ui_icons/06_jupiter_cad/zoom_fit.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 9V4h5"/><path d="M20 9V4h-5"/><path d="M4 15v5h5"/><path d="M20 15v5h-5"/><rect x="8" y="8" width="8" height="8" rx="1"/>
+</svg>
+</div>
+          <div class="icon-name">zoom_fit</div>
+        </div></div>
+    </section>
+    <section>
+      <h2>07 · ВЕКТОР Меркурий (Таблицы / Спецификации) <span>(10)</span></h2>
+      <div class="icon-grid">
+        <div class="icon-card" title="ui_icons/07_mercury_tables/table.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M3 14h18"/><path d="M9 4v16"/>
+</svg>
+</div>
+          <div class="icon-name">table</div>
+        </div>
+        <div class="icon-card" title="ui_icons/07_mercury_tables/add_row.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="4" width="18" height="10" rx="1.5"/><path d="M3 9h18"/><path d="M12 16v5"/><path d="M9.5 18.5h5"/>
+</svg>
+</div>
+          <div class="icon-name">add_row</div>
+        </div>
+        <div class="icon-card" title="ui_icons/07_mercury_tables/add_column.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="4" width="10" height="16" rx="1.5"/><path d="M8 4v16"/><path d="M18 9.5v5"/><path d="M15.5 12h5"/>
+</svg>
+</div>
+          <div class="icon-name">add_column</div>
+        </div>
+        <div class="icon-card" title="ui_icons/07_mercury_tables/formula_fx.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 19l2-11a3 3 0 0 1 3-3h2"/><path d="M4 11h6"/><path d="M13 12l6 7"/><path d="M19 12l-6 7"/>
+</svg>
+</div>
+          <div class="icon-name">formula_fx</div>
+        </div>
+        <div class="icon-card" title="ui_icons/07_mercury_tables/sum_sigma.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M18 5H6l6 7-6 7h12"/>
+</svg>
+</div>
+          <div class="icon-name">sum_sigma</div>
+        </div>
+        <div class="icon-card" title="ui_icons/07_mercury_tables/merge_cells.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v5"/><path d="M15 4v5"/><path d="M3 9h18"/><path d="M3 15h18"/><path d="M9 12h6"/>
+</svg>
+</div>
+          <div class="icon-name">merge_cells</div>
+        </div>
+        <div class="icon-card" title="ui_icons/07_mercury_tables/sort_asc.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M7 4v16"/><path d="M4 7l3-3 3 3"/><path d="M13 7h7"/><path d="M13 12h5"/><path d="M13 17h3"/>
+</svg>
+</div>
+          <div class="icon-name">sort_asc</div>
+        </div>
+        <div class="icon-card" title="ui_icons/07_mercury_tables/sort_desc.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M7 4v16"/><path d="M4 17l3 3 3-3"/><path d="M13 7h3"/><path d="M13 12h5"/><path d="M13 17h7"/>
+</svg>
+</div>
+          <div class="icon-name">sort_desc</div>
+        </div>
+        <div class="icon-card" title="ui_icons/07_mercury_tables/bom_spec.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 8h16"/><path d="M9 8v13"/><path d="M4 13h16"/><path d="M4 17h16"/>
+</svg>
+</div>
+          <div class="icon-name">bom_spec</div>
+        </div>
+        <div class="icon-card" title="ui_icons/07_mercury_tables/cable_journal.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/><path d="M7 13h4l2 3h4"/>
+</svg>
+</div>
+          <div class="icon-name">cable_journal</div>
+        </div></div>
+    </section>
+    <section>
+      <h2>08 · ВЕКТОР Венера (Документы / ЕСКД) <span>(10)</span></h2>
+      <div class="icon-grid">
+        <div class="icon-card" title="ui_icons/08_venus_docs/document.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h6"/>
+</svg>
+</div>
+          <div class="icon-name">document</div>
+        </div>
+        <div class="icon-card" title="ui_icons/08_venus_docs/gost_frame.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3" y="3" width="18" height="18" rx="1"/><rect x="11" y="15" width="10" height="6"/><path d="M11 18h10"/><path d="M15 15v6"/>
+</svg>
+</div>
+          <div class="icon-name">gost_frame</div>
+        </div>
+        <div class="icon-card" title="ui_icons/08_venus_docs/heading.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6 5v14"/><path d="M18 5v14"/><path d="M6 12h12"/>
+</svg>
+</div>
+          <div class="icon-name">heading</div>
+        </div>
+        <div class="icon-card" title="ui_icons/08_venus_docs/align_left.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 6h16"/><path d="M4 10h11"/><path d="M4 14h16"/><path d="M4 18h11"/>
+</svg>
+</div>
+          <div class="icon-name">align_left</div>
+        </div>
+        <div class="icon-card" title="ui_icons/08_venus_docs/align_center.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 6h16"/><path d="M7 10h10"/><path d="M4 14h16"/><path d="M7 18h10"/>
+</svg>
+</div>
+          <div class="icon-name">align_center</div>
+        </div>
+        <div class="icon-card" title="ui_icons/08_venus_docs/align_justify.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 6h16"/><path d="M4 10h16"/><path d="M4 14h16"/><path d="M4 18h16"/>
+</svg>
+</div>
+          <div class="icon-name">align_justify</div>
+        </div>
+        <div class="icon-card" title="ui_icons/08_venus_docs/list_bullet.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <circle cx="5" cy="7" r="1"/><circle cx="5" cy="12" r="1"/><circle cx="5" cy="17" r="1"/><path d="M9 7h11"/><path d="M9 12h11"/><path d="M9 17h11"/>
+</svg>
+</div>
+          <div class="icon-name">list_bullet</div>
+        </div>
+        <div class="icon-card" title="ui_icons/08_venus_docs/list_number.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 6h2v4"/><path d="M4 10h3"/><path d="M4 15h3l-3 3h3"/><path d="M10 7h10"/><path d="M10 12h10"/><path d="M10 17h10"/>
+</svg>
+</div>
+          <div class="icon-name">list_number</div>
+        </div>
+        <div class="icon-card" title="ui_icons/08_venus_docs/variable_token.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M8 4H6a2 2 0 0 0-2 2v4a2 2 0 0 1-2 2 2 2 0 0 1 2 2v4a2 2 0 0 0 2 2h2"/><path d="M16 4h2a2 2 0 0 1 2 2v4a2 2 0 0 0 2 2 2 2 0 0 0-2 2v4a2 2 0 0 1-2 2h-2"/><circle cx="12" cy="12" r="1.5"/>
+</svg>
+</div>
+          <div class="icon-name">variable_token</div>
+        </div>
+        <div class="icon-card" title="ui_icons/08_venus_docs/stamp_approve.svg">
+          <div class="svg-wrap"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 4a3 3 0 0 0-3 3c0 2 1 3 1 5H6a2 2 0 0 0-2 2v2h16v-2a2 2 0 0 0-2-2h-4c0-2 1-3 1-5a3 3 0 0 0-3-3z"/><path d="M4 20h16"/>
+</svg>
+</div>
+          <div class="icon-name">stamp_approve</div>
+        </div></div>
+    </section>
+
+  <script>
+    function setAccent(color) {
+      document.documentElement.style.setProperty('--accent', color);
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,44 @@
+# ВЕКТОР — сервер приложения (systemd). Установка и пояснения: docs/ops/install.md.
+#
+# Предполагается:
+#   * учётная запись службы vector (без входа в систему): useradd --system --home /var/lib/vector --shell /usr/sbin/nologin vector
+#   * программа в виртуальном окружении /opt/vector/venv (pip install "vector[server]")
+#   * конфигурация /etc/vector/vector-server.toml (без секретов, см. config/vector-server.example.toml)
+#   * строка подключения к БД — в /etc/vector/vector.env (права 600, владелец root):
+#       VECTOR_DB_URL=postgresql+psycopg2://vector:<пароль>@db-host:5432/vector
+[Unit]
+Description=VECTOR (ВЕКТОР) application server
+Documentation=https://github.com/Alchimon/VECTOR/blob/main/docs/ops/install.md
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=exec
+User=vector
+Group=vector
+EnvironmentFile=/etc/vector/vector.env
+WorkingDirectory=/var/lib/vector
+ExecStartPre=/opt/vector/venv/bin/vector-server check --config /etc/vector/vector-server.toml
+ExecStart=/opt/vector/venv/bin/vector-server serve --config /etc/vector/vector-server.toml
+Restart=on-failure
+RestartSec=5s
+# Журнал — в journald (journalctl -u vector-server). Пароли и строки подключения сервер не пишет.
+
+# Ограничения: служба не меняет систему и видит только свои каталоги.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/vector
+ReadOnlyPaths=/etc/vector
+UMask=0077
+# Порт 8443 > 1024 — особые права на сетевой порт не нужны.
+
+[Install]
+WantedBy=multi-user.target

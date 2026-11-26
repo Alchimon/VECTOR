@@ -1,0 +1,7 @@
+# Переводы строк файлов, чувствительных к ним (тестовый стенд, deploy/test-stand).
+# Windows-скрипты хранятся с CRLF и выдаются как есть (в т. ч. в ZIP с GitHub): cmd.exe и PowerShell 5.1
+# рассчитаны на CRLF, а .ps1 ещё и на UTF-8 с BOM — никакие преобразования git к ним не применяются.
+*.cmd -text
+*.ps1 -text
+# Скрипты оболочки — только LF: с CRLF bash выдаёт «$'\r': command not found».
+*.sh  text eol=lf

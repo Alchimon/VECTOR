@@ -1,0 +1,2137 @@
+{
+ "contract": "permissions-slice1-v41",
+ "notes": [
+  "Правила — ВРЕМЕННЫЕ предположения (Decision Log A-03..A-09) для работающего среза. Владелец продукта должен подтвердить или изменить.",
+  "Роль из клиентского запроса игнорируется: сервер загружает действующие выдачи ролей и назначения в той же транзакции, где производится эффект.",
+  "Роль доступа ≠ должность ≠ подразделение. Admin НЕ получает бизнес-прав автоматически (принцип минимальных привилегий).",
+  "Каждая выдача роли/назначение — отдельная запись с id (= generation). Отзыв и повторная выдача создают новый id; старые согласования не оживают.",
+  "Условие {\"authenticated\": true} — любой вошедший пользователь, только над собственной учётной записью (проверяется в обработчике).",
+  "Замещение (D-34): глобальная роль, переданная на срок, действует у замещающего, пока действует замещение и пока у носителя есть своя роль; без цепочек; роль «Администратор» не передаётся.",
+  "Замещение в проекте (D-35): роль в проекте (ГИП, РП, участник), переданная на срок, действует у замещающего только в этом проекте и только пока у носителя есть назначение с этой ролью; глобальной роли не даёт.",
+  "Производство (D-36): роль мастера отдельно не заводится (OQ-15 → A-42) — наряды выпускает и закрывает РП проекта (или его замещающий в проекте, D-35), резерв — руководитель отдела; операции исполняет роль «Производство» только по назначению на операцию (проверяется в обработчике).",
+  "Условие с \"in_project\": true (D-38): глобальная роль из условия учитывается только у участника ЭТОГО проекта (своё назначение в проект или роль в проекте по замещению). Так «ведущий инженер» правит паспорта только своих проектов.",
+  "Качество (D-39): рекламации и CAPA ведут РП и ГИП проекта (резерв — руководитель отдела); ECR подаёт любой участник проекта; решение по ECR и утверждение ECO — ГИП проекта (не автор). Проверку эффективности делает НЕ тот, кто составлял план, выполнял действия или отправлял на проверку; ECO проверяет не тот, кто внедрял (проверяется в обработчике).",
+  "ОТК (D-40 / D-41, ответы владельца на A-46 и A-47): роль «Технический контроль» (otk — отдел технического контроля) — глобальная, но действует ПО ПРОЕКТАМ: только в проектах, куда сотрудник ОТК назначен участником (условие in_project; назначает ГИП или РП). Там он видит изделия, наряды, техпроцессы и качество (без денег), регистрирует и ведёт рекламации наравне с РП и ГИП, проверяет эффективность CAPA и внедрение извещений (правило «другой человек» действует и для ОТК), подаёт запросы на изменение. Решения по ECR и утверждение ECO остаются за ГИП проекта.",
+  "Рабочее время (D-42): дневной отчёт ведёт сам сотрудник — любой вошедший, только свой (проверяется в обработчике); принимает или возвращает руководитель отдела (dept_head, в т. ч. замещающий), но не свой отчёт. Сотрудников вне оргструктуры руководитель отдела видит всех (A-48); в оргструктуре — только своих подразделений (D-44).",
+  "Оргструктура (D-44, ответ владельца на A-48 п. 1): филиалы, структуры и отделы, связи «входит в», руководители и сотрудники. Ведёт администратор (org.manage — временное правило, вопрос A-50); видят все вошедшие. Подразделение и должность прав не дают. Дневной отчёт сотрудника в оргструктуре уходит руководителю его подразделения (или ближайшего вышестоящего) и его замещающему; принять или вернуть может руководитель подразделения по цепочке вверх с ролью «Руководитель отдела» (или его замещающий) — проверяется в обработчике. Сотрудники вне оргструктуры — по правилу D-42.",
+  "Сквозные потоки проекта (D-56, ответы владельца 2026-11-16): статус проекта, потоки и риск-разрешения в рамках проекта ведёт РП (резерв — руководитель отдела). Лиды (sales_opportunities) — тендерный отдел и менеджеры: глобальные роли gip, rp, dept_head (A-57)."
+ ],
+ "roles": [
+  "admin",
+  "gip",
+  "rp",
+  "dept_head",
+  "lead_engineer",
+  "engineer",
+  "designer",
+  "technologist",
+  "production",
+  "warehouse",
+  "procurement",
+  "accountant",
+  "po_approver",
+  "otk"
+ ],
+ "project_roles": [
+  "gip",
+  "rp",
+  "participant"
+ ],
+ "rules": {
+  "customer.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head",
+      "lead_engineer",
+      "accountant"
+     ]
+    }
+   ],
+   "assumption": "A-03"
+  },
+  "customer.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-03"
+  },
+  "customer.update": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-03"
+  },
+  "tender.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head",
+      "lead_engineer"
+     ]
+    }
+   ],
+   "assumption": "A-03"
+  },
+  "tender.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-03"
+  },
+  "tender.update": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-03"
+  },
+  "tender.transition": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-03"
+  },
+  "tkp.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head",
+      "lead_engineer",
+      "accountant"
+     ]
+    }
+   ],
+   "assumption": "A-03"
+  },
+  "tkp.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head",
+      "lead_engineer"
+     ]
+    }
+   ],
+   "assumption": "A-03"
+  },
+  "tkp.update": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head",
+      "lead_engineer"
+     ]
+    }
+   ],
+   "assumption": "A-03"
+  },
+  "tkp.approve": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-04",
+   "extra": "Автор последней правки не может согласовать сам (разделение обязанностей)."
+  },
+  "tkp.reopen": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-04"
+  },
+  "tkp.record_sent": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-04"
+  },
+  "project.start_rkd": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp"
+     ]
+    }
+   ],
+   "assumption": "A-05"
+  },
+  "project.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head"
+     ]
+    },
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-06"
+  },
+  "project.assign_gip": {
+   "any_of": [
+    {
+     "global_role": [
+      "admin"
+     ]
+    }
+   ],
+   "assumption": "FIXED",
+   "extra": "Зафиксировано промптом: назначение ГИП проекта — только admin."
+  },
+  "project.assign_rp": {
+   "any_of": [
+    {
+     "global_role": [
+      "admin"
+     ]
+    },
+    {
+     "project_role": [
+      "gip"
+     ]
+    }
+   ],
+   "assumption": "A-07"
+  },
+  "project.assign_participant": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    }
+   ],
+   "assumption": "A-07"
+  },
+  "opportunity.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-57"
+  },
+  "opportunity.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "rp",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-57"
+  },
+  "opportunity.update": {
+   "same_as": "opportunity.create"
+  },
+  "opportunity.transition": {
+   "same_as": "opportunity.create"
+  },
+  "opportunity.convert_to_tender": {
+   "same_as": "opportunity.create"
+  },
+  "project.transition": {
+   "any_of": [
+    {
+     "project_role": [
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-56",
+   "note": "Статус проекта (завершение, архив, отмена) решает РП проекта (ответ владельца 2026-11-16, п. 1); резерв — руководитель отдела, чтобы отсутствие одного человека не останавливало работу (как в D-33/D-36)."
+  },
+  "workstream.update": {
+   "same_as": "project.transition"
+  },
+  "workstream.set_status": {
+   "same_as": "project.transition"
+  },
+  "risk.accept": {
+   "same_as": "project.transition",
+   "note": "Риск-разрешение (исключение) принимает РП проекта (ответ владельца 2026-11-16, п. 1). Резерв — руководитель отдела."
+  },
+  "risk.resolve": {
+   "same_as": "risk.accept"
+  },
+  "kit.read": {
+   "same_as": "project.read"
+  },
+  "kit.create": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    }
+   ],
+   "assumption": "A-08"
+  },
+  "kit.update": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    }
+   ],
+   "assumption": "A-08"
+  },
+  "admin.create_user": {
+   "any_of": [
+    {
+     "global_role": [
+      "admin"
+     ]
+    }
+   ],
+   "assumption": "A-09"
+  },
+  "admin.grant_role": {
+   "any_of": [
+    {
+     "global_role": [
+      "admin"
+     ]
+    }
+   ],
+   "assumption": "A-09"
+  },
+  "admin.revoke_role": {
+   "any_of": [
+    {
+     "global_role": [
+      "admin"
+     ]
+    }
+   ],
+   "assumption": "A-09"
+  },
+  "admin.revoke_sessions": {
+   "any_of": [
+    {
+     "global_role": [
+      "admin"
+     ]
+    }
+   ],
+   "assumption": "A-09"
+  },
+  "account.change_password": {
+   "any_of": [
+    {
+     "authenticated": true
+    }
+   ],
+   "assumption": "D-16"
+  },
+  "admin.reset_password": {
+   "any_of": [
+    {
+     "global_role": [
+      "admin"
+     ]
+    }
+   ],
+   "assumption": "A-09"
+  },
+  "admin.set_user_active": {
+   "any_of": [
+    {
+     "global_role": [
+      "admin"
+     ]
+    }
+   ],
+   "assumption": "A-09"
+  },
+  "config.publish": {
+   "any_of": [
+    {
+     "global_role": [
+      "admin"
+     ]
+    }
+   ],
+   "assumption": "A-26",
+   "note": "Настройки компании публикует администратор (07 §3). Расширить права сверх матрицы настройка не может."
+  },
+  "admin.list_users": {
+   "any_of": [
+    {
+     "global_role": [
+      "admin"
+     ]
+    }
+   ],
+   "assumption": "A-09"
+  },
+  "task.read": {
+   "same_as": "project.read"
+  },
+  "task.create": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    }
+   ],
+   "assumption": "A-13"
+  },
+  "task.update": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    }
+   ],
+   "assumption": "A-13"
+  },
+  "task.transition": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    }
+   ],
+   "assumption": "A-13"
+  },
+  "task.transition_own": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-13",
+   "note": "Исполнитель задачи (назначенный участник проекта) двигает СВОЮ задачу: open→in_progress→done. Проверка «исполнитель = я» — в обработчике."
+  },
+  "document.read": {
+   "same_as": "project.read"
+  },
+  "document.create": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-14"
+  },
+  "document.update": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-14"
+  },
+  "document.add_version": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-14"
+  },
+  "docrev.read": {
+   "same_as": "project.read"
+  },
+  "docrev.create": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "note": "Ревизию документа создаёт инженер проекта (как document.create, A-14)."
+  },
+  "docrev.transition": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "note": "Подача на проверку и взятие в работу — авторская сторона; решения проверки — отдельное действие docrev.review (сервер проверяет оба)."
+  },
+  "docrev.review": {
+   "any_of": [
+    {
+     "project_role": [
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-56",
+   "note": "Проверка ревизии, разрешение/отзыв отправки и регистрация согласования заказчиком — РП проекта (ответ владельца 2026-11-16, п. 1); резерв — руководитель отдела (как в D-33/D-36)."
+  },
+  "comment.read": {
+   "same_as": "project.read"
+  },
+  "comment.add": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "note": "Внутреннее замечание в ходе проверки — участник проекта (A-14)."
+  },
+  "comment.register_customer": {
+   "any_of": [
+    {
+     "project_role": [
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-56",
+   "note": "Внешние замечания заказчика регистрирует РП проекта (внешняя переписка — ответственность РП); резерв — руководитель отдела."
+  },
+  "comment.respond": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "note": "Ответ на замечание закрывает его — отвечает инженер проекта (A-14)."
+  },
+  "transmittal.read": {
+   "same_as": "project.read"
+  },
+  "transmittal.create": {
+   "any_of": [
+    {
+     "project_role": [
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-56",
+   "note": "«РП разрешает точную ревизию и пакет» (blueprint 52, раздел 3); резерв — руководитель отдела."
+  },
+  "transmittal.register_receipt": {
+   "same_as": "transmittal.create"
+  },
+  "docprofile.read": {
+   "same_as": "project.read"
+  },
+  "docprofile.create": {
+   "same_as": "docprofile.manage"
+  },
+  "docprofile.update": {
+   "same_as": "docprofile.manage"
+  },
+  "docprofile.activate": {
+   "same_as": "docprofile.manage"
+  },
+  "docprofile.preview": {
+   "same_as": "docprofile.read"
+  },
+  "docprofile.manage": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-62",
+   "note": "Схему шифров и словарь статусов выдачи задаёт заказчик/проект (blueprint 52, §2.2): настраивают РП и ГИП проекта; резерв — руководитель отдела."
+  },
+  "docrev.set_issue": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-62",
+   "note": "Штамп выдачи (IFC/CEF…) — решение проектного руководства, а не автора ревизии; резерв — руководитель отдела."
+  },
+  "calc.read": {
+   "same_as": "project.read"
+  },
+  "calc.save_draft": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-18",
+   "note": "Черновик правят участники проекта. Роль «участник комплекта» пока не моделируется — любой участник проекта."
+  },
+  "calc.freeze": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip"
+     ]
+    }
+   ],
+   "assumption": "A-18",
+   "note": "По матрице 04: ГИП и ведущий комплекта. Роли «ведущий комплекта» в проекте пока нет — фиксирует ГИП проекта."
+  },
+  "calc.read_revisions": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "accountant"
+     ]
+    }
+   ],
+   "assumption": "A-18",
+   "note": "Проектный итог: ГИП и РП проекта; бухгалтерия — суммы (матрица 04). Изменять итог не может никто — только вычисление при фиксации."
+  },
+  "stock.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse",
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-21",
+   "note": "Остатки, резервы и журнал движений видят склад и закупка. Руководство проекта видит покрытие своей потребности (need.read)."
+  },
+  "warehouse.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    }
+   ],
+   "assumption": "A-20",
+   "note": "Справочник складов ведёт склад. Admin бизнес-прав не получает."
+  },
+  "warehouse.update": {
+   "same_as": "warehouse.create"
+  },
+  "item.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse",
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-20",
+   "note": "Номенклатуру ведут склад и закупка."
+  },
+  "item.update": {
+   "same_as": "item.create"
+  },
+  "item_alias.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse",
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-27",
+   "note": "Справочник аналогов и пересчёта ведут те же роли, что и номенклатуру (склад и закупка)."
+  },
+  "item_alias.update": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse",
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-27",
+   "note": "Справочник аналогов и пересчёта ведут те же роли, что и номенклатуру (склад и закупка)."
+  },
+  "unit_conversion.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse",
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-27",
+   "note": "Справочник аналогов и пересчёта ведут те же роли, что и номенклатуру (склад и закупка)."
+  },
+  "unit_conversion.update": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse",
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-27",
+   "note": "Справочник аналогов и пересчёта ведут те же роли, что и номенклатуру (склад и закупка)."
+  },
+  "stock.receive": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    }
+   ],
+   "assumption": "A-21",
+   "note": "Матрица 04: «Складское движение — провести — G: warehouse»."
+  },
+  "stock.issue": {
+   "same_as": "stock.receive"
+  },
+  "stock.reverse": {
+   "same_as": "stock.receive"
+  },
+  "stock.transfer": {
+   "same_as": "stock.receive"
+  },
+  "stock.transfer_accept": {
+   "same_as": "stock.receive"
+  },
+  "stock.transfer_cancel": {
+   "same_as": "stock.receive"
+  },
+  "stock.transfer_lost": {
+   "same_as": "stock.receive"
+  },
+  "stock.reserve": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    }
+   ],
+   "assumption": "A-21",
+   "note": "Временно резервирует склад. Совместное решение «склад + закупка» (С4 шаг 4) и предложения перемещения — следующий шаг."
+  },
+  "stock.release": {
+   "same_as": "stock.reserve"
+  },
+  "stock.adjust": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    }
+   ],
+   "assumption": "A-61",
+   "note": "Корректировку создаёт склад (матрица 04: движения — склад), но она не проводится без подписи руководителя отдела (D-77)."
+  },
+  "stock.adjust_sign": {
+   "any_of": [
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-61",
+   "note": "Подпись корректировки — руководитель отдела (или замещающий, D-34); автор подписать не может (четыре глаза, как po.approve)."
+  },
+  "stock.adjust_cancel": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    }
+   ],
+   "assumption": "A-61",
+   "note": "Отменяет автор неподписанной корректировки (проверка авторства — в сервере)."
+  },
+  "proposal.propose": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    },
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-62",
+   "note": "Предлагает закупка или участник проекта-получателя (С4 шаг 3: «инженер/закупка»). Проект — to_project_id запроса."
+  },
+  "proposal.withdraw": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    },
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-62",
+   "note": "Отзывает автор своё предложение до решения (проверка авторства — в сервере)."
+  },
+  "proposal.decide": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    },
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-62",
+   "note": "Совместное решение (С4 шаг 4): accept — склад (проверяется как stock.reserve), order — закупка (как po.create), reject — любая из сторон. Решение одно; вторая сторона и автор — уведомлением."
+  },
+  "stock.replen_rule_set": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    }
+   ],
+   "note": "Правило пополнения расходника задаёт склад (порог и количество — без умолчаний, Q2)."
+  },
+  "stock.replen_rule_update": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    }
+   ],
+   "note": "Изменяет и отключает правило склад; история черновиков сохраняется."
+  },
+  "stock.replen_confirm": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    },
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "note": "Два подтверждения: склад (как stock.receive) и закупка (как po.create); каждая сторона — один раз."
+  },
+  "stock.replen_dismiss": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    },
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "note": "Отклоняет любая из двух сторон, причина обязательна."
+  },
+  "need.generate": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-22",
+   "note": "Матрица 04: «Потребность/заказ — C/U — G: procurement». Формируется явным действием закупки, а не автоматически при фиксации."
+  },
+  "need.match_line": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-25",
+   "note": "Сопоставление строки потребности — правка потребности (матрица 04: «Потребность/заказ — C/U — G: procurement»). Склад резервирует, но позицию для строки выбирает закупка."
+  },
+  "need.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement",
+      "warehouse"
+     ]
+    },
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    }
+   ],
+   "assumption": "A-22",
+   "note": "Строки потребности без цен. ГИП/РП видят потребности своего проекта."
+  },
+  "supplier.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement",
+      "warehouse",
+      "accountant",
+      "po_approver",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-34",
+   "note": "Справочник поставщиков и договоры видят закупка, склад (принимает поставки), бухгалтерия, согласующий заказы и руководитель отдела (D-34: «в курсе»)."
+  },
+  "supplier.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-34",
+   "note": "Справочник поставщиков ведёт закупка (матрица 04: «Потребность/заказ — C/U — G: procurement»)."
+  },
+  "supplier.update": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-34",
+   "note": "Справочник поставщиков ведёт закупка."
+  },
+  "contract.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-39",
+   "note": "Договоры с поставщиками ведёт закупка (как справочник поставщиков)."
+  },
+  "contract.update": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-39",
+   "note": "Договоры с поставщиками ведёт закупка."
+  },
+  "po.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement",
+      "warehouse",
+      "accountant",
+      "po_approver",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-35",
+   "note": "Заказы поставщикам видят закупка, склад (что ждём), бухгалтерия, согласующий и руководитель отдела (D-34)."
+  },
+  "po.read_prices": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement",
+      "accountant",
+      "po_approver",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-37",
+   "note": "Цены, суммы и НДС заказов видят закупка, бухгалтерия, согласующий и руководитель отдела; склад видит количества без цен."
+  },
+  "po.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-34",
+   "note": "Матрица 04: «Потребность/заказ — C/U — G: procurement»."
+  },
+  "po.update": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-34",
+   "note": "Матрица 04: «Потребность/заказ — C/U — G: procurement»."
+  },
+  "po.submit": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-37",
+   "note": "На согласование отправляет закупка (D-33: согласование обязательно)."
+  },
+  "po.withdraw": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-37",
+   "note": "Отзывает с согласования закупка — чтобы изменить условия."
+  },
+  "po.approve": {
+   "any_of": [
+    {
+     "global_role": [
+      "po_approver",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-37",
+   "note": "Согласует роль «Согласование закупок» (или её замещающий, D-34); руководитель отдела — резервный согласующий, чтобы отсутствие одного человека не останавливало закупку (ответ владельца на A-37). Сервер запрещает согласовывать свой заказ (создал или отправил)."
+  },
+  "po.return": {
+   "any_of": [
+    {
+     "global_role": [
+      "po_approver",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-37",
+   "note": "Вернуть на доработку с причиной — те же, кто согласует (D-34)."
+  },
+  "po.place": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-34",
+   "note": "Размещает закупка — только согласованный заказ (D-33); сервер перепроверяет всё в момент размещения."
+  },
+  "po.cancel": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-36",
+   "note": "Отменяет закупка — только пока ничего не поставлено."
+  },
+  "po.close": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "assumption": "A-36",
+   "note": "Закрывает закупка; недопоставка — с причиной."
+  },
+  "pgroup.read": {
+   "same_as": "stock.read"
+  },
+  "pgroup.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement",
+      "dept_head"
+     ]
+    }
+   ],
+   "note": "Группы закупки ведёт закупка; резерв — руководитель отдела (как D-33/D-36)."
+  },
+  "pgroup.update": {
+   "same_as": "pgroup.create"
+  },
+  "batch.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement",
+      "warehouse",
+      "dept_head"
+     ]
+    },
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    }
+   ],
+   "note": "Пакеты целиком — закупка/склад/руководство; ГИП/РП — пакеты, где есть строки потребности их проектов (как need.read, A-22)."
+  },
+  "batch.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "note": "Консолидацию формирует закупка (матрица 04, A-22/A-34)."
+  },
+  "batch.update": {
+   "same_as": "batch.create"
+  },
+  "batch.transition": {
+   "same_as": "batch.create"
+  },
+  "analog.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse",
+      "procurement",
+      "gip",
+      "lead_engineer",
+      "engineer",
+      "dept_head"
+     ]
+    }
+   ],
+   "note": "Аналоги видят склад, закупка и инженерный состав (предлагают и решают); как stock.read плюс инженеры."
+  },
+  "analog.propose": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement",
+      "gip",
+      "lead_engineer",
+      "engineer"
+     ]
+    }
+   ],
+   "note": "Предложить аналог может закупка и инженерный состав; решение — отдельное действие."
+  },
+  "analog.decide": {
+   "any_of": [
+    {
+     "global_role": [
+      "gip",
+      "lead_engineer"
+     ]
+    }
+   ],
+   "note": "«Система предлагает, инженер/уполномоченный утверждает» (blueprint 52, 2.3): решение по аналогу — ГИП или ведущий инженер; молчаливой замены нет."
+  },
+  "po.receive": {
+   "any_of": [
+    {
+     "global_role": [
+      "warehouse"
+     ]
+    }
+   ],
+   "assumption": "A-36",
+   "note": "Факт поставки — складское движение (матрица 04: «Складское движение — провести — G: warehouse»)."
+  },
+  "delegation.create": {
+   "any_of": [
+    {
+     "authenticated": true
+    }
+   ],
+   "assumption": "A-40",
+   "note": "Свою роль передаёт её носитель — сервер проверяет, что роль у него есть (своя выдача или своё назначение в проекте, не полученные замещением). За другого — нужно право delegation.manage."
+  },
+  "delegation.revoke": {
+   "any_of": [
+    {
+     "authenticated": true
+    }
+   ],
+   "assumption": "A-40",
+   "note": "Отменить может носитель, замещающий и оформивший; остальные — с правом delegation.manage."
+  },
+  "delegation.manage": {
+   "any_of": [
+    {
+     "global_role": [
+      "dept_head",
+      "admin"
+     ]
+    }
+   ],
+   "assumption": "A-40",
+   "note": "Оформить и отменить замещение за отсутствующего сотрудника, видеть все замещения и покрытие ролей: руководитель отдела и администратор (ответ владельца на A-37: «все и вся должны быть заменяемыми»)."
+  },
+  "notification.read": {
+   "any_of": [
+    {
+     "authenticated": true
+    }
+   ],
+   "assumption": "A-41",
+   "note": "Только свои уведомления — сервер не трогает чужие (D-35)."
+  },
+  "tp.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "technologist",
+      "dept_head"
+     ]
+    },
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-42",
+   "note": "ТП и состав изделия (без цен) видят технологи, руководитель отдела и команда проекта (ОТК — как участник проекта, D-41)."
+  },
+  "tp.edit": {
+   "any_of": [
+    {
+     "global_role": [
+      "technologist"
+     ]
+    }
+   ],
+   "assumption": "A-42",
+   "note": "Матрица 04: ТП — C/U — G: technologist."
+  },
+  "tp.create": {
+   "same_as": "tp.edit"
+  },
+  "tp.update": {
+   "same_as": "tp.edit"
+  },
+  "tp.approve": {
+   "any_of": [
+    {
+     "global_role": [
+      "technologist",
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-42",
+   "note": "Матрица 04: технолог (не автор) или руководитель отдела. Автор черновика не утверждает (проверка в обработчике, self_approval)."
+  },
+  "wo.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "technologist",
+      "dept_head",
+      "warehouse"
+     ]
+    },
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-42",
+   "note": "Наряды проекта видят команда проекта, технологи, руководитель отдела и склад (выдача материалов). Исполнитель с ролью «Производство» видит наряды, где он назначен хотя бы на одну операцию (фильтр в pull); ОТК — как участник проекта (D-41)."
+  },
+  "wo.release": {
+   "any_of": [
+    {
+     "project_role": [
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-42",
+   "note": "Матрица 04: P: rp (или роль мастера — OQ-15). Отдельной роли мастера нет (A-42); РП замещается в проекте (D-35); руководитель отдела — резерв, чтобы отсутствие одного человека не останавливало производство (A-37)."
+  },
+  "wo.assign": {
+   "same_as": "wo.release"
+  },
+  "wo.close": {
+   "same_as": "wo.release"
+  },
+  "wo.cancel": {
+   "same_as": "wo.release"
+  },
+  "wo.op_event": {
+   "any_of": [
+    {
+     "global_role": [
+      "production"
+     ]
+    }
+   ],
+   "assumption": "A-42",
+   "note": "Матрица 04: G: production + назначение на операцию (назначение проверяется в обработчике). Офлайн допустимо."
+  },
+  "wo.substitute": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip"
+     ]
+    },
+    {
+     "global_role": [
+      "technologist"
+     ]
+    }
+   ],
+   "assumption": "A-42",
+   "note": "Матрица 04: замена в снимке — P: gip или technologist; предпросмотр + хэш + причина."
+  },
+  "instance.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "technologist",
+      "dept_head"
+     ]
+    },
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-45",
+   "note": "Экземпляры изделий и их паспорта видят команда проекта, технологи и руководитель отдела; ОТК — как участник проекта (D-41)."
+  },
+  "instance.register": {
+   "same_as": "wo.release"
+  },
+  "instance.handover": {
+   "any_of": [
+    {
+     "project_role": [
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "A-45",
+   "note": "02 С5 шаг 9: передача, сервис, замены — РП проекта (его замещающий — D-35); руководитель отдела — резерв, чтобы отсутствие одного человека не останавливало работу (A-37)."
+  },
+  "instance.service": {
+   "same_as": "instance.handover"
+  },
+  "instance.replace": {
+   "same_as": "instance.handover"
+  },
+  "passport.read": {
+   "same_as": "instance.read"
+  },
+  "passport.edit": {
+   "any_of": [
+    {
+     "project_role": [
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "lead_engineer"
+     ],
+     "in_project": true
+    }
+   ],
+   "assumption": "A-45",
+   "note": "Матрица 04: черновик паспорта — C/U — P: rp или lead_engineer. Ведущий инженер — только в проекте, где он участник (in_project)."
+  },
+  "passport.create": {
+   "same_as": "passport.edit"
+  },
+  "passport.save": {
+   "same_as": "passport.edit"
+  },
+  "passport.export_draft": {
+   "any_of": [
+    {
+     "project_role": [
+      "rp"
+     ]
+    }
+   ],
+   "assumption": "A-45",
+   "note": "Матрица 04: черновой экспорт — только РП проекта (и его замещающий в проекте, D-35), с пометкой «Черновик, не сертификат»; каждый экспорт журналируется."
+  },
+  "quality.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "technologist",
+      "dept_head"
+     ]
+    },
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-46",
+   "note": "Рекламации, CAPA, ECR и ECO видят команда проекта (в т. ч. сотрудник ОТК, назначенный в проект участником, D-41), технологи (изменения касаются техпроцессов) и руководитель отдела."
+  },
+  "claim.edit": {
+   "any_of": [
+    {
+     "project_role": [
+      "rp",
+      "gip"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    },
+    {
+     "global_role": [
+      "otk"
+     ],
+     "in_project": true
+    }
+   ],
+   "assumption": "A-46",
+   "note": "Матрица 04: рекламация/CAPA — C/U — P: rp, gip; G: otk (ОТК) — только в проектах, где он участник (in_project, D-41, ответ на A-47); руководитель отдела — резерв (A-37: отсутствие не блокирует)."
+  },
+  "claim.register": {
+   "same_as": "claim.edit"
+  },
+  "claim.start_analysis": {
+   "same_as": "claim.edit"
+  },
+  "claim.plan": {
+   "same_as": "claim.edit"
+  },
+  "claim.submit_check": {
+   "same_as": "claim.edit"
+  },
+  "claim.action_done": {
+   "any_of": [
+    {
+     "global_role": [
+      "technologist",
+      "dept_head"
+     ]
+    },
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-46",
+   "note": "Отметить действие CAPA выполненным может его исполнитель или тот, кто ведёт рекламацию (claim.edit) — проверяется в обработчике."
+  },
+  "claim.check": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    },
+    {
+     "global_role": [
+      "otk"
+     ],
+     "in_project": true
+    }
+   ],
+   "assumption": "A-46",
+   "note": "Матрица 04: проверка эффективности — другой пользователь; ОТК проверяет наравне с ГИП, РП и руководителем отдела — в проектах, где он участник (D-41). Не может проверять тот, кто составлял план, выполнял действия или отправил на проверку (обработчик)."
+  },
+  "claim.classify": {
+   "same_as": "claim.edit"
+  },
+  "claim.set_due": {
+   "same_as": "claim.edit"
+  },
+  "claim.respond": {
+   "same_as": "claim.edit"
+  },
+  "ecr.submit": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "assumption": "A-46",
+   "note": "Матрица 04: ECR — C — любой участник проекта (в т. ч. замещающий в проекте, D-35, и сотрудник ОТК, назначенный в проект, D-41)."
+  },
+  "ecr.assess": {
+   "any_of": [
+    {
+     "project_role": [
+      "rp",
+      "gip"
+     ]
+    }
+   ],
+   "assumption": "A-46",
+   "note": "Оценку влияния запроса пишут РП или ГИП проекта."
+  },
+  "ecr.decide": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip"
+     ]
+    }
+   ],
+   "assumption": "A-46",
+   "note": "Матрица 01/04: решения по изменениям — ГИП проекта (его замещающий в проекте, D-35); автор запроса сам не решает («четыре глаза», обработчик)."
+  },
+  "eco.edit": {
+   "any_of": [
+    {
+     "project_role": [
+      "rp",
+      "gip"
+     ]
+    }
+   ],
+   "assumption": "A-46",
+   "note": "Извещение по принятому запросу составляют и внедряют РП или ГИП проекта."
+  },
+  "eco.create": {
+   "same_as": "eco.edit"
+  },
+  "eco.save": {
+   "same_as": "eco.edit"
+  },
+  "eco.implement": {
+   "same_as": "eco.edit"
+  },
+  "eco.approve": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip"
+     ]
+    }
+   ],
+   "assumption": "A-46",
+   "note": "Матрица 04: ECO — A — P: gip. Составитель сам не утверждает («четыре глаза», обработчик)."
+  },
+  "eco.verify": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    },
+    {
+     "global_role": [
+      "otk"
+     ],
+     "in_project": true
+    }
+   ],
+   "assumption": "A-46",
+   "note": "Проверку внедрения делает не тот, кто внедрял (обработчик); ОТК — наравне с ГИП, РП и руководителем отдела, в проектах, где он участник (D-41)."
+  },
+  "worktime.own": {
+   "any_of": [
+    {
+     "authenticated": true
+    }
+   ],
+   "assumption": "A-48",
+   "note": "Свой дневной отчёт: создать, сохранить, отправить на проверку, исправить после отправки (с основанием). Чужие отчёты так не правятся — проверяется в обработчике."
+  },
+  "report.create": {
+   "same_as": "worktime.own"
+  },
+  "report.save": {
+   "same_as": "worktime.own"
+  },
+  "report.submit": {
+   "same_as": "worktime.own"
+  },
+  "report.reopen": {
+   "same_as": "worktime.own"
+  },
+  "report.review": {
+   "any_of": [
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "assumption": "D-45",
+   "note": "Матрица 04: дневной отчёт — A/V (принять / вернуть) — Dept. Роль «Руководитель отдела» — отчёты сотрудников вне оргструктуры (D-42). Сотрудник в оргструктуре — его отчёт проверяет руководитель подразделения по цепочке вверх БЕЗ отдельной роли (основание org_head, ответ владельца на A-50 п. 2) или замещающий руководителя по роли; соседний отдел — not_your_unit (обработчик). Свой отчёт — не проверяет («четыре глаза»)."
+  },
+  "worktime.read_all": {
+   "same_as": "report.review"
+  },
+  "workday.mark": {
+   "same_as": "worktime.own"
+  },
+  "workday.start_request": {
+   "same_as": "worktime.own"
+  },
+  "workday.start_decide": {
+   "same_as": "report.review"
+  },
+  "workday.end_request": {
+   "same_as": "worktime.own"
+  },
+  "workday.end_decide": {
+   "same_as": "report.review"
+  },
+  "org.manage": {
+   "any_of": [
+    {
+     "global_role": [
+      "admin"
+     ]
+    }
+   ],
+   "assumption": "D-45",
+   "note": "Создать, изменить, отправить в архив и вернуть подразделение, включить сотрудника в подразделение, перевести или вывести: все, у кого есть роль «Администратор» (ответ владельца на A-50 п. 1). Должность прав не даёт; руководитель подразделения проверяет отчёты своих сотрудников (D-45)."
+  },
+  "org.unit_create": {
+   "same_as": "org.manage"
+  },
+  "org.unit_update": {
+   "same_as": "org.manage"
+  },
+  "org.unit_archive": {
+   "same_as": "org.manage"
+  },
+  "org.unit_restore": {
+   "same_as": "org.manage"
+  },
+  "org.member_set": {
+   "same_as": "org.manage"
+  },
+  "schedule.manage": {
+   "same_as": "org.manage",
+   "assumption": "D-47",
+   "note": "Графики работы — создать, изменить, отправить в архив, назначить подразделению или сотруднику, отметить «учёт рабочего времени не ведётся»: те же, кто ведёт оргструктуру — все с ролью «Администратор» (A-50 п. 1). Видят графики все вошедшие."
+  },
+  "schedule.save": {
+   "same_as": "schedule.manage"
+  },
+  "schedule.assign": {
+   "same_as": "schedule.manage"
+  },
+  "calendar.import": {
+   "same_as": "schedule.manage",
+   "assumption": "D-48",
+   "note": "Производственный календарь (праздники, сокращённые дни, переносы выходных) — загрузить на год, поправить день: те же, кто ведёт графики работы, — все с ролью «Администратор» (A-50 п. 1, A-52 пп. 3–4). Видят календарь все вошедшие."
+  },
+  "calendar.day_set": {
+   "same_as": "calendar.import"
+  },
+  "overtime.request": {
+   "same_as": "worktime.own"
+  },
+  "overtime.decide": {
+   "same_as": "report.review"
+  },
+  "overtime.period_set": {
+   "same_as": "schedule.manage"
+  },
+  "overtime.period_close": {
+   "same_as": "schedule.manage"
+  },
+  "checklist.manage": {
+   "any_of": [
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-66",
+   "assumption": "A-58",
+   "note": "Шаблоны чек-листов ПНР/FAT настраивает начальник сервисной службы (ответ владельца 2026-11-22, п. 2); временное правило: глобальная роль «руководитель отдела» — в оргструктуре это начальник сервисного отдела."
+  },
+  "checklist.read": {
+   "any_of": [
+    {
+     "authenticated": true
+    }
+   ],
+   "decision": "D-66",
+   "note": "Шаблоны читают все: по ним строятся чек-листы ПНР и FAT."
+  },
+  "checklist.create": {
+   "same_as": "checklist.manage"
+  },
+  "checklist.update": {
+   "same_as": "checklist.manage"
+  },
+  "checklist.archive": {
+   "same_as": "checklist.manage"
+  },
+  "checklist.unarchive": {
+   "same_as": "checklist.manage"
+  },
+  "pnr.create": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "decision": "D-68",
+   "note": "Запросить ПНР может участник проекта (как добавление позиции/ревизии, A-43); статус ведёт РП."
+  },
+  "pnr.set_status": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-68"
+  },
+  "fat.create": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-68"
+  },
+  "fat.finish": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-68"
+  },
+  "fat.add_finding": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "decision": "D-68",
+   "note": "Замечание к идущему испытанию фиксирует и исполнитель (участник проекта); к проекту, не к человеку."
+  },
+  "fat.close_finding": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-68"
+  },
+  "doc_template.manage": {
+   "any_of": [
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-69",
+   "note": "Формы документов доставки ведёт начальник логистики; временное правило: глобальная «руководитель отдела» (A-59), до появления отдельной роли логиста."
+  },
+  "doc_template.create": {
+   "same_as": "doc_template.manage"
+  },
+  "doc_template.update": {
+   "same_as": "doc_template.manage"
+  },
+  "doc_template.set_active": {
+   "same_as": "doc_template.manage"
+  },
+  "delivery_doc.read": {
+   "same_as": "project.read"
+  },
+  "delivery_doc.create": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    },
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-69",
+   "note": "Документ выписывает логист — участник проекта; временно также РП/ГИП проекта."
+  },
+  "delivery_doc.update": {
+   "same_as": "delivery_doc.create"
+  },
+  "norm.read": {
+   "any_of": [
+    {
+     "global_role": [
+      "rp",
+      "gip",
+      "dept_head",
+      "lead_engineer"
+     ]
+    }
+   ],
+   "decision": "D-72",
+   "note": "Агрегированная статистика трудоёмкости и предложения норм — производственное руководство; агрегат без персональных данных."
+  },
+  "norm.propose": {
+   "any_of": [
+    {
+     "global_role": [
+      "rp",
+      "dept_head",
+      "lead_engineer"
+     ]
+    }
+   ],
+   "decision": "D-72"
+  },
+  "norm.decide": {
+   "any_of": [
+    {
+     "global_role": [
+      "dept_head",
+      "lead_engineer"
+     ]
+    }
+   ],
+   "decision": "D-72",
+   "note": "Утверждает не автор предложения (разделение полномочий, как утверждение ТП)."
+  },
+  "hr.category_manage": {
+   "any_of": [
+    {
+     "global_role": [
+      "admin"
+     ]
+    }
+   ],
+   "assumption": "A-60",
+   "note": "Кадровые категории работника для ТК-контура сверхурочных (ст. 99 ч. 4–5, 113 ч. 7, 259, 268 ТК РФ): назначает и снимает только администратор (как оргструктуру, A-50 п. 1). Категория влияет на допуск к сверхурочной работе/работе в выходной: запрещающие категории блокируют подачу и согласование заявки. Перечень кодов — в программе (vector.core.overtime), состав подтверждает кадровая служба."
+  },
+  "hr.category_set": {
+   "same_as": "hr.category_manage"
+  },
+  "office_doc.create": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "decision": "D-94",
+   "note": "Как у document.create: участник проекта создаёт офисные документы."
+  },
+  "office_doc.set_template": {
+   "same_as": "office_doc.manage"
+  },
+  "office_doc.manage": {
+   "any_of": [
+    {
+     "global_role": [
+      "dept_head"
+     ]
+    }
+   ],
+   "decision": "D-94",
+   "note": "Шаблоны документов ведёт руководитель отдела (как формы доставки, D-69): глобальная «руководитель отдела» (A-59), до появления отдельной роли делопроизводителя. Право виртуальное — команды office_doc.manage нет, его проверяет office_doc.set_template."
+  },
+  "templates.render": {
+   "any_of": [
+    {
+     "project_role": [
+      "gip",
+      "rp",
+      "participant"
+     ]
+    }
+   ],
+   "decision": "D-94",
+   "note": "Формирование из шаблона — тем, кто работает с документами проекта.",
+   "same_as": "office_doc.create"
+  }
+ }
+}

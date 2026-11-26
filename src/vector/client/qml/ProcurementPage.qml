@@ -1,0 +1,29 @@
+import QtQuick
+
+// Раздел «Закупка» (сценарий С4): три вкладки —
+//  * «Потребности» (NeedsPane.qml) — что нужно по зафиксированным расчётам и чем это покрыто (шаги 1–2);
+//  * «Заказы поставщикам» (OrdersPane.qml) — черновик → размещён → закрыт, приём поставки складом (шаг 5, D-32);
+//  * «Поставщики» (SuppliersPane.qml) — справочник (A-34).
+// Каждая вкладка — полноценный экран «список + карточка»; раздел хранит только выбранную вкладку.
+// Вкладка по умолчанию — «Потребности»; кто потребностей не видит (бухгалтерия, согласующий закупки — D-33) —
+// начинает с заказов. Руководитель отдела видит заказы и согласования («в курсе», D-34).
+Item {
+    id: page
+    property var shell
+    readonly property bool seesNeeds: (backend.needsOverview.needs || []).length > 0 || (backend.me.roles || []).some(r => r === "procurement" || r === "warehouse")
+    readonly property bool seesOrders: (backend.me.roles || []).some(r => r === "procurement" || r === "warehouse" || r === "accountant" || r === "po_approver" || r === "dept_head")
+    // Переход из уведомления (D-35): shell.go("procurement", id заказа) — сразу вкладка заказов с этим заказом.
+    readonly property string targetOrder: shell && shell.navTarget.page === "procurement" ? (shell.navTarget.id || "") : ""
+    property string tab: targetOrder !== "" ? "orders" : (seesNeeds ? "needs" : "orders")
+    readonly property var tabsModel: [].concat(
+        seesNeeds ? [{ id: "needs", label: "Потребности", icon: "shopping-cart" }] : [],
+        seesOrders ? [{ id: "orders", label: "Заказы поставщикам" + ((backend.ordersOverview.counts || {}).waiting ? " (" + backend.ordersOverview.counts.waiting + ")" : ""), icon: "clipboard-list" },
+                      { id: "suppliers", label: "Поставщики", icon: "factory" }] : [])
+
+    NeedsPane { anchors.fill: parent; visible: page.tab === "needs"; shell: page.shell
+                tabs: page.tabsModel.length > 1 ? page.tabsModel : []; tab: page.tab; onTabPicked: id => page.tab = id }
+    OrdersPane { anchors.fill: parent; visible: page.tab === "orders"; shell: page.shell; selectedId: page.targetOrder
+                 tabs: page.tabsModel; tab: page.tab; onTabPicked: id => page.tab = id }
+    SuppliersPane { anchors.fill: parent; visible: page.tab === "suppliers"; shell: page.shell
+                    tabs: page.tabsModel; tab: page.tab; onTabPicked: id => page.tab = id }
+}

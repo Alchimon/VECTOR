@@ -1,0 +1,24 @@
+# ВЕКТОР — ежедневная резервная копия (запускается таймером vector-backup.timer).
+# Создаёт зашифрованную копию, сразу проверяет её и удаляет старые сверх backup.keep.
+# Код выхода ≠ 0 (копия не создана или не прошла проверку) виден в `systemctl status vector-backup`
+# и journald — настройте оповещение по нему (docs/ops/backup-restore.md, «Контроль»).
+[Unit]
+Description=VECTOR (ВЕКТОР) encrypted backup
+Documentation=https://github.com/Alchimon/VECTOR/blob/main/docs/ops/backup-restore.md
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=vector
+Group=vector
+EnvironmentFile=/etc/vector/vector.env
+WorkingDirectory=/var/lib/vector
+# Ключ копий лежит отдельно от каталога копий; на сервере — только чтение для vector (права 400).
+ExecStart=/opt/vector/venv/bin/vector-server backup --config /etc/vector/vector-server.toml --key-file /etc/vector/backup.key
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/vector/backups
+ReadOnlyPaths=/etc/vector
+UMask=0077

@@ -1,0 +1,1173 @@
+{
+ "contract": "command-catalog-slice1-v44",
+ "offline_classes": {
+  "offline_full": "Полностью доступно офлайн (чтение локального кэша, локальные черновики без эффекта для других).",
+  "queued": "Создаёт локальное изменение в очереди синхронизации. До ответа сервера это НЕ подтверждённое действие; сервер заново проверяет права, состояние и версию.",
+  "online_required": "Требует актуальной проверки сервера в момент эффекта. Офлайн — отказ с объяснением; ничего не ставится в очередь."
+ },
+ "commands": {
+  "customer.create": {
+   "offline": "queued",
+   "object": "customer",
+   "label_ru": "Создать заказчика"
+  },
+  "customer.update": {
+   "offline": "queued",
+   "object": "customer",
+   "label_ru": "Изменить карточку заказчика",
+   "requires_expected_version": true
+  },
+  "tender.create": {
+   "offline": "queued",
+   "object": "tender",
+   "label_ru": "Создать тендер"
+  },
+  "tender.update": {
+   "offline": "queued",
+   "object": "tender",
+   "label_ru": "Изменить тендер",
+   "requires_expected_version": true
+  },
+  "tender.transition": {
+   "offline": "online_required",
+   "object": "tender",
+   "label_ru": "Сменить статус тендера",
+   "requires_expected_version": true
+  },
+  "tkp.create": {
+   "offline": "queued",
+   "object": "tkp",
+   "label_ru": "Создать ТКП (черновик)"
+  },
+  "tkp.update": {
+   "offline": "queued",
+   "object": "tkp",
+   "label_ru": "Изменить черновик ТКП",
+   "requires_expected_version": true
+  },
+  "tkp.approve": {
+   "offline": "online_required",
+   "object": "tkp",
+   "label_ru": "Согласовать ТКП (внутреннее)",
+   "requires_expected_version": true
+  },
+  "tkp.reopen": {
+   "offline": "online_required",
+   "object": "tkp",
+   "label_ru": "Вернуть ТКП в черновик",
+   "requires_expected_version": true
+  },
+  "tkp.record_sent": {
+   "offline": "online_required",
+   "object": "tkp",
+   "label_ru": "Зарегистрировать факт отправки ТКП",
+   "requires_expected_version": true
+  },
+  "project.start_rkd": {
+   "offline": "online_required",
+   "object": "project",
+   "label_ru": "Начать разработку РКД (создать проект)"
+  },
+  "project.assign": {
+   "offline": "online_required",
+   "object": "assignment",
+   "label_ru": "Назначить участника проекта"
+  },
+  "project.revoke_assignment": {
+   "offline": "online_required",
+   "object": "assignment",
+   "label_ru": "Отозвать назначение"
+  },
+  "opportunity.create": {
+   "offline": "queued",
+   "object": "sales_opportunity",
+   "label_ru": "Создать лид (возможность продажи)"
+  },
+  "opportunity.update": {
+   "offline": "queued",
+   "object": "sales_opportunity",
+   "label_ru": "Изменить лид",
+   "requires_expected_version": true
+  },
+  "opportunity.transition": {
+   "offline": "online_required",
+   "object": "sales_opportunity",
+   "label_ru": "Сменить статус лида",
+   "requires_expected_version": true
+  },
+  "opportunity.convert_to_tender": {
+   "offline": "online_required",
+   "object": "sales_opportunity",
+   "label_ru": "Перевести лид в тендер",
+   "requires_expected_version": true
+  },
+  "project.transition": {
+   "offline": "online_required",
+   "object": "project",
+   "label_ru": "Сменить статус проекта",
+   "requires_expected_version": true
+  },
+  "workstream.update": {
+   "offline": "online_required",
+   "object": "project_workstream",
+   "label_ru": "Изменить план потока проекта",
+   "requires_expected_version": true
+  },
+  "workstream.set_status": {
+   "offline": "online_required",
+   "object": "project_workstream",
+   "label_ru": "Сменить статус потока проекта",
+   "requires_expected_version": true
+  },
+  "risk.accept": {
+   "offline": "online_required",
+   "object": "project_risk_acceptance",
+   "label_ru": "Принять риск-разрешение"
+  },
+  "risk.resolve": {
+   "offline": "online_required",
+   "object": "project_risk_acceptance",
+   "label_ru": "Снять риск-разрешение",
+   "requires_expected_version": true
+  },
+  "kit.create": {
+   "offline": "queued",
+   "object": "kit",
+   "label_ru": "Создать комплект"
+  },
+  "kit.update": {
+   "offline": "queued",
+   "object": "kit",
+   "label_ru": "Изменить комплект",
+   "requires_expected_version": true
+  },
+  "admin.create_user": {
+   "offline": "online_required",
+   "object": "user",
+   "label_ru": "Создать учётную запись"
+  },
+  "admin.grant_role": {
+   "offline": "online_required",
+   "object": "role_grant",
+   "label_ru": "Выдать роль доступа"
+  },
+  "admin.revoke_role": {
+   "offline": "online_required",
+   "object": "role_grant",
+   "label_ru": "Отозвать роль доступа"
+  },
+  "admin.revoke_sessions": {
+   "offline": "online_required",
+   "object": "session",
+   "label_ru": "Завершить все сеансы пользователя"
+  },
+  "account.change_password": {
+   "offline": "online_required",
+   "object": "user",
+   "label_ru": "Сменить свой пароль"
+  },
+  "admin.reset_password": {
+   "offline": "online_required",
+   "object": "user",
+   "label_ru": "Сбросить пароль пользователя (временный, со сменой при входе)"
+  },
+  "admin.set_user_active": {
+   "offline": "online_required",
+   "object": "user",
+   "label_ru": "Заблокировать / разблокировать учётную запись"
+  },
+  "config.publish": {
+   "offline": "online_required",
+   "object": "config",
+   "label_ru": "Опубликовать настройку",
+   "requires_expected_version": true,
+   "note": "Новая неизменяемая версия настройки из каталога settings (значение, причина). Откат — публикация прежнего значения. expected_version — номер действующей версии (0, если не задавалась)."
+  },
+  "task.create": {
+   "offline": "queued",
+   "object": "task",
+   "label_ru": "Создать задачу"
+  },
+  "task.update": {
+   "offline": "queued",
+   "object": "task",
+   "label_ru": "Изменить задачу",
+   "requires_expected_version": true
+  },
+  "task.transition": {
+   "offline": "queued",
+   "object": "task",
+   "label_ru": "Сменить статус задачи",
+   "requires_expected_version": true
+  },
+  "document.create": {
+   "offline": "queued",
+   "object": "document",
+   "label_ru": "Создать документ"
+  },
+  "document.update": {
+   "offline": "queued",
+   "object": "document",
+   "label_ru": "Изменить карточку документа",
+   "requires_expected_version": true
+  },
+  "document.add_version": {
+   "offline": "online_required",
+   "object": "document",
+   "label_ru": "Добавить версию документа (файл)",
+   "requires_expected_version": true
+  },
+  "docrev.create": {
+   "offline": "queued",
+   "object": "document_revision",
+   "label_ru": "Создать ревизию документа"
+  },
+  "docrev.transition": {
+   "offline": "online_required",
+   "object": "document_revision",
+   "label_ru": "Сменить статус ревизии",
+   "requires_expected_version": true
+  },
+  "comment.add": {
+   "offline": "online_required",
+   "object": "document_revision",
+   "label_ru": "Зарегистрировать замечание к ревизии"
+  },
+  "comment.respond": {
+   "offline": "queued",
+   "object": "document_comment",
+   "label_ru": "Ответить на замечание",
+   "requires_expected_version": true
+  },
+  "transmittal.create": {
+   "offline": "online_required",
+   "object": "document_transmittal",
+   "label_ru": "Сформировать трансмиттал (пакет выдачи)"
+  },
+  "transmittal.register_receipt": {
+   "offline": "online_required",
+   "object": "document_transmittal",
+   "label_ru": "Зарегистрировать подтверждение доставки",
+   "requires_expected_version": true
+  },
+  "docprofile.create": {
+   "offline": "online_required",
+   "object": "document_profile",
+   "label_ru": "Создать профиль шифров ревизий",
+   "note": "Проверка «один активный профиль на область» — только на сервере; офлайн-очередь дала бы двусмысленность."
+  },
+  "docprofile.update": {
+   "offline": "online_required",
+   "object": "document_profile",
+   "label_ru": "Изменить профиль шифров",
+   "requires_expected_version": true
+  },
+  "docprofile.activate": {
+   "offline": "online_required",
+   "object": "document_profile",
+   "label_ru": "Включить или отключить профиль шифров",
+   "requires_expected_version": true
+  },
+  "docprofile.preview": {
+   "offline": "online_required",
+   "object": "document_profile",
+   "label_ru": "Проверить шифр ревизии по шаблону профиля",
+   "note": "Ничего не записывает: предпросмотр перед созданием ревизии или пример при настройке профиля."
+  },
+  "docrev.set_issue": {
+   "offline": "online_required",
+   "object": "document_revision",
+   "label_ru": "Установить статус выдачи ревизии",
+   "note": "Одна действующая запись на ревизию; код и подпись сохраняются снимком из словаря профиля (D-62)."
+  },
+  "calc.save_draft": {
+   "offline": "queued",
+   "object": "calc_draft",
+   "label_ru": "Сохранить расчёт комплекта",
+   "requires_expected_version": true,
+   "note": "payload.id = id комплекта (черновик один на комплект). expected_version = версия черновика; 0 — черновика ещё нет. Позиции заменяются целиком; конфликт не сливается (деньги)."
+  },
+  "calc.freeze": {
+   "offline": "online_required",
+   "object": "calc_draft",
+   "label_ru": "Зафиксировать расчёт комплекта",
+   "requires_expected_version": true,
+   "note": "Фиксирует ровно ту версию черновика, которую видел пользователь; создаёт неизменяемую версию K.n и новую ревизию проектного итога в той же транзакции."
+  },
+  "warehouse.create": {
+   "offline": "queued",
+   "object": "warehouse",
+   "label_ru": "Создать склад"
+  },
+  "warehouse.update": {
+   "offline": "queued",
+   "object": "warehouse",
+   "label_ru": "Изменить склад",
+   "requires_expected_version": true
+  },
+  "item.create": {
+   "offline": "queued",
+   "object": "stock_item",
+   "label_ru": "Создать позицию номенклатуры",
+   "note": "Код, название, единица; можно указать кратность заказа (барабан/упаковка, D-59) — заказы по строке закупочного пакета потом кратны ей."
+  },
+  "item.update": {
+   "offline": "queued",
+   "object": "stock_item",
+   "label_ru": "Изменить позицию номенклатуры",
+   "requires_expected_version": true,
+   "note": "Единицу измерения нельзя менять, если по позиции уже есть остатки или движения (пересчёта единиц нет). Можно задать/снять кратность заказа (D-59): null — без кратности."
+  },
+  "item_alias.create": {
+   "offline": "online_required",
+   "object": "item_alias",
+   "label_ru": "Добавить другое обозначение позиции",
+   "note": "Аналог/другое обозначение (D-25): по нему потребность сопоставляется автоматически при совпадении единицы."
+  },
+  "item_alias.update": {
+   "offline": "online_required",
+   "object": "item_alias",
+   "label_ru": "Изменить другое обозначение позиции",
+   "requires_expected_version": true
+  },
+  "unit_conversion.create": {
+   "offline": "online_required",
+   "object": "unit_conversion",
+   "label_ru": "Добавить пересчёт единиц",
+   "note": "1 from_unit = factor to_unit; общий или для позиции. Коэффициент вводит человек (A-27)."
+  },
+  "unit_conversion.update": {
+   "offline": "online_required",
+   "object": "unit_conversion",
+   "label_ru": "Изменить пересчёт единиц",
+   "requires_expected_version": true,
+   "note": "Правка не меняет уже принятых решений о сопоставлении — коэффициент в них зафиксирован."
+  },
+  "stock.receive": {
+   "offline": "online_required",
+   "object": "stock_movement",
+   "label_ru": "Провести приход",
+   "note": "Проведённое движение неизменяемо; ошибку исправляют сторно (stock.reverse)."
+  },
+  "stock.issue": {
+   "offline": "online_required",
+   "object": "stock_movement",
+   "label_ru": "Провести выдачу на проект",
+   "note": "Без резерва — только из доступного (остаток − резервы); по резерву — не больше неизрасходованной части. Проверка в транзакции. Необязательный work_order_id — выдача на наряд (D-36): наряд того же проекта, не закрыт и не отменён; по таким выдачам проверяется закрытие наряда."
+  },
+  "stock.reverse": {
+   "offline": "online_required",
+   "object": "stock_movement",
+   "label_ru": "Сторнировать движение",
+   "note": "Встречное движение со ссылкой на исходное; у движения не больше одного сторно."
+  },
+  "stock.transfer": {
+   "offline": "online_required",
+   "object": "stock_transfer",
+   "label_ru": "Отгрузить на другой склад (перемещение)",
+   "note": "Расход на складе-отправителе; перемещение — «В пути» до приёмки или возврата (D-29). Только из доступного (резервы не перемещаются, A-28). Ожидаемая дата прибытия — по желанию, для справки (D-30)."
+  },
+  "stock.transfer_accept": {
+   "offline": "online_required",
+   "object": "stock_transfer",
+   "label_ru": "Принять перемещение на складе-получателе",
+   "note": "Приход на получателе фактически пришедшего количества; «В пути» → «Принято». Если пришло меньше — недостача оформляется актом, который подписывает приёмщик склада способом из настройки stock.act_signature (D-30, D-31)."
+  },
+  "stock.transfer_cancel": {
+   "offline": "online_required",
+   "object": "stock_transfer",
+   "label_ru": "Вернуть перемещение отправителю",
+   "note": "Пока перемещение в пути: приход обратно на склад-отправитель; «В пути» → «Возвращено отправителю». Причина обязательна."
+  },
+  "stock.transfer_lost": {
+   "offline": "online_required",
+   "object": "stock_transfer",
+   "label_ru": "Оформить утрату перемещения (акт об утрате)",
+   "note": "Не пришло ничего: перемещение «В пути» → «Утрачено в пути» без прихода; количество списывается актом об утрате, который подписывает приёмщик склада (причина обязательна, способ подписи — настройка stock.act_signature). D-31."
+  },
+  "stock.reserve": {
+   "offline": "online_required",
+   "object": "stock_reservation",
+   "label_ru": "Зарезервировать на проект",
+   "note": "Только из доступного количества; резервы никогда не сливаются автоматически. По строке потребности — не больше непокрытого с учётом уже идущего по закупке: пакетов и заказов (D-60)."
+  },
+  "stock.release": {
+   "offline": "online_required",
+   "object": "stock_reservation",
+   "label_ru": "Снять резерв",
+   "requires_expected_version": true
+  },
+  "stock.adjust": {
+   "offline": "online_required",
+   "object": "stock_adjustment",
+   "label_ru": "Корректировка остатка",
+   "note": "Инвентаризационная корректировка: склад создаёт с фактическим остатком и причиной (акт), движение в журнале появляется только после подписи руководителя отдела (D-77). До подписи — ничего не проведено."
+  },
+  "stock.adjust_sign": {
+   "offline": "online_required",
+   "object": "stock_adjustment",
+   "label_ru": "Подписать корректировку остатка",
+   "note": "Подписывает руководитель отдела (не автор, D-77) способом из настройки stock.act_signature. Если остаток изменился с момента создания — отказ, корректировку создают заново."
+  },
+  "stock.adjust_cancel": {
+   "offline": "online_required",
+   "object": "stock_adjustment",
+   "label_ru": "Отменить корректировку остатка",
+   "note": "Автор снимает свою неподписанную корректировку (причина обязательна); подписанная не отменяется — исправляется новой корректировкой."
+  },
+  "proposal.propose": {
+   "offline": "queued",
+   "object": "stock_transfer_proposal",
+   "label_ru": "Предложить перемещение из проекта",
+   "note": "Предложение переместить количество позиции на складе из проекта-донора (или свободного остатка) в проект потребности (С4 шаг 3). Не резерв, не заказ, не движение — пока по нему нет решения (D-78)."
+  },
+  "proposal.withdraw": {
+   "offline": "queued",
+   "object": "stock_transfer_proposal",
+   "label_ru": "Отозвать предложение перемещения",
+   "note": "Автор отзывает своё предложение до решения (причина обязательна)."
+  },
+  "proposal.decide": {
+   "offline": "online_required",
+   "object": "stock_transfer_proposal",
+   "label_ru": "Решить предложение перемещения",
+   "note": "Совместное решение «склад + закупка» (С4 шаг 4, D-78): accept — склад перебрасывает резерв донора (недостающее — из свободного) и создаёт резерв получателя в одной транзакции; order — закупка решает «закупим»; reject — отказ любой из сторон с причиной."
+  },
+  "stock.replen_rule_set": {
+   "offline": "queued",
+   "object": "stock_replenishment_rule",
+   "label_ru": "Задать правило пополнения",
+   "note": "Порог и «пополнить до» задаёт пользователь, умолчаний нет (Q2). На пару склад+позиция — одно правило; изменение/отключение — stock.replen_rule_update. С4 шаг 7, D-79."
+  },
+  "stock.replen_rule_update": {
+   "offline": "queued",
+   "object": "stock_replenishment_rule",
+   "label_ru": "Изменить/отключить правило пополнения",
+   "note": "Изменение порога/количества или отключение (enabled=false). Отключение не удаляет историю черновиков. После изменения порога правило проверяет остаток сразу."
+  },
+  "stock.replen_confirm": {
+   "offline": "online_required",
+   "object": "stock_replenishment_draft",
+   "label_ru": "Подтвердить пополнение",
+   "note": "Подтверждают ОБЕ стороны — склад и закупка (порядок любой); после второго черновик «подтверждён», заказ поставщику создаётся обычным путём. С4 шаг 7, D-79."
+  },
+  "stock.replen_dismiss": {
+   "offline": "online_required",
+   "object": "stock_replenishment_draft",
+   "label_ru": "Отклонить пополнение",
+   "note": "Склад или закупка отклоняет черновик с обязательной причиной."
+  },
+  "need.generate": {
+   "offline": "online_required",
+   "object": "procurement_need",
+   "label_ru": "Сформировать потребность из зафиксированной версии",
+   "note": "Только из ПОСЛЕДНЕЙ зафиксированной версии расчёта комплекта; одна потребность на версию. Потребность — не заказ."
+  },
+  "need.match_line": {
+   "offline": "online_required",
+   "object": "procurement_need",
+   "label_ru": "Сопоставить строку потребности с номенклатурой",
+   "requires_expected_version": true,
+   "note": "Ручное решение закупки с причиной (A-25): единица позиции = единица строки, пересопоставление — только пока под строку нет резервов. История решений неизменяема."
+  },
+  "supplier.create": {
+   "offline": "queued",
+   "object": "supplier",
+   "label_ru": "Создать поставщика",
+   "note": "Код точный и уникальный; ИНН и реквизиты (КПП, ОГРН/ОГРНИП, БИК, расчётный и корр. счёт) необязательны, но если указаны — проверяются формат и контрольные цифры (A-39)."
+  },
+  "supplier.update": {
+   "offline": "queued",
+   "object": "supplier",
+   "label_ru": "Изменить поставщика",
+   "requires_expected_version": true,
+   "note": "Код не меняется. Поставщика не удаляют, а отключают: новые заказы ему не согласуются и не размещаются, размещённые остаются в силе. Реквизиты проверяются вместе (ключ счёта — от БИК)."
+  },
+  "contract.create": {
+   "offline": "queued",
+   "object": "supplier_contract",
+   "label_ru": "Добавить договор с поставщиком",
+   "note": "Номер уникален у поставщика; дата заключения обязательна, срок действия — нет (бессрочный). A-39."
+  },
+  "contract.update": {
+   "offline": "queued",
+   "object": "supplier_contract",
+   "label_ru": "Изменить договор с поставщиком",
+   "requires_expected_version": true,
+   "note": "Поставщик договора не меняется. Договор не удаляют, а отключают: в новых заказах его не указать, размещённые остаются."
+  },
+  "po.create": {
+   "offline": "queued",
+   "object": "purchase_order",
+   "label_ru": "Создать черновик заказа поставщику",
+   "note": "Номер назначает сервер. Цены — как в счёте поставщика; режим цен (с НДС / без НДС) и ставки НДС строк можно указать позже, но до согласования обязательно (D-33). Валюта и режим цен не подставляются. Строка может быть связана со строкой закупочного пакета (batch_line_id, D-59): позиция обязана совпадать; тогда либо batch_line_id, либо need_id."
+  },
+  "po.update": {
+   "offline": "queued",
+   "object": "purchase_order",
+   "label_ru": "Изменить заказ поставщику",
+   "requires_expected_version": true,
+   "note": "Черновик — любые поля, строки заменяются целиком. На согласовании, согласованный и размещённый — только номер счёта поставщика, ожидаемая дата и примечание (D-33, A-36). Связи строк с закупочными пакетами входят в хэш содержимого (D-59): смена связей переоткрывает согласование."
+  },
+  "po.submit": {
+   "offline": "online_required",
+   "object": "purchase_order",
+   "label_ru": "Отправить заказ на согласование",
+   "requires_expected_version": true,
+   "note": "Черновик проверяется полностью (как при размещении); согласующему уходит именно это содержание (SHA-256). Условия больше не меняются, пока заказ не отозван или не возвращён (D-33). Сверка со счётом (D-34): расхождение или неполный расчёт — нужна причина invoice_reason (её видит согласующий)."
+  },
+  "po.withdraw": {
+   "offline": "online_required",
+   "object": "purchase_order",
+   "label_ru": "Отозвать заказ с согласования",
+   "requires_expected_version": true,
+   "note": "Закупка отзывает заказ на согласовании или согласованный, чтобы изменить условия; затем — отправить заново."
+  },
+  "po.approve": {
+   "offline": "online_required",
+   "object": "purchase_order",
+   "label_ru": "Согласовать заказ поставщику",
+   "requires_expected_version": true,
+   "note": "Согласующий закупки, его замещающий или руководитель отдела (D-34); не тот, кто заказ создал или отправил. Согласуется ровно отправленное содержание."
+  },
+  "po.return": {
+   "offline": "online_required",
+   "object": "purchase_order",
+   "label_ru": "Вернуть заказ на доработку",
+   "requires_expected_version": true,
+   "note": "Роль «Согласование закупок»; причина обязательна — закупка увидит её в карточке заказа."
+  },
+  "po.place": {
+   "offline": "online_required",
+   "object": "purchase_order",
+   "label_ru": "Разместить заказ у поставщика",
+   "requires_expected_version": true,
+   "note": "Только согласованный заказ, содержание которого совпадает с согласованным (D-33). Сервер перепроверяет поставщика, договор, позиции, НДС и ссылки на потребность; условия замораживаются (SHA-256)."
+  },
+  "po.cancel": {
+   "offline": "online_required",
+   "object": "purchase_order",
+   "label_ru": "Отменить заказ поставщику",
+   "requires_expected_version": true,
+   "note": "Причина обязательна. Только пока по заказу ничего не поставлено (с учётом сторно)."
+  },
+  "po.close": {
+   "offline": "online_required",
+   "object": "purchase_order",
+   "label_ru": "Закрыть заказ поставщику",
+   "requires_expected_version": true,
+   "note": "Больше по заказу не ждём. Если поставлено не всё — причина обязательна."
+  },
+  "pgroup.create": {
+   "offline": "online_required",
+   "object": "procurement_group",
+   "label_ru": "Создать группу закупки"
+  },
+  "pgroup.update": {
+   "offline": "online_required",
+   "object": "procurement_group",
+   "label_ru": "Изменить группу закупки",
+   "requires_expected_version": true
+  },
+  "batch.create": {
+   "offline": "online_required",
+   "object": "procurement_batch",
+   "label_ru": "Сформировать закупочный пакет",
+   "note": "Покрытие строки потребности считается с резервами склада: зарезервированное распределить нельзя (D-60). Резервы от приходов действующих пакетов дважды не считаются."
+  },
+  "batch.update": {
+   "offline": "online_required",
+   "object": "procurement_batch",
+   "label_ru": "Изменить закупочный пакет",
+   "requires_expected_version": true
+  },
+  "batch.transition": {
+   "offline": "online_required",
+   "object": "procurement_batch",
+   "label_ru": "Сменить статус закупочного пакета",
+   "requires_expected_version": true,
+   "note": "В работу/отмена из «Сформирован» — только когда по пакету нет черновых и размещённых заказов; «Закрыт» — когда поставлено всё по распределениям (D-59)."
+  },
+  "analog.propose": {
+   "offline": "online_required",
+   "object": "item_analog",
+   "label_ru": "Предложить аналог позиции"
+  },
+  "analog.decide": {
+   "offline": "online_required",
+   "object": "item_analog",
+   "label_ru": "Решить по аналогу позиции",
+   "requires_expected_version": true
+  },
+  "po.receive": {
+   "offline": "online_required",
+   "object": "stock_movement",
+   "label_ru": "Принять поставку по заказу",
+   "note": "Приход на склад по строке размещённого заказа, основание обязательно; не больше, чем ещё ждём по строке (A-36). Ошибку исправляют сторно прихода. Приход по строке, связанной с закупочным пакетом, распределяется по распределениям пакета (порядок строк потребностей), потребная часть резервируется за проектами; излишек — свободный остаток; распределения неизменяемы (D-59)."
+  },
+  "delegation.create": {
+   "offline": "online_required",
+   "object": "delegation",
+   "label_ru": "Оформить замещение",
+   "note": "Передать роль на срок с причиной: глобальную (кроме «Администратор», D-34) или роль в проекте — ГИП, РП, участник — с project_id (D-35, A-40). Свою роль — носитель; за отсутствующего — руководитель отдела или администратор, но не себе. Замещающий, носитель и руководители отдела получают уведомление."
+  },
+  "delegation.revoke": {
+   "offline": "online_required",
+   "object": "delegation",
+   "label_ru": "Отменить замещение",
+   "note": "Носитель, замещающий (отказаться), оформивший; остальные — руководитель отдела или администратор. Причина обязательна."
+  },
+  "notification.read": {
+   "offline": "online_required",
+   "object": "notification",
+   "label_ru": "Отметить уведомления прочитанными",
+   "note": "Только свои уведомления: ids — список, all=true — все непрочитанные (D-35)."
+  },
+  "tp.create": {
+   "offline": "queued",
+   "object": "tech_process",
+   "label_ru": "Создать ТП (черновик)",
+   "note": "Технолог (D-36). payload.id — новый id ТП; kit_id — комплект (изделие); ревизия = последняя + 1; один черновик на комплект. Операции: № (1–9999, уникален), наименование, участок, норма мин на единицу (≥ 0, десятичная строка). spec_version_id — зафиксированная версия расчёта этого комплекта (состав изделия), можно позже."
+  },
+  "tp.update": {
+   "offline": "queued",
+   "object": "tech_process",
+   "label_ru": "Сохранить ТП (черновик)",
+   "requires_expected_version": true,
+   "note": "Только черновик; операции заменяются целиком. Конфликт версий не сливается."
+  },
+  "tp.approve": {
+   "offline": "online_required",
+   "object": "tech_process",
+   "label_ru": "Утвердить ТП",
+   "requires_expected_version": true,
+   "note": "Технолог (не автор черновика) или руководитель отдела. Нужны операции и спецификация (зафиксированная версия расчёта комплекта). Утверждается конкретное содержимое (SHA-256); утверждённый ТП не меняется — новая ревизия создаётся заново (tp.create)."
+  },
+  "wo.release": {
+   "offline": "online_required",
+   "object": "work_order",
+   "label_ru": "Выпустить наряд",
+   "note": "РП проекта (или его замещающий, D-35); резерв — руководитель отдела (A-42). По утверждённому ТП, qty — 1…100000 изделий. Шлюз готовности (D-61): РКД согласована заказчиком или действует риск-разрешение «Сборка по неутверждённой РКД» (иначе gate_requires_rkd_approval). При выпуске фиксируются неизменяемые снимки: состав без цен + операции (SHA-256) и готовность сборки — основания, обеспеченность материалами, риск-разрешения (SHA-256, видно в наряде). assignees — {№ операции: id исполнителя с ролью «Производство»}, можно позже (wo.assign). Исполнители получают уведомление."
+  },
+  "wo.assign": {
+   "offline": "online_required",
+   "object": "wo_operation",
+   "label_ru": "Назначить исполнителя операции",
+   "requires_expected_version": true,
+   "note": "payload.id — операция наряда; assignee_id — сотрудник с ролью «Производство» или null. Пока операция не выполнена и наряд не закрыт."
+  },
+  "wo.op_event": {
+   "offline": "queued",
+   "object": "wo_operation",
+   "label_ru": "Событие операции (старт / пауза / продолжить / завершить / проблема)",
+   "note": "Исполнитель операции (роль «Производство» + назначение), полностью офлайн (D-36). kind — start|pause|resume|finish|problem; device_time — время устройства ISO-8601 с поясом; finish: qty_done 0…qty наряда (по умолчанию весь); problem: note обязательна. Операция выполнена или наряд закрыт/отменён, событие не по порядку или раньше предыдущего — ВИДИМЫЙ конфликт, не слияние."
+  },
+  "wo.substitute": {
+   "offline": "online_required",
+   "object": "work_order",
+   "label_ru": "Замена в снимке наряда",
+   "requires_expected_version": true,
+   "note": "ГИП проекта или технолог. line_id — строка состава; code/name/unit/qty — новая позиция (qty на весь наряд); reason обязательна; preview_hash — SHA-256 действующего состава, который видел пользователь в предпросмотре (не совпал — конфликт). Создаётся неизменяемая запись замены; снимок не переписывается."
+  },
+  "wo.close": {
+   "offline": "online_required",
+   "object": "work_order",
+   "label_ru": "Закрыть наряд",
+   "requires_expected_version": true,
+   "note": "РП проекта (или замещающий), резерв — руководитель отдела. Проверки: все операции выполнены (наряд «Выполнен») и материалы действующего состава выданы со склада на этот наряд (позиции номенклатуры — по коду; единица должна совпадать; не складские позиции не мешают, A-43)."
+  },
+  "wo.cancel": {
+   "offline": "online_required",
+   "object": "work_order",
+   "label_ru": "Отменить наряд",
+   "requires_expected_version": true,
+   "note": "Те же права, что выпуск. Причина обязательна. Только «Выпущен» или «В работе»; выданные материалы возвращаются на склад сторно (отдельно)."
+  },
+  "instance.register": {
+   "offline": "online_required",
+   "object": "product_instance",
+   "label_ru": "Зарегистрировать экземпляры",
+   "note": "РП проекта (или замещающий), резерв — руководитель отдела (D-38). По ЗАКРЫТОМУ наряду: work_order_id, series (серия), items — [{id, serial_no}]. Заводской номер уникален в области «изделие + серия» (не глобально). Всего экземпляров по наряду — не больше его количества. При регистрации фиксируется неизменяемый состав экземпляра (снимок наряда + замены, SHA-256)."
+  },
+  "instance.handover": {
+   "offline": "online_required",
+   "object": "product_instance",
+   "label_ru": "Передать заказчику",
+   "requires_expected_version": true,
+   "note": "РП проекта, резерв — руководитель отдела. {id, date, recipient, document, note?}. «Изготовлен» → «Передан заказчику»; запись истории неизменяема."
+  },
+  "instance.service": {
+   "offline": "online_required",
+   "object": "product_instance",
+   "label_ru": "Записать сервисное событие",
+   "note": "После передачи заказчику. {id, kind (commissioning|inspection|maintenance|repair|failure|other), date, description, document?}. Запись истории неизменяема."
+  },
+  "instance.replace": {
+   "offline": "online_required",
+   "object": "product_instance",
+   "label_ru": "Записать замену",
+   "note": "{id, date, removed, removed_serial?, installed, installed_serial?, qty?, reason, line_id?}. Состав при регистрации не переписывается — замена добавляется в историю."
+  },
+  "passport.create": {
+   "offline": "queued",
+   "object": "passport",
+   "label_ru": "Создать паспорт (черновик)",
+   "note": "РП проекта или ведущий инженер — участник проекта (D-38). {id, instance_id, fields?, tests?, documents?}. Шаблон — текущая версия шаблона-мастера (код, версия и SHA-256 хранятся в паспорте). Один паспорт на экземпляр."
+  },
+  "passport.save": {
+   "offline": "queued",
+   "object": "passport",
+   "label_ru": "Сохранить паспорт (черновик)",
+   "requires_expected_version": true,
+   "note": "{id, fields?, tests?, documents?} — заменяет указанное целиком. documents — [{document_id, version_no}]: точная версия документа проекта. Конфликт версий не сливается."
+  },
+  "passport.export_draft": {
+   "offline": "online_required",
+   "object": "passport",
+   "label_ru": "Черновой экспорт паспорта",
+   "requires_expected_version": true,
+   "note": "Только РП проекта (матрица 04). Ответ — HTML с пометкой «Черновик, не сертификат» на каждой странице, номер экспорта и SHA-256 содержимого; экспорт журналируется (passport_exports + аудит). Это НЕ сертификат и НЕ свидетельство о приёмке."
+  },
+  "claim.register": {
+   "offline": "queued",
+   "object": "claim",
+   "label_ru": "Зарегистрировать рекламацию",
+   "note": "РП или ГИП проекта, ОТК (отдел технического контроля), резерв — руководитель отдела (D-39, D-40). {id, scope (instance|batch|project; по умолчанию instance), instance_id | work_order_id | project_id, received_date, source (customer|internal), description, reference?, severity (critical|major|minor), category?, response_due (обязательно для рекламации от заказчика)}. Партия — наряд: рекламация без заводского номера на экземпляры наряда; проект — без номера изделия. Можно без связи (очередь); номер рекламации присваивает сервер."
+  },
+  "claim.start_analysis": {
+   "offline": "online_required",
+   "object": "claim",
+   "label_ru": "Начать анализ причины",
+   "requires_expected_version": true,
+   "note": "{id, responsible_id} — ответственный за анализ: участник проекта или сотрудник ОТК (D-40). «Зарегистрирована» → «Анализ причины»."
+  },
+  "claim.plan": {
+   "offline": "online_required",
+   "object": "claim",
+   "label_ru": "Утвердить план действий",
+   "requires_expected_version": true,
+   "note": "{id, cause, category?, actions:[{id, kind (corrective|preventive), description, owner_id, due_date}]}. Из «Анализ причины» → «Выполнение действий» (нужно хотя бы одно корректирующее); в «Выполнение действий» — добавляет действия (например, после проверки «не помогло»). Исполнители — участники проекта или сотрудники ОТК. При первом плане нужна категория дефекта (если её ещё нет) — по найденной причине (D-40)."
+  },
+  "claim.action_done": {
+   "offline": "online_required",
+   "object": "claim",
+   "label_ru": "Отметить действие выполненным",
+   "note": "{id, action_id, result}. Исполнитель действия или тот, кто ведёт рекламацию. Только в «Выполнение действий»."
+  },
+  "claim.submit_check": {
+   "offline": "online_required",
+   "object": "claim",
+   "label_ru": "Отправить на проверку эффективности",
+   "requires_expected_version": true,
+   "note": "{id}. Все действия выполнены. «Выполнение действий» → «Проверка эффективности»."
+  },
+  "claim.check": {
+   "offline": "online_required",
+   "object": "claim",
+   "label_ru": "Проверить эффективность",
+   "requires_expected_version": true,
+   "note": "{id, effective, evidence}. Независимый проверяющий: не составлял план, не выполнял действия, не отправлял на проверку. Эффективно → «Закрыта»; нет → «Выполнение действий». Запись проверки неизменяема. Закрытие не доказывает устранение причины."
+  },
+  "claim.classify": {
+   "offline": "online_required",
+   "object": "claim",
+   "label_ru": "Классифицировать дефект",
+   "requires_expected_version": true,
+   "note": "{id, severity (critical|major|minor), category?, reason} — уточнить тяжесть и категорию дефекта (D-40). Причина изменения обязательна; запись в журнале решений."
+  },
+  "claim.set_due": {
+   "offline": "online_required",
+   "object": "claim",
+   "label_ru": "Изменить срок ответа заказчику",
+   "requires_expected_version": true,
+   "note": "{id, response_due, reason} — новый срок ответа заказчику (по согласованию с ним или для следующего ответа, D-40). Не раньше сегодняшнего дня; причина обязательна."
+  },
+  "claim.respond": {
+   "offline": "online_required",
+   "object": "claim",
+   "label_ru": "Записать ответ заказчику",
+   "requires_expected_version": true,
+   "note": "{id, kind (interim|final), response_date, summary, reference?} — ответ заказчику отправлен (неизменяемая запись, D-40). Ответ после установки срока закрывает срок. Только для рекламации от заказчика."
+  },
+  "ecr.submit": {
+   "offline": "queued",
+   "object": "change_request",
+   "label_ru": "Подать запрос на изменение",
+   "note": "Любой участник проекта (D-39). {id, project_id, title, reason, proposal, kit_id?, claim_id?}. Можно без связи (очередь); номер присваивает сервер."
+  },
+  "ecr.assess": {
+   "offline": "online_required",
+   "object": "change_request",
+   "label_ru": "Оценить запрос",
+   "requires_expected_version": true,
+   "note": "РП или ГИП проекта. {id, impact}. «Подан» → «Оценён»."
+  },
+  "ecr.decide": {
+   "offline": "online_required",
+   "object": "change_request",
+   "label_ru": "Решение по запросу",
+   "requires_expected_version": true,
+   "note": "ГИП проекта, не автор запроса. {id, decision (accept|reject), reason}. «Оценён» → «Принят» / «Отклонён»."
+  },
+  "eco.create": {
+   "offline": "queued",
+   "object": "change_order",
+   "label_ru": "Составить извещение",
+   "note": "РП или ГИП проекта. {id, ecr_id, title?, description, items:[{kind:document, document_id, from_version} | {kind:tech_process, tp_id}]}. Только по принятому запросу, одно извещение на запрос; версии — документа и техпроцесса этого проекта."
+  },
+  "eco.save": {
+   "offline": "queued",
+   "object": "change_order",
+   "label_ru": "Сохранить извещение (черновик)",
+   "requires_expected_version": true,
+   "note": "{id, title?, description?, items?} — только черновик; переданное заменяется целиком. Конфликт версий не сливается."
+  },
+  "eco.approve": {
+   "offline": "online_required",
+   "object": "change_order",
+   "label_ru": "Утвердить извещение",
+   "requires_expected_version": true,
+   "note": "ГИП проекта, не составитель. {id}. «Черновик» → «Утверждено»; затронутые версии больше не меняются (событие ECOReleased)."
+  },
+  "eco.implement": {
+   "offline": "online_required",
+   "object": "change_order",
+   "label_ru": "Отметить внедрение",
+   "requires_expected_version": true,
+   "note": "РП или ГИП проекта. {id, results:[{index, to_version} | {index, to_tp_id}]} — новая версия для каждой строки: документ — существующая версия больше прежней; техпроцесс — утверждённая редакция того же изделия, новее прежней. «Утверждено» → «Внедрено»."
+  },
+  "eco.verify": {
+   "offline": "online_required",
+   "object": "change_order",
+   "label_ru": "Проверить внедрение",
+   "requires_expected_version": true,
+   "note": "ГИП, РП проекта или руководитель отдела — не тот, кто внедрял. {id, note}. «Внедрено» → «Проверено»."
+  },
+  "report.create": {
+   "offline": "queued",
+   "object": "daily_report",
+   "label_ru": "Создать дневной отчёт",
+   "note": "Свой отчёт за рабочий день (D-42, D-43). {id, work_date, shift_start? (ЧЧ:ММ; конец раньше начала — ночная смена до утра следующего дня), shift_end?, break_minutes?, lines?:[{project_id?, task_id?, minutes, note, source? (measured|estimated)}], comment?, origin? (manual|auto), summary?:{actions, measured_minutes, lines}}. origin=auto — отчёт собрала программа по действиям за день: статус «На самопроверке», уведомление автору. Один отчёт на сотрудника за день; день не в будущем и не старше 31 дня. Проект строки — тот, где сотрудник участник; задача — этого проекта. Можно без связи (очередь)."
+  },
+  "report.save": {
+   "offline": "queued",
+   "object": "daily_report",
+   "label_ru": "Сохранить дневной отчёт",
+   "requires_expected_version": true,
+   "note": "{id, shift_start?, shift_end?, break_minutes?, lines?, comment?} — только автор, только черновик, отчёт на самопроверке или возвращённый; переданное заменяется целиком (строки — все). Конфликт версий не сливается."
+  },
+  "report.submit": {
+   "offline": "queued",
+   "object": "daily_report",
+   "label_ru": "Отправить отчёт на проверку",
+   "requires_expected_version": true,
+   "note": "{id, self_check:{shift, lines, hours}} — автор проходит самопроверку (все отметки обязательны, A-48) и отправляет руководителю своего подразделения (D-44; вне оргструктуры — руководителям отделов): смена указана, есть строки, часов в строках не больше смены без перерыва, смена не пересекается со сменой соседнего дня. Можно без связи (очередь)."
+  },
+  "report.reopen": {
+   "offline": "online_required",
+   "object": "daily_report",
+   "label_ru": "Исправить отправленный отчёт",
+   "requires_expected_version": true,
+   "note": "{id, reason} — автор возвращает отправленный или принятый отчёт в черновик для исправления; основание обязательно (матрица 04: исправление после отправки — с основанием)."
+  },
+  "report.review": {
+   "offline": "online_required",
+   "object": "daily_report",
+   "label_ru": "Принять или вернуть дневной отчёт",
+   "requires_expected_version": true,
+   "note": "{id, decision (accept|return), comment? (обязателен при возврате)} — руководитель отдела, не автор («четыре глаза»); автор в оргструктуре — только руководитель подразделения по его цепочке или замещающий такого руководителя (D-44); только отчёт «На проверке»."
+  },
+  "overtime.period_set": {
+   "offline": "online_required",
+   "object": "overtime_period_config",
+   "label_ru": "Настроить учётный период",
+   "note": "{mode (month|quarter|year)} — администратор. Компания выбирает календарный месяц, квартал или год; границы периода фиксируются в каждой новой заявке и не меняются задним числом. До настройки заявка на часы не создаётся."
+  },
+  "overtime.period_close": {
+   "offline": "online_required",
+   "object": "overtime_period_closure",
+   "label_ru": "Закрыть или исправить ведомость часов",
+   "note": "{id, user_id, anchor_date, reason, supersedes_id?} — администратор закрывает агрегат подтверждённых заявок сотрудника за месяц/квартал/год. Период вычисляет сервер из настройки компании; ожидающие решения заявки блокируют закрытие. Исправление всегда создаёт новую ревизию, ссылается на последнюю закрытую и требует причину. Снимок содержит только утверждённые часы вне графика, без ставок и сумм оплаты; это не полный табель рабочего времени."
+  },
+  "overtime.request": {
+   "offline": "online_required",
+   "object": "overtime_request",
+   "label_ru": "Запросить или зафиксировать работу вне графика",
+   "note": "{id, work_date (дата начала), start_at, end_at (ISO-8601 с поясом), minutes (фактически подтверждаемые минуты), kind (overtime|weekend|holiday), mode (planned|urgent_after), reason, ground (код справочника оснований ст. 99/113 ТК РФ — vector.core.overtime), consent_confirmed (письменное согласие работника получено), refusal_right_notified (право отказа разъяснено)}. Основание обязательно и должно подходить виду работы; для запрещающих кадровых категорий заявка отклоняется; для оснований части 2 и согласительных категорий требуются отметки о согласии/разъяснении. Лимиты ст. 99 ч. 6: 4 ч/день, 4 ч за два дня подряд, 120 ч/год — проверяются при подаче и при решении. Предварительный запрос подаётся до начала; срочную работу после факта можно внести только по завершении и с причиной. Согласование руководителя обязательно. Не является расчётом оплаты; денежные суммы и ставки не передаются.",
+   "decision": "D-74"
+  },
+  "overtime.decide": {
+   "offline": "online_required",
+   "object": "overtime_request",
+   "label_ru": "Согласовать или отклонить часы вне графика",
+   "requires_expected_version": true,
+   "note": "{id, decision (approve|reject), comment? (обязателен при отказе)} — руководитель подразделения сотрудника или замещающий, для которого действует маршрут проверки отчётов; не автор («четыре глаза»). Одно решение по заявке; оно записывается в историю."
+  },
+  "org.unit_create": {
+   "offline": "online_required",
+   "object": "org_unit",
+   "label_ru": "Создать подразделение",
+   "note": "{id, kind (branch|structure|department — филиал, структура, отдел), name, code?, parent_id? (входит в), head_user_id? (руководитель)} — администратор (D-44). Связи не образуют круг, глубина дерева — не больше 12 уровней, код не повторяется. Руководитель получает уведомление."
+  },
+  "org.unit_update": {
+   "offline": "online_required",
+   "object": "org_unit",
+   "label_ru": "Изменить подразделение",
+   "requires_expected_version": true,
+   "note": "{id, kind, name, code?, parent_id?, head_user_id?} — название, код, вид, перенос в другое подразделение (без круга), смена руководителя. Архивное не правится."
+  },
+  "org.unit_archive": {
+   "offline": "online_required",
+   "object": "org_unit",
+   "label_ru": "Отправить подразделение в архив",
+   "requires_expected_version": true,
+   "note": "{id, reason} — только без действующих подчинённых подразделений и без сотрудников. Удаления нет: история и старые отчёты сохраняют ссылку."
+  },
+  "org.unit_restore": {
+   "offline": "online_required",
+   "object": "org_unit",
+   "label_ru": "Вернуть подразделение из архива",
+   "requires_expected_version": true,
+   "note": "{id} — вышестоящее подразделение (если есть) должно действовать."
+  },
+  "org.member_set": {
+   "offline": "online_required",
+   "object": "org_member",
+   "label_ru": "Включить сотрудника в подразделение",
+   "note": "{user_id, unit_id? (пусто — вывести из оргструктуры), position? (должность, прав не даёт)} — включить, перевести, сменить должность. Сотрудник получает уведомление; его дневные отчёты уходят руководителю нового подразделения."
+  },
+  "workday.mark": {
+   "offline": "queued",
+   "object": "workday",
+   "label_ru": "Таймер рабочего дня (начать / перерыв / продолжить / завершить)",
+   "note": "{id, work_date (ГГГГ-ММ-ДД, только для start), event (start|pause|resume|finish), device_time (ISO-8601 с поясом — часы компьютера, A-49 п. 5), auto? (только для finish: no_answer — напоминание о конце дня осталось без ответа, closed — программа была закрыта; D-47)} — свой рабочий день (D-46). start — новый день с id из клиента (один на сотрудника и дату). Без округления: время по секундам; перерыв — только по кнопке. Можно полностью без связи (очередь); событие не по порядку или раньше предыдущего — ВИДИМЫЙ конфликт, время из будущего — отказ. Автоматическое завершение уже завершённого дня (с другого компьютера) принимается без изменений."
+  },
+  "workday.start_request": {
+   "offline": "queued",
+   "object": "workday_start_request",
+   "label_ru": "Фактическое начало дня — на согласование",
+   "note": "{id, workday_id, start_at (ISO-8601 с поясом), reason} — сотрудник пропустил «Начать рабочий день»: фактическое начало своего дня — раньше нажатия «Начать», но не раньше начала рабочего дня по своему графику работы (D-47, ответ на A-51 п. 1); по графику день нерабочий — нельзя. Просить — в течение суток от нажатия; причина обязательна; один запрос на согласовании за день. Уведомление руководителю (как для дневного отчёта). Можно без связи (очередь)."
+  },
+  "workday.start_decide": {
+   "offline": "online_required",
+   "object": "workday_start_request",
+   "label_ru": "Согласовать или отклонить фактическое начало дня",
+   "requires_expected_version": true,
+   "note": "{id, decision (approve|reject), comment? (обязателен при отказе)} — тот, кто проверяет дневные отчёты сотрудника: руководитель подразделения по цепочке (без отдельной роли, D-45) или замещающий; вне оргструктуры — руководитель отдела. Не свой запрос. Согласовано — таймер считает день от фактического начала."
+  },
+  "workday.end_request": {
+   "offline": "queued",
+   "object": "workday_end_request",
+   "label_ru": "Фактическое окончание дня — на согласование",
+   "note": "{id, workday_id, end_at (ISO-8601 с поясом), reason} — день завершён автоматически (забыли «Завершить», D-47 — A-51 п. 5), а сотрудник работал дольше: фактическое окончание — позже автоматического завершения, не в будущем, не дальше суток от начала дня; просить — в течение суток; причина обязательна; один запрос на согласовании за день. Решает тот же руководитель, что и фактическое начало (A-51 п. 6). Можно без связи (очередь)."
+  },
+  "workday.end_decide": {
+   "offline": "online_required",
+   "object": "workday_end_request",
+   "label_ru": "Согласовать или отклонить фактическое окончание дня",
+   "requires_expected_version": true,
+   "note": "{id, decision (approve|reject), comment? (обязателен при отказе)} — тот же, кто решает о фактическом начале (D-47, A-51 п. 6). Не свой запрос. Согласовано — таймер продлевает последний рабочий отрезок дня до фактического окончания."
+  },
+  "schedule.save": {
+   "offline": "online_required",
+   "object": "work_schedule",
+   "label_ru": "Создать или изменить график работы",
+   "note": "{id, name, start_time (ЧЧ:ММ), end_time (ЧЧ:ММ; раньше начала — ночной график), break_minutes (0…240), weekdays (7 знаков 1/0, пн…вс), is_default? (по умолчанию в компании), active? (false — в архив), use_calendar? (учитывать производственный календарь, D-48; у нового — да)} — администратор (D-47, ответ на A-51 п. 1). Новый id — создать; существующий — изменить с ожидаемой версией. График «по умолчанию» — один: отметка снимается с прежнего. В архив — не «по умолчанию»."
+  },
+  "schedule.assign": {
+   "offline": "online_required",
+   "object": "work_schedule_link",
+   "label_ru": "Назначить график работы",
+   "note": "{target_kind (unit|user), target_id, schedule_id? (пусто — снять: действует график подразделения выше или «по умолчанию»), exempt? (только сотруднику: учёт рабочего времени не ведётся)} — администратор (D-47). График — действующий (не в архиве). Сотрудник получает уведомление о своём графике."
+  },
+  "calendar.import": {
+   "offline": "online_required",
+   "object": "work_calendar_year",
+   "label_ru": "Загрузить производственный календарь на год",
+   "note": "{year (2000…2100), xml (текст XML формата xmlcalendar.ru, до 64 КБ, без DOCTYPE / ENTITY), source? (откуда: адрес или «файл»)} — администратор (D-48, ответ на A-52 п. 3). Скачивает файл программа администратора (серверу интернет не нужен); с октября она сама загружает календарь на следующий год. Повторная загрузка года заменяет его дни; ручные правки дней остаются. Загруженный год важнее встроенного в программу."
+  },
+  "calendar.day_set": {
+   "offline": "online_required",
+   "object": "work_calendar_override",
+   "label_ru": "Изменить день производственного календаря",
+   "note": "{date (ГГГГ-ММ-ДД), kind? (holiday — нерабочий праздник | short — сокращённый на 1 час | workday — рабочий выходной | normal — обычный по графику; пусто — убрать правку), title? (до 120 знаков)} — администратор (D-48): региональный праздник или решение компании. Важнее загруженного и встроенного календаря, сохраняется при повторной загрузке года."
+  },
+  "checklist.create": {
+   "offline": "online_required",
+   "object": "checklist_template",
+   "label_ru": "Создать шаблон чек-листа ПНР/FAT",
+   "risk": "R-56",
+   "decision": "D-66",
+   "note": "Настраивает начальник сервисной службы (ответ владельца 2026-11-22, D-66); только онлайн — офлайн-очередь дала бы двусмысленность при параллельной правке справочника."
+  },
+  "checklist.update": {
+   "offline": "online_required",
+   "object": "checklist_template",
+   "label_ru": "Изменить шаблон чек-листа",
+   "risk": "R-56",
+   "decision": "D-66",
+   "note": "Настраивает начальник сервисной службы (ответ владельца 2026-11-22, D-66); только онлайн — офлайн-очередь дала бы двусмысленность при параллельной правке справочника."
+  },
+  "checklist.archive": {
+   "offline": "online_required",
+   "object": "checklist_template",
+   "label_ru": "Отключить шаблон чек-листа",
+   "risk": "R-56",
+   "decision": "D-66",
+   "note": "Настраивает начальник сервисной службы (ответ владельца 2026-11-22, D-66); только онлайн — офлайн-очередь дала бы двусмысленность при параллельной правке справочника."
+  },
+  "checklist.unarchive": {
+   "offline": "online_required",
+   "object": "checklist_template",
+   "label_ru": "Вернуть шаблон чек-листа",
+   "risk": "R-56",
+   "decision": "D-66",
+   "note": "Настраивает начальник сервисной службы (ответ владельца 2026-11-22, D-66); только онлайн — офлайн-очередь дала бы двусмысленность при параллельной правке справочника."
+  },
+  "pnr.create": {
+   "offline": "online_required",
+   "object": "pnr_request",
+   "label_ru": "Запросить ПНР (внутреннюю или на площадке)",
+   "risk": "medium",
+   "decision": "D-68",
+   "note": "Участник проекта. Вид, питание, плановая дата."
+  },
+  "pnr.set_status": {
+   "offline": "online_required",
+   "object": "pnr_request",
+   "label_ru": "Изменить статус запроса ПНР",
+   "risk": "medium",
+   "decision": "D-68",
+   "note": "РП проекта; отмена — с причиной."
+  },
+  "fat.create": {
+   "offline": "online_required",
+   "object": "fat_session",
+   "label_ru": "Начать FAT по шаблону чек-листа",
+   "risk": "high",
+   "decision": "D-68",
+   "note": "Разделы и градации — снимком шаблона; предварительный не влияет на показатели."
+  },
+  "fat.finish": {
+   "offline": "online_required",
+   "object": "fat_session",
+   "label_ru": "Завершить FAT (успешен/неуспешен)",
+   "risk": "high",
+   "decision": "D-68",
+   "note": "Итог неизменяем; «неуспешен» — с причиной. Неуспешный финальный блокирует отгрузку."
+  },
+  "fat.add_finding": {
+   "offline": "online_required",
+   "object": "fat_finding",
+   "label_ru": "Добавить замечание к FAT",
+   "risk": "medium",
+   "decision": "D-68",
+   "note": "К проекту, не к человеку; раздел и градация из снимка чек-листа сессии."
+  },
+  "fat.close_finding": {
+   "offline": "online_required",
+   "object": "fat_finding",
+   "label_ru": "Закрыть замечание FAT (с причиной)",
+   "risk": "medium",
+   "decision": "D-68",
+   "note": "Закрытие не меняет итог сессии; разблокировка — новой финальной сессией."
+  },
+  "doc_template.create": {
+   "offline": "online_required",
+   "object": "delivery_doc_template",
+   "label_ru": "Создать форму документа доставки",
+   "risk": "medium",
+   "decision": "D-69",
+   "note": "Шаблон с плейсхолдерами {{field}}; ведёт начальник логистики (временно dept_head, A-59)."
+  },
+  "doc_template.update": {
+   "offline": "online_required",
+   "object": "delivery_doc_template",
+   "label_ru": "Изменить форму документа доставки",
+   "risk": "medium",
+   "decision": "D-69",
+   "note": "Версионируется; выписанные документы (снимок) не переписывает."
+  },
+  "doc_template.set_active": {
+   "offline": "online_required",
+   "object": "delivery_doc_template",
+   "label_ru": "Включить/отключить форму документа",
+   "risk": "low",
+   "decision": "D-69",
+   "note": "Отключённая форма не даёт новых документов."
+  },
+  "delivery_doc.create": {
+   "offline": "online_required",
+   "object": "delivery_doc",
+   "label_ru": "Выписать документ доставки по форме",
+   "risk": "medium",
+   "decision": "D-69",
+   "note": "Автозаполнение данными проекта/комплекта + значения логиста; текст — снимок."
+  },
+  "delivery_doc.update": {
+   "offline": "online_required",
+   "object": "delivery_doc",
+   "label_ru": "Изменить текст документа доставки",
+   "risk": "low",
+   "decision": "D-69",
+   "note": "Версионируемая правка выписанного документа."
+  },
+  "norm.propose": {
+   "offline": "online_required",
+   "object": "norm_proposal",
+   "label_ru": "Предложить норму трудоёмкости по агрегированным данным",
+   "risk": "medium",
+   "decision": "D-72",
+   "note": "Диапазон сервер пересчитывает в момент команды; выборка ≥ 2 завершённых операций; норма не применяется автоматически."
+  },
+  "norm.decide": {
+   "offline": "online_required",
+   "object": "norm_proposal",
+   "label_ru": "Решение по предложению нормы (утвердить/отклонить)",
+   "risk": "medium",
+   "decision": "D-72",
+   "note": "Решает не автор; отклонение — с причиной; решение одноразовое; утверждение не меняет ТП автоматически."
+  },
+  "hr.category_set": {
+   "offline": "online_required",
+   "object": "hr_categories",
+   "label_ru": "Назначить кадровые категории работника (допуск к сверхурочным)",
+   "risk": "R-57",
+   "decision": "D-74",
+   "note": "{user_id, categories (коды справочника vector.core.overtime), reason (основание правки — приказ/заявление, обязательно), expected_version}. Только администратор (hr.category_manage). Категория — кадровый факт (несовершеннолетний, беременная, инвалид, ребёнок до 3 лет): от неё зависит запрет/условия привлечения к работе вне графика, поэтому правка — только онлайн, версионируется и требует основания; работник получает уведомление о назначении категорий."
+  },
+  "office_doc.create": {
+   "offline": "queued",
+   "object": "office_document",
+   "label_ru": "Создать таблицу или текстовый документ ВЕКТОР"
+  },
+  "office_doc.set_template": {
+   "offline": "online_required",
+   "object": "office_doc",
+   "label_ru": "Пометить документ шаблоном (для формирования актов и спецификаций)"
+  },
+  "templates.render": {
+   "offline": "online_required",
+   "object": "office_doc",
+   "label_ru": "Сформировать документ из шаблона (подстановка полей проекта)"
+  }
+ },
+ "queries": {
+  "pull": {
+   "offline": "offline_full",
+   "label_ru": "Обновить локальный кэш (онлайн); чтение кэша доступно офлайн"
+  },
+  "history": {
+   "offline": "online_required",
+   "label_ru": "История объекта с сервера (офлайн — только локальный журнал очереди)"
+  },
+  "users": {
+   "offline": "online_required",
+   "label_ru": "Список учётных записей и ролей (администратор)"
+  },
+  "file": {
+   "offline": "online_required",
+   "label_ru": "Скачать файл версии документа (проверка прав и целостности на сервере)"
+  }
+ }
+}

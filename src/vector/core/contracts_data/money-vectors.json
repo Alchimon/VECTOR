@@ -1,0 +1,37 @@
+{
+  "contract": "money-v1",
+  "policy": {
+    "scale": 4,
+    "max_abs": "99999999999999.9999",
+    "sqlite_storage": "INTEGER ten-thousandths (BIGINT)",
+    "server_storage": "NUMERIC(18,4)",
+    "json": "decimal string",
+    "fraction_digits_rule": "по записи: более 4 написанных дробных знаков отклоняются, даже нули (без молчаливой нормализации)",
+    "unknown": "null = неизвестно; пустая строка = ошибка формата; ноль = известный ноль"
+  },
+  "vectors": [
+    {"input": "0", "ok": true, "minor": 0, "json": "0.0000"},
+    {"input": "-0", "ok": true, "minor": 0, "json": "0.0000"},
+    {"input": "12.3456", "ok": true, "minor": 123456, "json": "12.3456"},
+    {"input": "12.5", "ok": true, "minor": 125000, "json": "12.5000"},
+    {"input": "-7.0001", "ok": true, "minor": -70001, "json": "-7.0001"},
+    {"input": "99999999999999.9999", "ok": true, "minor": 999999999999999999, "json": "99999999999999.9999"},
+    {"input": "-99999999999999.9999", "ok": true, "minor": -999999999999999999, "json": "-99999999999999.9999"},
+    {"input": "100000000000000", "ok": false, "error": "out_of_range"},
+    {"input": "100000000000000.0000", "ok": false, "error": "out_of_range"},
+    {"input": "12.34567", "ok": false, "error": "too_many_fraction_digits"},
+    {"input": "1.00000", "ok": false, "error": "too_many_fraction_digits"},
+    {"input": "1e3", "ok": false, "error": "invalid_format"},
+    {"input": "NaN", "ok": false, "error": "invalid_format"},
+    {"input": "Infinity", "ok": false, "error": "invalid_format"},
+    {"input": "1,5", "ok": false, "error": "invalid_format"},
+    {"input": " 1", "ok": false, "error": "invalid_format"},
+    {"input": "+1", "ok": false, "error": "invalid_format"},
+    {"input": "", "ok": false, "error": "invalid_format"},
+    {"input": ".5", "ok": false, "error": "invalid_format"},
+    {"input": "5.", "ok": false, "error": "invalid_format"},
+    {"input_type": "float", "input": "1.1", "ok": false, "error": "float_forbidden"},
+    {"input_type": "bool", "input": "true", "ok": false, "error": "invalid_type"},
+    {"input_type": "null", "input": null, "ok": true, "unknown": true}
+  ]
+}
