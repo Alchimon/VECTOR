@@ -14,12 +14,13 @@ Item {
         anchors.fill: parent
         spacing: 0
 
-        // Бренд-панель: фоновая «чертёжная» композиция владельца (D-28) + логотип. Поверх фона — мягкая вуаль цвета
-        // окна, чтобы текст и чипы читались на любом участке изображения.
+        // Бренд-панель: всегда тёмная в обеих темах (D-99) — фирменный фон экосистемы «космос/чертёж»
+        // (VECTOR Stelt) под вуалью цвета холста ≈0,82, сверху логотип пака. Тексты — светлые токены
+        // brandText/brandMuted, чтобы панель не зависела от выбранной темы.
         Rectangle {
             Layout.fillHeight: true
             Layout.preferredWidth: parent.width * 0.44
-            color: Theme.bg
+            color: Theme.brandBg
             clip: true
             Image {
                 objectName: "loginBackdrop"
@@ -33,9 +34,9 @@ Item {
                 anchors.fill: parent
                 gradient: Gradient {
                     orientation: Gradient.Vertical
-                    GradientStop { position: 0.0;  color: Qt.alpha(Theme.bg, 0.30) }
-                    GradientStop { position: 0.45; color: Qt.alpha(Theme.bg, 0.78) }
-                    GradientStop { position: 1.0;  color: Qt.alpha(Theme.bg, 0.92) }
+                    GradientStop { position: 0.0;  color: Qt.alpha(Theme.brandBg, 0.30) }
+                    GradientStop { position: 0.45; color: Qt.alpha(Theme.brandBg, 0.78) }
+                    GradientStop { position: 1.0;  color: Qt.alpha(Theme.brandBg, 0.92) }
                 }
             }
             Rectangle { anchors.right: parent.right; width: 1; height: parent.height; color: Theme.border }
@@ -54,12 +55,12 @@ Item {
                 Item { Layout.fillHeight: true }
                 Text {
                     text: "От заказчика и тендера —\nдо проекта, комплекта\nи документа."
-                    color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsXxl; font.weight: Font.Bold; lineHeight: 1.15
+                    color: Theme.brandText; font.family: Theme.family; font.pixelSize: Theme.fsXxl; font.weight: Font.Bold; lineHeight: 1.15
                 }
                 Text {
                     Layout.maximumWidth: 440
                     text: "Единая цепочка инженерной компании: права проверяются сервером в момент действия, каждое изменение — в истории, работа продолжается без сети."
-                    color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsM; wrapMode: Text.Wrap; lineHeight: 1.3
+                    color: Theme.brandMuted; font.family: Theme.family; font.pixelSize: Theme.fsM; wrapMode: Text.Wrap; lineHeight: 1.3
                 }
                 RowLayout {
                     spacing: 8; Layout.topMargin: 8
@@ -68,7 +69,7 @@ Item {
                     VChip { text: "Аудит"; tone: "success"; iconName: "shield-check" }
                 }
                 Item { Layout.fillHeight: true }
-                Text { text: "Версия " + backend.version; color: Theme.textFaint; font.family: Theme.family; font.pixelSize: Theme.fsXs }
+                Text { text: "Версия " + backend.version; color: Theme.brandMuted; font.family: Theme.family; font.pixelSize: Theme.fsXs }
             }
         }
 

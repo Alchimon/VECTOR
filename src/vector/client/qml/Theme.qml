@@ -53,13 +53,20 @@ QtObject {
     readonly property color focus:       primary
     readonly property color scrim:       dark ? "#99000000" : "#5C2E3846"
 
-    // Фирменные изображения. Пути — от этого файла.
-    // Логотип и фон — графический пак экосистемы (D-99, assets/vektor/); светлые варианты — прежние (D-28).
-    readonly property url logo:     Qt.resolvedUrl(dark ? "../assets/vektor/app_icons/logo/vektor_platform_horizontal.png" : "../assets/brand/logo-light.png")
-    readonly property url mark:     Qt.resolvedUrl(dark ? "../assets/vektor/app_icons/logo/vektor_emblem_only.png" : "../assets/brand/mark-light.png")
-    readonly property url backdrop: Qt.resolvedUrl(dark ? "../assets/vektor/backgrounds/space.jpg" : "../assets/brand/bg-light.jpg")
-    // Насколько заметен фон под рабочими экранами: «чертёж» не должен спорить с данными (на входе — сильнее).
+    // Фирменные изображения — графический пак экосистемы (D-99, assets/vektor/) в ОБЕИХ темах:
+    // серебристый логотип читается и на светлом фоне (тёмные кромки букв), эмблема — металл на прозрачном.
+    // Прежние файлы D-28 (assets/brand/) не удаляются — их наличие проверяет тест-страж бренда.
+    readonly property url logo:     Qt.resolvedUrl("../assets/vektor/app_icons/logo/vektor_platform_horizontal.png")
+    readonly property url mark:     Qt.resolvedUrl("../assets/vektor/app_icons/logo/vektor_emblem_only.png")
+    readonly property url backdrop: Qt.resolvedUrl("../assets/vektor/backgrounds/space.jpg")
+    // Насколько заметен фон на бренд-панели входа (под вуалью brandBg).
     readonly property real backdropOpacity: dark ? 0.45 : 0.45
+
+    // Бренд-панель (экран входа) всегда тёмная в обеих темах: фирменный фон «космос/чертёж» тёмный,
+    // поэтому поверх него — светлые тексты и вуаль цвета холста (дизайн-система: оверлей ≈0,82).
+    readonly property color brandBg:    dark ? "#121417" : "#121417"
+    readonly property color brandText:  dark ? "#E6EDF3" : "#E6EDF3"
+    readonly property color brandMuted: dark ? "#8B949E" : "#8B949E"
 
     readonly property int radiusS: 6
     readonly property int radius: 10
