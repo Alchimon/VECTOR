@@ -284,6 +284,11 @@ class Backend(QObject):
         self._people: dict[str, str] = {}
         self._last_pull = ""
         self._theme = self._settings.value("ui/theme", "light")
+        # Вид интерфейса (D-98): «classic» — оболочка Shell.qml, «v2» — новая оболочка Shell2.qml
+        # (лента команд, вкладки объектов, предпросмотр, статус-бар). Плотность: «cozy» (просторно,
+        # базовый шрифт 15) или «compact» (компактно, 13) — для старых мониторов.
+        self._ui_mode = self._settings.value("ui/mode", "classic")
+        self._ui_density = self._settings.value("ui/density", "cozy")
         self._login_error = ""
         self._queue: list = []
         self._assignments: list = []
@@ -389,6 +394,32 @@ class Backend(QObject):
         if v in ("light", "dark") and v != self._theme:
             self._theme = v
             self._settings.setValue("ui/theme", v)
+            self.changed.emit()
+
+    @Property(str, notify=changed)
+    def uiMode(self):
+        """Вид интерфейса (D-98): «classic» — привычная оболочка, «v2» — новая (лента, вкладки, предпросмотр)."""
+        return self._ui_mode
+
+    @uiMode.setter
+    def uiMode(self, v):
+        """Переключить оболочку (classic/v2): сохраняется в настройках; Main.qml перезагружает корневой компонент."""
+        if v in ("classic", "v2") and v != self._ui_mode:
+            self._ui_mode = v
+            self._settings.setValue("ui/mode", v)
+            self.changed.emit()
+
+    @Property(str, notify=changed)
+    def uiDensity(self):
+        """Плотность интерфейса 2.0: «cozy» — просторно (шрифт 15), «compact» — компактно (шрифт 13)."""
+        return self._ui_density
+
+    @uiDensity.setter
+    def uiDensity(self, v):
+        """Сменить плотность (cozy/compact): сохраняется в настройках; размеры пересчитываются сразу."""
+        if v in ("cozy", "compact") and v != self._ui_density:
+            self._ui_density = v
+            self._settings.setValue("ui/density", v)
             self.changed.emit()
 
     @Property(str, constant=True)

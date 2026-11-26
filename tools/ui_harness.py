@@ -907,6 +907,28 @@ def main():
         h.login("admin")
         h.go("admin")
         h.shot(out / f"{theme}-08-admin.png")
+        # Интерфейс 2.0 (D-98, docs/blueprint/56-ui-ergonomics.md): лента команд, вкладки открытых объектов,
+        # инспектор-предпросмотр справа, статус-бар снизу, палитра команд Ctrl+K. Классика не трогается:
+        # переключатель — backend.uiMode (лента «Главная» → «Классика» возвращает обратно).
+        h.backend.logout()
+        h.wait_idle()
+        h.login("a.smirnova")
+        h.backend.uiMode = "v2"
+        h.wait_idle()
+        from PySide6.QtCore import QMetaObject as _QMo, QObject as _QO, Q_ARG as _QA
+        sh2 = h.win.findChild(_QO, "shell2")
+        _p = next(x for x in _plain(h.backend.property("projects")) if x["id"] == h.ids["project"])
+        _QMo.invokeMethod(sh2, "selectObject", _QA("QVariant", "project"), _QA("QVariant", _p))
+        h.wait_idle()
+        h.shot(out / f"{theme}-77-ui2-projects.png")
+        _QMo.invokeMethod(sh2, "openObject", _QA("QVariant", "project"), _QA("QVariant", h.ids["project"]))
+        _QMo.invokeMethod(sh2, "openObject", _QA("QVariant", "kit"), _QA("QVariant", h.ids["kits"]["АТХ"]))
+        h.wait_idle()
+        h.shot(out / f"{theme}-77b-ui2-kit-tab.png")
+        h.backend.uiMode = "classic"
+        h.wait_idle()
+        h.backend.logout()
+        h.wait_idle()
         h.close()
     print("Скриншоты:", out)
 

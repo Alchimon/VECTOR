@@ -166,6 +166,10 @@ Item {
                                // Подсказка (D-37): все роли полностью и расшифровка сокращений (ГИП, РП).
                                VTipArea { text: "Ваши роли: " + parent.text + (backend.tip(parent.text) !== "" ? "\n" + backend.tip(parent.text) : "") } } }
                     VButton { kind: "ghost"; compact: true; iconName: Theme.dark ? "sun" : "moon"; Accessible.name: "Сменить тему"; onClicked: backend.theme = Theme.dark ? "light" : "dark" }
+                    // Переход в интерфейс 2.0 (D-98): лента команд, вкладки объектов, предпросмотр, статус-бар.
+                    VButton { objectName: "btnUiV2"; kind: "ghost"; compact: true; iconName: "sparkles"; Accessible.name: "Новый вид интерфейса"
+                              tip: "Попробовать интерфейс 2.0: лента команд, вкладки открытых объектов, предпросмотр справа, палитра команд Ctrl+K. Вернуться можно в любой момент (лента «Главная» → «Классический вид»)."
+                              onClicked: backend.uiMode = "v2" }
                     VButton { kind: "ghost"; compact: true; iconName: "log-out"; Accessible.name: "Выйти"; onClicked: backend.logout() }
                 }
             }
