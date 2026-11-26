@@ -219,6 +219,10 @@ def main():
         h = Harness(theme)
         h.shot(out / f"{theme}-01-login.png")
         h.login()
+        # Сцены 01–76 — классическая оболочка; интерфейс 2.0 — сцены 77 ниже (с D-100 умолчание — v2,
+        # поэтому для классических сцен переключаем явно).
+        h.backend.uiMode = "classic"
+        h.wait_idle()
         h.go("tenders", h.ids["tender_won"])
         h.shot(out / f"{theme}-02-tender-won.png")
         h.go("tenders", h.ids["tender_sub"])

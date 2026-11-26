@@ -284,10 +284,11 @@ class Backend(QObject):
         self._people: dict[str, str] = {}
         self._last_pull = ""
         self._theme = self._settings.value("ui/theme", "light")
-        # Вид интерфейса (D-98): «classic» — оболочка Shell.qml, «v2» — новая оболочка Shell2.qml
-        # (лента команд, вкладки объектов, предпросмотр, статус-бар). Плотность: «cozy» (просторно,
-        # базовый шрифт 15) или «compact» (компактно, 13) — для старых мониторов.
-        self._ui_mode = self._settings.value("ui/mode", "classic")
+        # Вид интерфейса: «v2» — оболочка 2.0 (D-98: лента команд, вкладки объектов, предпросмотр,
+        # статус-бар), режим ПО УМОЛЧАНИЮ (D-100); «classic» — прежняя оболочка Shell.qml, остаётся
+        # запасным вариантом (переключатель на ленте 2.0 и кнопка ✨ в классике) до конца миграции
+        # разделов. Плотность: «cozy» (просторно, базовый шрифт 15) или «compact» (13) — для старых мониторов.
+        self._ui_mode = self._settings.value("ui/mode", "v2")
         self._ui_density = self._settings.value("ui/density", "cozy")
         self._login_error = ""
         self._queue: list = []
@@ -398,7 +399,8 @@ class Backend(QObject):
 
     @Property(str, notify=changed)
     def uiMode(self):
-        """Вид интерфейса (D-98): «classic» — привычная оболочка, «v2» — новая (лента, вкладки, предпросмотр)."""
+        """Вид интерфейса: «v2» — новая оболочка (лента, вкладки, предпросмотр), по умолчанию (D-100);
+        «classic» — прежняя, запасной вид на время миграции."""
         return self._ui_mode
 
     @uiMode.setter
