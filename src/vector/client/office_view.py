@@ -111,3 +111,35 @@ def doc_from_view(title: str, rows: list[dict]) -> Document:
     if not doc.blocks:
         doc.para("")
     return doc
+
+
+PREVIEW_MAX_LINES = 8
+
+
+def document_preview(data: bytes, kind: str) -> dict:
+    """Первые строки офисного документа для мини-предпросмотра (инспектор 2.0, D-103): заголовок
+    (лист/документ) и до PREVIEW_MAX_LINES непустых строк. Рабочая копия редактора не затрагивается —
+    разбор из байтов версии. kind: "sheet" (.vsheetx) | "doc" (.vdocx).
+    """
+    if kind == "doc":
+        from vector.office.vdocx import read_vdocx
+        doc = read_vdocx(data)
+        lines = []
+        for b in doc.blocks:
+            if isinstance(b, Paragraph) and (b.text or "").strip():
+                lines.append(b.text.strip())
+            elif isinstance(b, TableBlock):
+                lines.append(DOC_TABLE_PLACEHOLDER.format(r=len(b.rows), c=len(b.rows[0]) if b.rows else 0))
+        return {"title": doc.title or "", "lines": lines[:PREVIEW_MAX_LINES]}
+    from vector.office.vsheetx import read_vsheetx
+    wb = read_vsheetx(data)
+    view = sheet_to_view(wb)
+    lines = []
+    for r in range(1, view["rows"] + 1):
+        parts = [view["cells"].get(f"{col_label(c)}{r}", {}).get("text", "") for c in range(0, view["cols"])]
+        line = "  ·  ".join(p for p in parts if p)
+        if line:
+            lines.append(line)
+        if len(lines) >= PREVIEW_MAX_LINES:
+            break
+    return {"title": view["name"], "lines": lines}

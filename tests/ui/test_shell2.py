@@ -236,3 +236,21 @@ def test_v2_rail_flyout(ui):
     ui.pump(0.4)
     fly = ri.findChild(QObject, "railFlyout")
     assert fly is not None and fly.property("visible") is True
+
+
+def test_v2_inspector_document_preview_and_download(ui):
+    """Инспектор документа (концепт A, D-103): карточка предпросмотра содержимого и «Скачать версию N».
+    Демо-документ — внешний файл (PDF): превью честно сообщает, что оно — для документов ВЕКТОР."""
+    from PySide6.QtCore import Q_ARG, QMetaObject, QObject
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    doc = next(d for d in _plain(ui.backend.property("documents")) if d.get("code") == "АТХ-001")
+    QMetaObject.invokeMethod(sh, "selectObject", Q_ARG("QVariant", "document"), Q_ARG("QVariant", doc))
+    ui.wait_idle()
+    ui.pump(0.5)
+    insp = ui.find("inspector2")
+    card = insp.findChild(QObject, "docPreview")
+    assert card is not None and card.property("visible") is True
+    assert "ВЕКТОР" in (insp.property("previewNote") or "")
+    dl = insp.findChild(QObject, "inspDownload")
+    assert dl is not None and dl.property("visible") is True
