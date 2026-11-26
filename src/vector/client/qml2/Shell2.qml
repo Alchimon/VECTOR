@@ -40,13 +40,13 @@ Item {
     }
     function openPageTab(p) {
         var key = "page:" + p
-        var titles = ({ customers: "Заказчики", tenders: "Тендеры и ТКП", leads: "Лиды", projects: "Проекты",
+                        var titles = ({ home: "Главная", customers: "Заказчики", tenders: "Тендеры и ТКП", leads: "Лиды", projects: "Проекты",
                         finance: "Итоги проектов", analytics: "Аналитика", worktime: "Рабочее время",
                         stock: "Склад", procurement: "Закупка", production: "Производство",
                         products: "Изделия и паспорта", quality: "Качество", sync: "Синхронизация",
                         notifications: "Уведомления", delegations: "Замещения", org: "Оргструктура",
                         help: "Справка", admin: "Администрирование" })
-        var icons = ({ customers: "building-2", tenders: "gavel", leads: "sparkles", projects: "folder-kanban",
+        var icons = ({ home: "house", customers: "building-2", tenders: "gavel", leads: "sparkles", projects: "folder-kanban",
                        finance: "wallet", analytics: "sliders-horizontal", worktime: "clock",
                        stock: "warehouse", procurement: "shopping-cart", production: "factory",
                        products: "package-check", quality: "shield-check", sync: "refresh-cw",
@@ -124,12 +124,12 @@ Item {
         var start = !backend.hint("tender.read", backend.permRevision)
             ? (rs.some(r => r === "production" || r === "technologist") ? "production"
              : rs.some(r => r === "otk") ? "quality"
-             : backend.hint("stock.read", backend.permRevision) ? "stock" : "projects")
-            : "projects"   // в 2.0 домашняя страница по умолчанию — проекты (основной рабочий раздел)
+             : backend.hint("stock.read", backend.permRevision) ? "stock" : "home")
+            : "home"   // в 2.0 домашняя страница — рабочий стол «Главная» (D-108)
         openPageTab(start)
     }
     Component.onCompleted: {
-        pageComponents = ({ customers: customersC, tenders: tendersC, leads: leadsC,
+        pageComponents = ({ home: home2C, customers: customersC, tenders: tendersC, leads: leadsC,
             projects: projects2C, sync: syncC, admin: adminC, finance: financeC, stock: stockC,
             procurement: procurementC, delegations: delegationsC, notifications: notificationsC,
             production: productionC, products: productsC, quality: qualityC, help: helpC,
@@ -495,6 +495,8 @@ Item {
                         clip: true; boundsBehavior: Flickable.StopAtBounds
                         ColumnLayout {
                             id: railCol; width: parent.width - 2; spacing: 4
+                            RailItem2 { objectName: "railHome"; text: "Главная"; iconName: "house"; active: shell2.page === "home"
+                                Layout.alignment: Qt.AlignHCenter; onClicked: shell2.go("home") }
                             RailItem2 { text: "Заказчики"; iconName: "building-2"; active: shell2.page === "customers"
                                 visible: backend.hint("customer.read", backend.permRevision) && backend.moduleVisible("pdm")
                                 Layout.alignment: Qt.AlignHCenter; onClicked: shell2.go("customers") }
@@ -822,6 +824,7 @@ Item {
     Component { id: customersC; CustomersPage { shell: shell2 } }
     Component { id: tendersC; TendersPage { shell: shell2 } }
     Component { id: leadsC; LeadsPage { shell: shell2 } }
+    Component { id: home2C; HomePage2 { shell: shell2 } }
     Component { id: projects2C; ProjectsPage2 { shell: shell2 } }
     Component { id: syncC; SyncPage {} }
     Component { id: financeC; FinancePage { shell: shell2 } }
