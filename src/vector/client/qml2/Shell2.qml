@@ -670,6 +670,39 @@ Item {
                                                                    text: kitNode.kit.title + " — открыть комплект во вкладке" }
                                                     }
                                                 }
+                                                // --- задачи проекта (открытые и в работе) — узел концепта A
+                                                Repeater {
+                                                    model: {
+                                                        var kitIds = backend.kits.filter(function(k) { return k.project_id === treeProj.project.id })
+                                                                                 .map(function(k) { return k.id })
+                                                        return backend.tasks.filter(function(t) {
+                                                            return kitIds.indexOf(t.kit_id) >= 0
+                                                                && (t.status === "open" || t.status === "in_progress")
+                                                        }).slice(0, 12)
+                                                    }
+                                                    delegate: Rectangle {
+                                                        id: taskNode
+                                                        property var task: modelData
+                                                        width: parent.width; height: Theme2.compact ? 26 : 30
+                                                        color: taskNodeMa.containsMouse ? Theme2.hover : "transparent"
+                                                        RowLayout {
+                                                            anchors { fill: parent; leftMargin: 36; rightMargin: 8 } spacing: 6
+                                                            Icon { name: "list-checks"; size: 12
+                                                                   color: taskNode.task.status === "in_progress" ? Theme2.info : Theme2.textFaint }
+                                                            Text { text: taskNode.task.title
+                                                                   color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                                                                   Layout.fillWidth: true; elide: Text.ElideRight }
+                                                            Text { visible: (taskNode.task.due_date || "") !== ""
+                                                                   text: "до " + (taskNode.task.due_date || "")
+                                                                   color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+                                                        }
+                                                        MouseArea { id: taskNodeMa; anchors.fill: parent; hoverEnabled: true
+                                                            cursorShape: Qt.PointingHandCursor
+                                                            onClicked: shell2.openObject("kit", taskNode.task.kit_id) }
+                                                        VToolTip { visible: taskNodeMa.containsMouse
+                                                                   text: taskNode.task.title + " — открыть комплект с этой задачей" }
+                                                    }
+                                                }
                                                 Repeater {
                                                     model: backend.documents.filter(function(d) {
                                                         var k = backend.kits.find(function(kk) { return kk.id === d.kit_id })
