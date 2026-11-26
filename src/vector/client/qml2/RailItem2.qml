@@ -2,23 +2,22 @@ import QtQuick
 import QtQuick.Controls.Basic
 import "../qml"
 
-// Кнопка узкой иконка-рейла слева (интерфейс 2.0, D-98/D-101): только иконка, название — в тултипе
-// (как в утверждённом концепте B). Активный раздел — мягкая подложка и полоска-индикатор слева.
-// badge — счётчик (как в классике).
+// Кнопка узкой иконка-рейла слева (интерфейс 2.0, D-98/D-102): только иконка, название и пояснение —
+// во всплывающей панели справа от рейла (flyout, как в утверждённом концепте B). Активный раздел —
+// мягкая подложка и полоска-индикатор слева. badge — счётчик (как в классике).
 AbstractButton {
     id: r
     property string iconName: ""
     property bool active: false
     property int badge: 0
     property string badgeTone: "primary"
-    property string tip: r.text + (backend.tip(r.text) !== "" ? "\n" + backend.tip(r.text) : "")
+    property string tip: backend.tip(r.text)
     implicitWidth: Theme2.railW - 12
     implicitHeight: Theme2.compact ? 38 : 42
     hoverEnabled: true
     focusPolicy: Qt.StrongFocus
     Accessible.name: text
     Accessible.description: tip
-    VToolTip { visible: r.hovered && r.tip !== ""; text: r.tip }
 
     background: Rectangle {
         radius: Theme2.radiusS
@@ -42,5 +41,33 @@ AbstractButton {
                    color: Theme2.tone(r.badgeTone).bg; font.family: Theme2.family
                    font.pixelSize: 10; font.weight: Font.Bold }
         }
+    }
+
+    // Flyout-панель раздела (концепт B): всплывает справа от кнопки при наведении или фокусе —
+    // название крупно и пояснение мельче. Popup рисуется в оверлее окна: не клиппится рейлом
+    // и всегда поверх контента.
+    Popup {
+        id: flyout
+        objectName: "railFlyout"
+        visible: (r.hovered || r.activeFocus) && r.text !== ""
+        x: r.width + 10
+        y: (r.height - implicitHeight) / 2
+        padding: 10
+        leftPadding: 12; rightPadding: 12
+        focus: false
+        closePolicy: Popup.CloseOnPressOutside
+        background: Rectangle {
+            radius: Theme2.radiusS; color: Theme2.surface; border.color: Theme2.border
+            Rectangle { width: 8; height: 8; rotation: 45; color: Theme2.surface
+                        anchors.right: parent.left; anchors.rightMargin: -3; anchors.verticalCenter: parent.verticalCenter }
+        }
+        contentItem: Column {
+            spacing: 3
+            Text { text: r.text; color: Theme2.text; font.family: Theme2.family
+                   font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold }
+            Text { visible: r.tip !== ""; text: r.tip; color: Theme2.textMuted; font.family: Theme2.family
+                   font.pixelSize: Theme2.fsXs; width: Math.min(implicitWidth, 260); wrapMode: Text.WordWrap }
+        }
+        enter: Transition { NumberAnimation { property: "opacity"; from: 0.0; to: 1.0; duration: 120 } }
     }
 }

@@ -15,6 +15,14 @@ Item {
     readonly property var p: backend.projects.find(x => x.id === projectId) || null
     readonly property var team: p ? backend.assignments.filter(a => a.project_id === p.id) : []
     readonly property var kits: p ? backend.kits.filter(k => k.project_id === p.id) : []
+    // Документы проекта (через комплекты) — раздел под комплектами (концепт A, D-102).
+    readonly property var docs: {
+        if (!p) return []
+        var ids = {}
+        for (var i = 0; i < kits.length; i++) ids[kits[i].id] = kits[i].code
+        return backend.documents.filter(function(d) { return ids[d.kit_id] !== undefined })
+            .map(function(d) { var o = Object.assign({}, d); o.kit_code = ids[d.kit_id]; return o })
+    }
 
     Flickable {
         anchors.fill: parent
@@ -115,6 +123,42 @@ Item {
                        text: "Комплектов пока нет. Создать комплект может РП проекта — действие «Новый комплект» на ленте (вкладка «Проект»)."
                        color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsS
                        wrapMode: Text.WordWrap; Layout.fillWidth: true }
+            }
+
+            // ---------- документы проекта (концепт A, D-102): все документы комплектов одним списком,
+            // щелчок — предпросмотр в инспекторе, двойной щелчок — редактор.
+            ColumnLayout { visible: view.docs.length > 0; Layout.fillWidth: true; spacing: Theme2.gap
+                Text { text: "ДОКУМЕНТЫ (" + view.docs.length + ")"; color: Theme2.textFaint
+                       font.family: Theme2.family; font.pixelSize: Theme2.fsXs; font.weight: Font.Bold; font.letterSpacing: 1.2 }
+                Repeater {
+                    model: view.docs
+                    delegate: Rectangle {
+                        id: docRow
+                        Layout.fillWidth: true; implicitHeight: Theme2.compact ? 40 : 46
+                        radius: Theme2.radiusS
+                        color: docMa.containsMouse ? Theme2.hover : Theme2.surface
+                        border.color: Theme2.cardBorder
+                        RowLayout { anchors { fill: parent; leftMargin: 10; rightMargin: 10 } spacing: 10
+                            Icon { name: modelData.kind === "sheet" ? "table" : modelData.kind === "doc" ? "file-text" : "archive"
+                                   size: 16; color: Theme2.warning }
+                            Text { text: modelData.code; color: Theme2.primary; font.family: Theme2.mono
+                                   font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold }
+                            Text { text: modelData.title; color: Theme2.text; font.family: Theme2.family
+                                   font.pixelSize: Theme2.fsS; Layout.fillWidth: true; elide: Text.ElideRight }
+                            Text { text: modelData.kit_code; color: Theme2.textFaint; font.family: Theme2.family
+                                   font.pixelSize: Theme2.fsXs }
+                            VChip { text: modelData.current_label || "файла нет"
+                                    tone: (modelData.current_version_no || 0) > 0 ? "info" : "neutral" }
+                            VChip { visible: modelData.pending === true; text: "Не отправлено"; tone: "warning"; iconName: "clock" }
+                        }
+                        MouseArea { id: docMa; anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: view.shell.selectObject("document", modelData)
+                            onDoubleClicked: view.shell.openDocument(modelData) }
+                        VToolTip { visible: docMa.containsMouse
+                                   text: "Щелчок — предпросмотр в инспекторе, двойной щелчок — открыть в редакторе" }
+                    }
+                }
             }
         }
     }
