@@ -2121,6 +2121,29 @@ class Backend(QObject):
         return Path(tempfile.mkdtemp(prefix="vector-office-")) / f"{document_id}.bin"
 
     @Slot(str, str, int)
+    def documentPreview(self, tag: str, document_id: str, version_no: int):
+        """Мини-предпросмотр содержимого офисного документа для инспектора 2.0 (D-103): скачать версию,
+        разобрать и вернуть первые строки сигналом queryDone(tag, …). Рабочую копию редактора
+        (self._office) НЕ трогает — можно смотреть предпросмотр при открытом редакторе.
+        """
+        def job():
+            dest = self._office_tmp(document_id)
+            try:
+                r = self.client.download_document_version(document_id, version_no, dest)
+            finally:
+                pass
+            if r.status != "accepted":
+                return {"status": r.status, "message_ru": r.message_ru}
+            data = dest.read_bytes()
+            dest.unlink(missing_ok=True)
+            try:
+                pv = office_view.document_preview(data, self._doc_kind(document_id))
+            except (ValueError, KeyError, OSError):
+                return {"status": "rejected", "message_ru": "Предпросмотр недоступен: файл не читается как документ ВЕКТОР."}
+            return {"status": "accepted", "document_id": document_id, **pv}
+        self._run(job, lambda res: self.queryDone.emit(tag, qml_safe(res)))
+
+    @Slot(str, str, int)
     def officeLoad(self, tag: str, document_id: str, version_no: int):
         """Скачать версию офисного документа и открыть в редакторе. Результат — queryDone(tag, …) с
         представлением ({kind, name, rows/cols/cells | rows:[para]}), либо отказ с понятным текстом."""

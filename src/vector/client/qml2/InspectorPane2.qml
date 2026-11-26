@@ -26,6 +26,38 @@ Rectangle {
                                        ? backend.kitCalc(object.id, 0, backend.dataRevision) : ({})
     readonly property var kitCalcVersions: (kitCalcData.versions || [])
 
+    // Мини-предпросмотр содержимого офисного документа (концепт A, D-103): первые строки файла
+    // без открытия редактора. Слот backend.documentPreview — асинхронный, ответ — queryDone.
+    property var previewLines: []
+    property string previewTitle: ""
+    property string previewNote: ""
+    readonly property bool previewWanted: kind === "document" && object !== null
+                                          && (object.current_version_no || 0) > 0
+                                          && /\.(vsheetx|vdocx)$/.test(((object.versions || [])[0] || {}).file_name || "")
+    function reloadPreview() {
+        previewLines = []; previewTitle = ""; previewNote = ""
+        if (kind !== "document" || !object || (object.versions || []).length === 0) return
+        if ((object.current_version_no || 0) === 0) { previewNote = "Файла ещё нет — предпросмотр появится после загрузки версии."; return }
+        if (!previewWanted) { previewNote = "Предпросмотр содержимого — для документов ВЕКТОР (.vsheetx/.vdocx); внешний файл откроется после скачивания."; return }
+        if (!backend.online) { previewNote = "Предпросмотр требует связи с сервером."; return }
+        backend.documentPreview("inspPreview", object.id, object.current_version_no)
+    }
+    onObjectChanged: reloadPreview()
+    Connections {
+        target: backend
+        function onQueryDone(t, res) {
+            if (t !== "inspPreview") return
+            if (res.status === "accepted" && insp.object && res.document_id === insp.object.id) {
+                insp.previewTitle = res.title || ""
+                insp.previewLines = res.lines || []
+                insp.previewNote = insp.previewLines.length > 0 ? "" : "Документ пуст."
+            } else if (res.status !== "accepted") {
+                insp.previewNote = res.message_ru || "Предпросмотр недоступен."
+                insp.previewLines = []
+            }
+        }
+    }
+
     color: Theme2.surface
     implicitWidth: Theme2.inspectorW
     Rectangle { anchors.left: parent.left; width: 1; height: parent.height; color: Theme2.border }
@@ -174,6 +206,26 @@ Rectangle {
                 KeyValue { k: "Версия карточки"; v: insp.object ? "v" + insp.object.version : "" }
             }
 
+            // ---------- предпросмотр содержимого (концепт A, D-103): первые строки файла без редактора
+            ColumnLayout { objectName: "docPreview"
+                           visible: insp.kind === "document" && insp.object !== null
+                                    && (insp.previewLines.length > 0 || insp.previewNote !== "")
+                           Layout.fillWidth: true; spacing: 6
+                Text { text: "Предпросмотр содержимого" + (insp.previewTitle !== "" ? " · " + insp.previewTitle : "")
+                       color: Theme2.textMuted; font.family: Theme2.family
+                       font.capitalization: Font.AllUppercase; font.letterSpacing: 1.0; font.weight: Font.DemiBold
+                       font.pixelSize: Theme2.fsXs }
+                Repeater {
+                    model: insp.previewLines
+                    delegate: Text { text: modelData; color: Theme2.text; font.family: Theme2.family
+                                     font.pixelSize: Theme2.fsXs; Layout.fillWidth: true; elide: Text.ElideRight
+                                     maximumLineCount: 1 }
+                }
+                Text { visible: insp.previewNote !== ""; text: insp.previewNote
+                       color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                       wrapMode: Text.WordWrap; Layout.fillWidth: true }
+            }
+
             // ---------- действия (крупные, на виду)
             ColumnLayout { visible: insp.object !== null; Layout.fillWidth: true; spacing: 8; Layout.topMargin: 8
                 VButton { objectName: "inspOpen"; text: insp.kind === "document" ? "Открыть в редакторе" : "Открыть"
@@ -191,10 +243,12 @@ Rectangle {
                 VButton { visible: insp.kind === "project" && insp.object && insp.object.tender_id
                           text: "Тендер-основание"; kind: "soft"; iconName: "gavel"; Layout.fillWidth: true
                           onClicked: insp.goPage("tenders", insp.object.tender_id) }
-                VButton { visible: insp.kind === "document" && insp.object !== null && (insp.object.kind || "") !== ""
-                          text: "Печать / PDF"; iconName: "download"; Layout.fillWidth: true
-                          tip: "Сохранить документ в PDF (работает и без связи)"
-                          onClicked: insp.editDocument(insp.object) }
+                VButton { objectName: "inspDownload"
+                          visible: insp.kind === "document" && insp.object !== null && (insp.object.current_version_no || 0) > 0
+                          text: "Скачать версию " + (insp.object ? (insp.object.current_version_no || "") : "")
+                          iconName: "download"; Layout.fillWidth: true
+                          tip: "Файл сохраняется после сверки SHA-256"
+                          onClicked: saveDlg2.open() }
             }
 
             Text { visible: insp.object !== null; Layout.topMargin: 4
@@ -335,5 +389,14 @@ Rectangle {
         title: "Файл новой версии"
         fileMode: FileDialog.OpenFile
         onAccepted: vPath2.text = selectedFile.toString()
+    }
+
+    FileDialog {
+        id: saveDlg2
+        title: "Сохранить файл версии"
+        fileMode: FileDialog.SaveFile
+        currentFile: insp.object ? backend.suggestedFileName(insp.object.id, insp.object.current_version_no || 1) : ""
+        onAccepted: backend.downloadDocumentVersion("insp-dl-" + Date.now(), insp.object.id,
+                                                    insp.object.current_version_no || 1, selectedFile.toString())
     }
 }

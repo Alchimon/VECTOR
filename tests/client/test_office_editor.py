@@ -129,3 +129,38 @@ class TestDocEditor:
         # doc_from_view не роняется на пометке и не создаёт таблицу (абзацы сохраняются).
         out = office_view.doc_from_view("Т", rows)
         assert out.text == "Шапка"
+
+
+class TestDocumentPreview:
+    """Мини-предпросмотр офисного документа для инспектора 2.0 (D-103): первые строки из байтов версии."""
+
+    def test_preview_sheet(self):
+        """Таблица: заголовок — имя листа, строки — непустые ряды «A · B …», пустые пропускаются."""
+        wb = Workbook()
+        sh = wb.sheet("Спецификация")
+        sh.set("A1", value=__import__("decimal").Decimal("2"))
+        sh.set("B1", value="Шкаф управления")
+        sh.set("A3", value="Итого")
+        recalc(sh)
+        pv = office_view.document_preview(write_vsheetx(wb), "sheet")
+        assert pv["title"] == "Спецификация"
+        assert pv["lines"][0] == "2  ·  Шкаф управления"
+        assert pv["lines"][1] == "Итого" and len(pv["lines"]) == 2   # пустая строка 2 не попала
+
+    def test_preview_doc(self):
+        """Текст: заголовок документа, непустые абзацы по порядку, пустые пропущены."""
+        doc = Document(title="Акт осмотра")
+        doc.para("Первый абзац")
+        doc.para("")
+        doc.para("Второй абзац")
+        pv = office_view.document_preview(write_vdocx(doc), "doc")
+        assert pv["title"] == "Акт осмотра"
+        assert pv["lines"] == ["Первый абзац", "Второй абзац"]
+
+    def test_preview_caps_at_eight_lines(self):
+        """Не больше PREVIEW_MAX_LINES строк — предпросмотр компактное."""
+        doc = Document(title="Длинный")
+        for i in range(20):
+            doc.para(f"Строка {i + 1}")
+        pv = office_view.document_preview(write_vdocx(doc), "doc")
+        assert len(pv["lines"]) == office_view.PREVIEW_MAX_LINES
