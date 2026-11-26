@@ -12,7 +12,13 @@ Item {
     property var shell                         // Shell2: selectObject/openObject, navTarget
     property string selectedId: ""
     property string search: ""
-    readonly property var items: backend.projects.filter(p => search === "" || (p.code + " " + p.title + " " + (p.tender_title || "")).toLowerCase().indexOf(search.toLowerCase()) >= 0)
+    property string filter: "active"          // all | active | archive (D-106: чипы-фильтры)
+    readonly property var filtered: backend.projects.filter(function(p) {
+        if (filter === "active") return p.status === "rkd_in_progress" || p.status === "closing"
+        if (filter === "archive") return p.status === "archived"
+        return true
+    })
+    readonly property var items: filtered.filter(p => search === "" || (p.code + " " + p.title + " " + (p.tender_title || "")).toLowerCase().indexOf(search.toLowerCase()) >= 0)
 
     // Переход к проекту из другого раздела (например, из тендера) — сразу открываем его вкладку.
     function handleNavTarget() {
@@ -42,6 +48,29 @@ Item {
                       onTextChanged: page.search = text }
         }
 
+        // ---------- фильтры-чипы (D-106): активные / архив / все
+        RowLayout { spacing: 6; visible: backend.projects.length > 0
+            Repeater {
+                model: [{ id: "active", label: "Активные" }, { id: "archive", label: "Архив" }, { id: "all", label: "Все" }]
+                delegate: AbstractButton {
+                    id: fchip
+                    property bool active: page.filter === modelData.id
+                    Accessible.name: modelData.label
+                    implicitHeight: 28; implicitWidth: ftext.implicitWidth + 22
+                    hoverEnabled: true
+                    onClicked: page.filter = modelData.id
+                    background: Rectangle { radius: 14
+                        color: fchip.active ? Theme2.primarySoft : fchip.hovered ? Theme2.hover : Theme2.surface
+                        border.color: fchip.active ? Theme2.primary : Theme2.border }
+                    contentItem: Text { id: ftext; text: modelData.label; horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        color: fchip.active ? Theme2.primary : Theme2.textMuted
+                        font.family: Theme2.family; font.pixelSize: Theme2.fsS
+                        font.weight: fchip.active ? Font.DemiBold : Font.Normal }
+                }
+            }
+        }
+
         // ---------- список карточек
         ListView {
             id: list
@@ -65,7 +94,13 @@ Item {
                     var k = backend.kits.find(function(kk) { return kk.id === d.kit_id })
                     return k && k.project_id === modelData.id
                 }).length
-                readonly property bool inWork: modelData.status === "work"
+                // Прогресс задач проекта (концепт A): открытые/все по комплектам проекта.
+                readonly property var kitIds: backend.kits.filter(function(k) { return k.project_id === modelData.id })
+                                                          .map(function(k) { return k.id })
+                readonly property var projTasks: backend.tasks.filter(function(t) { return card.kitIds.indexOf(t.kit_id) >= 0 })
+                readonly property int tasksOpen: projTasks.filter(function(t) { return t.status === "open" || t.status === "in_progress" }).length
+                readonly property real taskProgress: projTasks.length > 0 ? 1 - tasksOpen / projTasks.length : 0
+                readonly property bool inWork: modelData.status === "rkd_in_progress" || modelData.status === "closing"
                 width: list.width
                 implicitHeight: (Theme2.compact ? 88 : 112) + Theme2.pad
                 radius: Theme2.radius
@@ -128,6 +163,14 @@ Item {
                                    color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsS }
                             Text { text: "карточка v" + modelData.version
                                    color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsS }
+                        }
+                        // Полоса прогресса задач (концепт A): сколько закрыто от общего числа.
+                        RowLayout { visible: card.projTasks.length > 0; spacing: 8
+                            Rectangle { Layout.fillWidth: true; height: 4; radius: 2; color: Theme2.surfaceAlt
+                                Rectangle { width: parent.width * card.taskProgress; height: parent.height; radius: 2
+                                            color: card.taskProgress >= 1 ? Theme2.success : Theme2.info } }
+                            Text { text: "Задачи: " + (card.projTasks.length - card.tasksOpen) + "/" + card.projTasks.length
+                                   color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
                         }
                     }
                     ColumnLayout { spacing: 6; Layout.alignment: Qt.AlignTop
