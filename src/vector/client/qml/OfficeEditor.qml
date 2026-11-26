@@ -41,6 +41,16 @@ Popup {
         open()
         backend.officeLoad(tag, d.id, verNo)
     }
+    // Правка ячейки: единая точка (делегат сетки и тесты/стенд) — backend + локальное представление.
+    function setCell(addr, text) {
+        var c = backend.officeEditCell(addr, text)
+        if (c && c.status !== "rejected") {
+            if (!view.cells) view.cells = ({})
+            view.cells[addr] = c
+            editRev++
+        }
+        return c
+    }
     function save() {
         working = true; error = ""
         backend.officeSave(tag, doc ? doc.version : 0)
@@ -126,8 +136,7 @@ Popup {
                                             var entered = text
                                             var cur = cell ? (cell.formula || cell.text) : ""
                                             if (entered === cur) return
-                                            var c = backend.officeEditCell(addr, entered)
-                                            if (c && c.status !== "rejected") { ed.view.cells[addr] = c; ed.editRev++ }
+                                            ed.setCell(addr, entered)
                                         }
                                         Accessible.name: "Ячейка " + addr
                                     }

@@ -232,6 +232,25 @@ def main():
         h.wait_idle()
         h.scroll_detail_to(kw)
         h.shot(out / f"{theme}-10-kit-documents.png")
+        # Офисный редактор (Ф1.3/Ф1.4, D-94/D-95): документ-таблица комплекта АТХ → редактор сетки с формулой.
+        from PySide6.QtCore import QMetaObject, Q_ARG, QObject
+        h.backend.execute("t", "office_doc.create", {"id": str(uuid.uuid4()), "kit_id": h.ids["kits"]["АТХ"],
+                                                     "code": "АТХ-СП", "title": "Спецификация (ВЕКТОР)",
+                                                     "kind": "sheet"}, 0)
+        h.wait_idle()
+        doc = next(d for d in _plain(h.backend.property("documents")) if d["code"] == "АТХ-СП")
+        oe = next(o for o in h.win.findChildren(QObject) if o.objectName() == "officeEditor")
+        QMetaObject.invokeMethod(oe, "openFor", Q_ARG("QVariant", doc), Q_ARG("QVariant", 1))
+        h.wait_idle(1500)                                    # скачивание версии и открытие редактора
+        # Наполним сетку: позиция, количество, цена и формула итога (пересчёт сразу).
+        h.backend.officeEditCell("A1", "Кабель КВВГнг(А)-LS 7×1,5")
+        h.backend.officeEditCell("B1", "120")
+        h.backend.officeEditCell("C1", "12,50")
+        h.backend.officeEditCell("D1", "=B1*C1")
+        h.wait_idle()
+        h.shot(out / f"{theme}-76-office-editor.png")
+        QMetaObject.invokeMethod(oe, "close")
+        h.wait_idle()
         # Расчёт комплекта (С3): сводка, позиции, сравнение с зафиксированной версией; редактор; итог проекта.
         kw.setProperty("tab", "calc")
         h.wait_idle()

@@ -2087,7 +2087,7 @@ class Backend(QObject):
         import tempfile
         return Path(tempfile.mkdtemp(prefix="vector-office-")) / f"{document_id}.bin"
 
-    @Slot(str, int, str)
+    @Slot(str, str, int)
     def officeLoad(self, tag: str, document_id: str, version_no: int):
         """Скачать версию офисного документа и открыть в редакторе. Результат — queryDone(tag, …) с
         представлением ({kind, name, rows/cols/cells | rows:[para]}), либо отказ с понятным текстом."""
