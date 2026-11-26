@@ -157,3 +157,29 @@ def test_v2_invalid_ui_values_ignored(ui):
     ui.backend.uiDensity = "sparse"
     assert ui.backend.uiMode == before_mode
     assert ui.backend.uiDensity == "cozy"
+
+
+def test_v2_inspector_versions_tab(ui):
+    """Вкладка «Версии» инспектора (D-102, концепт B): у документа — таймлайн файловых версий
+    (автор, дата, размер, отметка «Текущая»), у комплекта — зафиксированные версии расчёта."""
+    from PySide6.QtCore import Q_ARG, QMetaObject
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    # Документ с файловыми версиями (АТХ-001 в демо-данных имеет 3 версии)
+    doc = next(d for d in _plain(ui.backend.property("documents"))
+               if d.get("code") == "АТХ-001" and (d.get("versions") or []))
+    QMetaObject.invokeMethod(sh, "selectObject", Q_ARG("QVariant", "document"), Q_ARG("QVariant", doc))
+    ui.wait_idle()
+    insp = ui.find("inspector2")
+    insp.setProperty("inspectorTab", "versions")
+    ui.pump(0.3)
+    assert len(doc["versions"]) >= 1
+    # Комплект: версии расчёта подтягиваются из backend.kitCalc
+    kit = next(k for k in _plain(ui.backend.property("kits")) if k["id"] == ui.ids["kits"]["АТХ"])
+    QMetaObject.invokeMethod(sh, "selectObject", Q_ARG("QVariant", "kit"), Q_ARG("QVariant", kit))
+    ui.wait_idle()
+    insp.setProperty("inspectorTab", "versions")
+    ui.pump(0.3)
+    versions = _plain(insp.property("kitCalcVersions"))
+    assert versions and versions[0]["author_name"], "версии расчёта комплекта не показаны"
+    assert versions[0]["label"].startswith("v") and versions[0]["total_label"]

@@ -18,6 +18,13 @@ Rectangle {
     signal goPage(string page, string id)
     signal editDocument(var doc)
 
+    // Данные вкладки «Версии» для комплекта — зафиксированные версии расчёта (слот kitCalc,
+    // перевычисляется по backend.dataRevision). Объявлены на корне: у вложенных элементов свойства
+    // не видны как insp.*.
+    readonly property var kitCalcData: kind === "kit" && object
+                                       ? backend.kitCalc(object.id, 0, backend.dataRevision) : ({})
+    readonly property var kitCalcVersions: (kitCalcData.versions || [])
+
     color: Theme2.surface
     implicitWidth: Theme2.inspectorW
     Rectangle { anchors.left: parent.left; width: 1; height: parent.height; color: Theme2.border }
@@ -61,7 +68,7 @@ Rectangle {
                            color: Theme2.text; font.family: Theme2.family; font.pixelSize: Theme2.fsM
                            font.weight: Font.Bold; wrapMode: Text.Wrap; Layout.fillWidth: true }
                     RowLayout { spacing: 6
-                        VChip { visible: insp.object && insp.object.status_label; text: insp.object ? insp.object.status_label || "" : ""; tone: "info" }
+                        VChip { visible: insp.object !== null && (insp.object.status_label || "") !== ""; text: insp.object ? insp.object.status_label || "" : ""; tone: "info" }
                         VChip { visible: insp.object && insp.object.pending === true; text: "Не отправлено"; tone: "warning"; iconName: "clock" }
                     }
                 }
@@ -176,7 +183,7 @@ Rectangle {
                 VButton { visible: insp.kind === "project" && insp.object && insp.object.tender_id
                           text: "Тендер-основание"; kind: "soft"; iconName: "gavel"; Layout.fillWidth: true
                           onClicked: insp.goPage("tenders", insp.object.tender_id) }
-                VButton { visible: insp.kind === "document" && insp.object && insp.object.kind
+                VButton { visible: insp.kind === "document" && insp.object !== null && (insp.object.kind || "") !== ""
                           text: "Печать / PDF"; iconName: "download"; Layout.fillWidth: true
                           tip: "Сохранить документ в PDF (работает и без связи)"
                           onClicked: insp.editDocument(insp.object) }
@@ -190,28 +197,83 @@ Rectangle {
                    wrapMode: Text.WordWrap; Layout.fillWidth: true }
             }   // конец вкладки «Свойства»
 
-            // ================= ВКЛАДКА «ВЕРСИИ» (концепт B, D-101): история версий объекта.
-            // Сейчас карточка знает только текущую версию (номер + метка времени сохранения);
-            // полный журнал ревизий появится с пакетом v3 (объектное хранилище версий).
+            // ================= ВКЛАДКА «ВЕРСИИ» (концепт B, D-101/D-102): настоящий таймлайн версий.
+            // Документ — файловые версии из кэша (номер, автор, дата, размер, короткий хэш, отметка
+            // «текущая»); комплект — зафиксированные версии расчёта (итог, автор, дата, хэш);
+            // проект — версия карточки + сводка версий документов.
             ColumnLayout { visible: insp.inspectorTab === "versions" && insp.object !== null
                            Layout.fillWidth: true; spacing: Theme2.gap
+
+                // ---------- документ: таймлайн файловых версий
                 Repeater {
-                    model: insp.object !== null ? [insp.object] : []
+                    model: insp.kind === "document" && insp.object ? insp.object.versions || [] : []
                     delegate: RowLayout {
                         Layout.fillWidth: true; spacing: 10
-                        Rectangle { width: 10; height: 10; radius: 5; color: Theme2.success }
+                        Rectangle { width: 10; height: 10; radius: 5; Layout.alignment: Qt.AlignTop; Layout.topMargin: 4
+                                    color: modelData.version_no === (insp.object.current_version_no || 0)
+                                           ? Theme2.success : Theme2.textFaint }
                         ColumnLayout { spacing: 2; Layout.fillWidth: true
-                            Text { text: "Версия v" + modelData.version; color: Theme2.text
-                                   font.family: Theme2.family; font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold }
-                            Text { text: "Текущая версия карточки объекта. Журнал изменений появится в ближайшем обновлении."
-                                   color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
-                                   wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                            RowLayout { spacing: 8
+                                Text { text: "Версия " + modelData.version_no; color: Theme2.text
+                                       font.family: Theme2.family; font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold }
+                                VChip { visible: modelData.version_no === (insp.object.current_version_no || 0)
+                                        text: "Текущая"; tone: "success" }
+                                Item { Layout.fillWidth: true }
+                                Text { text: modelData.size_label || ""; color: Theme2.textFaint
+                                       font.family: Theme2.family; font.pixelSize: Theme2.fsXs } }
+                            Text { text: (modelData.author_name || "—") + " · " + (modelData.created_label || "")
+                                   color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+                            Text { visible: (modelData.sha256 || "") !== ""
+                                   text: "SHA-256: " + (modelData.sha256 || "").substring(0, 16) + "…"
+                                   color: Theme2.textFaint; font.family: Theme2.mono; font.pixelSize: Theme2.fsXs }
                         }
                     }
                 }
-                Text { text: "История версий — основа утверждённого концепта: здесь будут таймлайн изменений, авторы и сравнение версий."
+                Text { visible: insp.kind === "document" && insp.object && (insp.object.versions || []).length === 0
+                       text: "Файла ещё нет — версия появится после первой загрузки или сохранения в редакторе."
                        color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
                        wrapMode: Text.WordWrap; Layout.fillWidth: true }
+
+                // ---------- комплект: версии расчёта
+                Repeater {
+                    model: insp.kind === "kit" ? insp.kitCalcVersions : []
+                    delegate: RowLayout {
+                        Layout.fillWidth: true; spacing: 10
+                        Rectangle { width: 10; height: 10; radius: 5; Layout.alignment: Qt.AlignTop; Layout.topMargin: 4
+                                    color: index === 0 ? Theme2.success : Theme2.textFaint }
+                        ColumnLayout { spacing: 2; Layout.fillWidth: true
+                            RowLayout { spacing: 8
+                                Text { text: "Расчёт " + (modelData.label || ""); color: Theme2.text
+                                       font.family: Theme2.family; font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold }
+                                Item { Layout.fillWidth: true }
+                                Text { text: modelData.total_label || ""; color: Theme2.textMuted
+                                       font.family: Theme2.mono; font.pixelSize: Theme2.fsXs } }
+                            Text { text: (modelData.author_name || "—") + " · " + (modelData.frozen_label || "")
+                                   color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+                            Text { visible: (modelData.hash_short || "") !== ""
+                                   text: "Хэш: " + (modelData.hash_short || "")
+                                   color: Theme2.textFaint; font.family: Theme2.mono; font.pixelSize: Theme2.fsXs } }
+                    }
+                }
+                Text { visible: insp.kind === "kit" && insp.kitCalcVersions.length === 0
+                       text: "Фиксаций расчёта ещё не было — зафиксировать может ГИП проекта (вкладка «Расчёт» комплекта)."
+                       color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                       wrapMode: Text.WordWrap; Layout.fillWidth: true }
+
+                // ---------- проект: версия карточки + сводка по документам
+                ColumnLayout { visible: insp.kind === "project" && insp.object !== null
+                               Layout.fillWidth: true; spacing: 6
+                    RowLayout { spacing: 10
+                        Rectangle { width: 10; height: 10; radius: 5; color: Theme2.success }
+                        Text { text: "Карточка проекта v" + (insp.object ? insp.object.version : "")
+                               color: Theme2.text; font.family: Theme2.family; font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold } }
+                    KeyValue { k: "Версий документов всего"
+                               v: insp.selDocs.reduce(function(n, d) { return n + (d.versions || []).length }, 0) }
+                    KeyValue { k: "Документов с файлом"; v: insp.selDocs.filter(function(d) { return (d.current_version_no || 0) > 0 }).length }
+                    Text { text: "Версии конкретного документа — в его инспекторе: выберите документ в дереве проекта слева."
+                           color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                           wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                }
             }
 
             // ================= ВКЛАДКА «ОБСУЖДЕНИЕ» (концепт B, D-101): комментарии к объекту.
