@@ -33,6 +33,12 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             hoverEnabled: true
             Accessible.name: "Вкладка " + modelData.title
+            // D-120: средняя кнопка закрывает вкладку (как в браузере), левая — активирует.
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.MiddleButton
+                onClicked: if (modelData.closable === true) tabs.closeRequested(modelData.key)
+            }
             onClicked: tabs.activated(modelData.key)
             background: Rectangle {
                 radius: Theme2.radiusS

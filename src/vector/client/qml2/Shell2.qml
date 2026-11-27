@@ -38,6 +38,13 @@ Item {
         var t = tabFor(key)
         page = t.kind === "page" ? t.id : "projects"   // объектные вкладки относятся к разделу «Проекты»
     }
+    // Шаг по вкладкам с зацикливанием (Ctrl+Tab, D-120).
+    function stepTab(dir) {
+        if (openTabs.length < 2) return
+        var i = 0
+        for (var k = 0; k < openTabs.length; k++) if (openTabs[k].key === activeTabKey) { i = k; break }
+        activateTab(openTabs[(i + dir + openTabs.length) % openTabs.length].key)
+    }
     function openPageTab(p) {
         var key = "page:" + p
                         var titles = ({ home: "Главная", customers: "Заказчики", tenders: "Тендеры и ТКП", leads: "Лиды", projects: "Проекты",
@@ -261,6 +268,9 @@ Item {
     // ---------- горячие клавиши (те же, что в классике, + Ctrl+K, Ctrl+W, Ctrl+Tab)
     Shortcut { sequence: "Ctrl+K"; onActivated: palette.open() }
     Shortcut { sequence: "Ctrl+W"; onActivated: shell2.closeTab(shell2.activeTabKey) }
+    // D-120: Ctrl+Tab / Ctrl+Shift+Tab — следующая/предыдущая вкладка (браузерная привычка).
+    Shortcut { sequence: "Ctrl+Tab"; onActivated: shell2.stepTab(1) }
+    Shortcut { sequence: "Ctrl+Shift+Tab"; onActivated: shell2.stepTab(-1) }
     Shortcut { sequence: "Ctrl+3"; onActivated: shell2.go("projects") }
     Shortcut { sequence: "Ctrl+4"; onActivated: shell2.go("sync") }
     Shortcut { sequence: "Ctrl+5"; onActivated: if (shell2.seesStock) shell2.go("stock") }
