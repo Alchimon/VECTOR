@@ -283,6 +283,35 @@ def test_v2_projects_filter_chips(ui):
     assert len(_plain(page.property("items"))) == 2
 
 
+def test_v2_analytics_page(ui):
+    """Раздел «Аналитика» 2.0 (D-127): плитки проектов и рисков, строки потоков, закупки и качество."""
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    from PySide6.QtCore import QMetaObject, Q_ARG
+    QMetaObject.invokeMethod(sh, "go", Q_ARG("QVariant", "analytics"), Q_ARG("QVariant", ""))
+    ui.wait_idle()
+    # Страница — делегат Repeater вкладок: findChild и визуальный обход из harness её не находят
+    # (вложенные делегаты), поэтому обходим визуальное дерево оболочки вручную.
+    def find_named(root, name):
+        found = []
+        def walk(o):
+            for ch in o.childItems():
+                if ch.property("objectName") == name:
+                    found.append(ch)
+                walk(ch)
+        walk(root)
+        return found
+    page = next((p for p in find_named(sh, "analyticsPage2") if p.isVisible()), None)
+    assert page is not None, "страница аналитики 2.0 не появилась"
+    assert find_named(sh, "an2RiskTile"), "плитка рисков не появилась"
+    assert len(find_named(sh, "an2ProjectTile")) >= 1          # два демо-проекта в разработке РКД
+    assert len(find_named(sh, "an2StreamRow")) == 6            # шесть потоков контракта
+    assert find_named(sh, "an2Procurement") and find_named(sh, "an2Production")
+    # Данные те же, что у классики (тот же слот portfolioAnalyticsView)
+    v = ui.backend.portfolioAnalyticsView(0)
+    assert sum(r["count"] for r in v["project_rows"]) == 2
+
+
 def test_v2_home_page(ui):
     """«Главная» 2.0 (D-108): рабочий стол открывается стартовой вкладкой, счётчики честные."""
     ui.login("a.smirnova")
