@@ -361,3 +361,19 @@ def test_v2_document_discussion(ui):
     QMetaObject.invokeMethod(sh, "selectObject", Q_ARG("QVariant", "kit"), Q_ARG("QVariant", kit))
     ui.wait_idle()
     assert _plain(insp.property("discussItems")) == []
+
+
+def test_v2_tab_stepping(ui):
+    """Вкладки 2.0 (D-120): stepTab листает вкладки с зацикливанием (Ctrl+Tab)."""
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    _open_object(sh, "project", ui.ids["project"])
+    _open_object(sh, "kit", ui.ids["kits"]["АТХ"])
+    ui.wait_idle()
+    from PySide6.QtCore import Q_ARG, QMetaObject
+    QMetaObject.invokeMethod(sh, "stepTab", Q_ARG("QVariant", 1))      # с последней — на первую (круг)
+    ui.wait_idle()
+    assert sh.property("activeTabKey") == "page:home"
+    QMetaObject.invokeMethod(sh, "stepTab", Q_ARG("QVariant", -1))     # назад — на последнюю
+    ui.wait_idle()
+    assert sh.property("activeTabKey") == "kit:" + ui.ids["kits"]["АТХ"]
