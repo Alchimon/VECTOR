@@ -27,6 +27,20 @@ def _tabs(sh):
     return [_plain(t) for t in _plain(sh.property("openTabs"))]
 
 
+def _find_named(root, name):
+    """Все элементы с objectName == name в визуальном дереве root (страницы 2.0 — делегаты
+    Repeater вкладок: findChild их не видит, поэтому обходим childItems вручную)."""
+    found = []
+
+    def walk(o):
+        for ch in o.childItems():
+            if ch.property("objectName") == name:
+                found.append(ch)
+            walk(ch)
+    walk(root)
+    return found
+
+
 def test_v2_loads_with_ribbon_tabs_statusbar(ui):
     """Каркас 2.0: лента, вкладки, статус-бар видны; домашний раздел — проекты (у РП)."""
     ui.login("a.smirnova")
@@ -310,6 +324,41 @@ def test_v2_analytics_page(ui):
     # Данные те же, что у классики (тот же слот portfolioAnalyticsView)
     v = ui.backend.portfolioAnalyticsView(0)
     assert sum(r["count"] for r in v["project_rows"]) == 2
+
+
+def test_v2_customers_page(ui):
+    """Раздел «Заказчики» 2.0 (D-129): карточки слева, карточка заказчика справа, тендеры заказчика."""
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    from PySide6.QtCore import QMetaObject, Q_ARG
+    QMetaObject.invokeMethod(sh, "go", Q_ARG("QVariant", "customers"), Q_ARG("QVariant", ""))
+    ui.wait_idle()
+    page = next((p for p in _find_named(sh, "customersPage2") if p.isVisible()), None)
+    assert page is not None, "страница заказчиков 2.0 не появилась"
+    customers = _plain(ui.backend.property("customers"))
+    assert len(customers) == 4                                     # четыре демо-заказчика
+    cards = [c for c in _find_named(sh, "cu2Card") if c.isVisible()]
+    assert len(cards) == 4
+    # До выбора карточка заказчика скрыта
+    assert not any(d.isVisible() for d in _find_named(sh, "cu2Detail"))
+    # Кнопка создания видна РП (право customer.create)
+    assert any(b.isVisible() for b in _find_named(sh, "cu2Create"))
+    # Выбор карточки щелчком — как пользователь; карточка показывает реквизиты и тендеры заказчика
+    idx = next(i for i, c in enumerate(customers) if c["name"] == "АО «Энергомаш»")
+    ui.click(cards[idx])
+    detail = next((d for d in _find_named(sh, "cu2Detail") if d.isVisible()), None)
+    assert detail is not None, "карточка заказчика не появилась после выбора"
+    name = next((t for t in _find_named(sh, "cu2Name") if t.isVisible()), None)
+    assert name is not None and name.property("text") == "АО «Энергомаш»"
+    tenders = _plain(ui.backend.property("tenders"))
+    want = len([t for t in tenders if t["customer_id"] == customers[idx]["id"]])
+    rows = [r for r in _find_named(sh, "cu2TenderRow") if r.isVisible()]
+    assert len(rows) == want and want >= 1                         # у Энергомаша тендеры есть
+    # Поиск фильтрует список
+    search = next(s for s in _find_named(sh, "customers2Search"))
+    search.setProperty("text", "водоканал")
+    ui.wait_idle()
+    assert len([c for c in _find_named(sh, "cu2Card") if c.isVisible()]) == 1
 
 
 def test_v2_home_page(ui):

@@ -862,7 +862,7 @@ Item {
 
     // Разделы, не переписанные под 2.0, встраиваются без изменений (классические страницы).
     property var pageComponents: ({})
-    Component { id: customersC; CustomersPage { shell: shell2 } }
+    Component { id: customersC; CustomersPage2 { shell: shell2 } }   // D-129: заказчики в стиле 2.0
     Component { id: tendersC; TendersPage { shell: shell2 } }
     Component { id: leadsC; LeadsPage { shell: shell2 } }
     Component { id: home2C; HomePage2 { shell: shell2 } }
