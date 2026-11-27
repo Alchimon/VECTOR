@@ -880,7 +880,7 @@ Item {
     Component { id: helpC; HelpPage { shell: shell2 } }
     Component { id: worktimeC; WorktimePage { shell: shell2 } }
     Component { id: orgC; OrgPage { shell: shell2 } }
-    Component { id: analyticsC; AnalyticsPage { shell: shell2 } }
+    Component { id: analyticsC; AnalyticsPage2 { shell: shell2 } }   // D-127: аналитика в стиле 2.0
 
     // ---------- палитра команд и офисный редактор (документы из инспектора)
     CommandPalette2 { id: palette; commands: shell2.commandsCache }
