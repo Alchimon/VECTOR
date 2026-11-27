@@ -326,3 +326,18 @@ def test_v2_kit_inspector_new_document(ui):
     ec = insp.findChild(QObject, "inspEditCard")
     assert ec is not None and ec.property("visible") is True
     assert insp.findChild(QObject, "inspEditForm") is not None
+
+
+def test_v2_project_versions_timeline(ui):
+    """Инспектор проекта 2.0 (D-116): вкладка «Версии» — хронология версий документов проекта."""
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    p = next(x for x in _plain(ui.backend.property("projects")) if x["id"] == ui.ids["project"])
+    from PySide6.QtCore import Q_ARG, QMetaObject
+    QMetaObject.invokeMethod(sh, "selectObject", Q_ARG("QVariant", "project"), Q_ARG("QVariant", p))
+    ui.wait_idle()
+    insp = ui.find("inspector2")
+    rows = _plain(insp.property("projDocVersions"))
+    assert len(rows) == 4                                    # 3 версии АТХ-001 + 1 версия АТХ-002
+    assert rows[0]["version_no"] >= rows[-1]["version_no"]   # новые сверху
+    assert rows[0]["doc_code"].startswith("АТХ")
