@@ -320,3 +320,7 @@ def test_v2_kit_inspector_new_document(ui):
     btn = insp.findChild(QObject, "inspNewDoc")
     assert btn is not None and btn.property("visible") is True
     assert insp.findChild(QObject, "inspDocForm") is not None
+    # «Изменить карточку» (D-114) — у комплекта есть и кнопка, и форма
+    ec = insp.findChild(QObject, "inspEditCard")
+    assert ec is not None and ec.property("visible") is True
+    assert insp.findChild(QObject, "inspEditForm") is not None

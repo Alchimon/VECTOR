@@ -260,6 +260,11 @@ Rectangle {
                           text: "Новый документ"; kind: "soft"; iconName: "file-text"; Layout.fillWidth: true
                           tip: "Карточка документа в этом комплекте (файл добавляется версиями)"
                           onClicked: docForm2.ask(insp.object) }
+                VButton { objectName: "inspEditCard"
+                          visible: (insp.kind === "kit" || insp.kind === "document") && insp.object !== null
+                          text: "Изменить карточку"; kind: "soft"; iconName: "pencil"; Layout.fillWidth: true
+                          tip: "Обозначение и название; версия карточки защищает от перезаписи чужих правок"
+                          onClicked: editForm2.ask(insp.kind, insp.object) }
                 VButton { objectName: "inspDownload"
                           visible: insp.kind === "document" && insp.object !== null && (insp.object.current_version_no || 0) > 0
                           text: "Скачать версию " + (insp.object ? (insp.object.current_version_no || "") : "")
@@ -470,6 +475,35 @@ Rectangle {
                 docForm2.working = false
                 if (r.status === "accepted") docForm2.close()
                 else docForm2.error = r.message_ru || "Документ не создан."
+            }
+        }
+    }
+
+    // ---------- диалог «Изменить карточку» (D-114): комплект или документ, с ожидаемой версией.
+    FormDialog {
+        id: editForm2
+        objectName: "inspEditForm"
+        property string editKind: ""
+        property var obj: null
+        property string tag: "insp-edit-" + Math.random().toString(36).slice(2)
+        title: editKind === "kit" ? "Изменить комплект" : "Изменить документ"
+        subtitle: obj ? obj.code + " · карточка v" + obj.version : ""
+        note: "Если коллега успеет изменить карточку раньше, вы увидите конфликт версий — чужие правки не перезапишутся."
+        confirmText: "Сохранить"
+        canConfirm: eCode2.text.trim() !== "" && eTitle2.text.trim() !== "" && backend.online
+        function ask(k, o) { editKind = k; obj = o; eCode2.text = o.code; eTitle2.text = o.title; open() }
+        onConfirmed: { working = true; error = ""
+            backend.execute(tag, editKind === "kit" ? "kit.update" : "document.update",
+                            ({ id: obj.id, code: eCode2.text.trim(), title: eTitle2.text.trim() }), obj.version) }
+        VField { id: eCode2; label: editForm2.editKind === "kit" ? "Код комплекта" : "Обозначение"; required: true }
+        VField { id: eTitle2; label: "Название"; required: true }
+        Connections {
+            target: backend
+            function onCommandDone(t, r) {
+                if (t !== editForm2.tag) return
+                editForm2.working = false
+                if (r.status === "accepted") editForm2.close()
+                else editForm2.error = r.message_ru || "Карточка не изменена."
             }
         }
     }
