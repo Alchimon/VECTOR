@@ -293,3 +293,16 @@ def test_v2_home_page(ui):
     # У a.smirnova (РП) в демо нет назначенных открытых задач — честный 0
     assert len(_plain(home.property("myOpenTasks"))) == 0
     assert len(_plain(home.property("activeProjects"))) == 2
+
+
+def test_v2_palette_finds_objects(ui):
+    """Палитра команд 2.0 (D-110): ищет не только разделы, но и объекты — проекты, комплекты, документы."""
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    from PySide6.QtCore import QMetaObject, Q_ARG
+    QMetaObject.invokeMethod(sh, "buildCommands")
+    cmds = _plain(sh.property("commandsCache"))
+    labels = [c["label"] for c in cmds]
+    assert any("ПАЗ цеха" in l for l in labels)                       # проект
+    assert any(l.startswith("АТХ ·") for l in labels)                 # комплект
+    assert any("АТХ-001" in l for l in labels)                        # документ
