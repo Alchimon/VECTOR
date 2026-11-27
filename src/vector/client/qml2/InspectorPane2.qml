@@ -255,6 +255,11 @@ Rectangle {
                 VButton { visible: insp.kind === "project" && insp.object && insp.object.tender_id
                           text: "Тендер-основание"; kind: "soft"; iconName: "gavel"; Layout.fillWidth: true
                           onClicked: insp.goPage("tenders", insp.object.tender_id) }
+                VButton { objectName: "inspNewDoc"
+                          visible: insp.kind === "kit" && insp.object !== null
+                          text: "Новый документ"; kind: "soft"; iconName: "file-text"; Layout.fillWidth: true
+                          tip: "Карточка документа в этом комплекте (файл добавляется версиями)"
+                          onClicked: docForm2.ask(insp.object) }
                 VButton { objectName: "inspDownload"
                           visible: insp.kind === "document" && insp.object !== null && (insp.object.current_version_no || 0) > 0
                           text: "Скачать версию " + (insp.object ? (insp.object.current_version_no || "") : "")
@@ -437,6 +442,34 @@ Rectangle {
                 taskForm2.working = false
                 if (r.status === "accepted") taskForm2.close()
                 else taskForm2.error = r.message_ru || "Задача не создана."
+            }
+        }
+    }
+
+    // ---------- диалог «Новый документ» (D-112): карточка в выбранном комплекте, файл — версиями.
+    FormDialog {
+        id: docForm2
+        objectName: "inspDocForm"
+        property var kit: null
+        property string tag: "insp-doc-" + Math.random().toString(36).slice(2)
+        title: "Новый документ"
+        subtitle: kit ? "Комплект " + kit.code + " · " + kit.title : ""
+        note: "Создаётся карточка документа: обозначение уникально в проекте. Файл добавляется командой «Новая версия»."
+        confirmText: "Создать"
+        canConfirm: dCode2.text.trim() !== "" && dTitle2.text.trim() !== "" && backend.online
+        function ask(k) { kit = k; dCode2.text = ""; dTitle2.text = ""; open() }
+        onConfirmed: { working = true; error = ""
+            backend.execute(tag, "document.create", ({ id: backend.newId(), kit_id: kit.id,
+                code: dCode2.text.trim(), title: dTitle2.text.trim() }), 0) }
+        VField { id: dCode2; label: "Обозначение"; required: true; placeholder: "Например: АТХ-004" }
+        VField { id: dTitle2; label: "Название"; required: true; placeholder: "Например: Спецификация" }
+        Connections {
+            target: backend
+            function onCommandDone(t, r) {
+                if (t !== docForm2.tag) return
+                docForm2.working = false
+                if (r.status === "accepted") docForm2.close()
+                else docForm2.error = r.message_ru || "Документ не создан."
             }
         }
     }
