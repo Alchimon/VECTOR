@@ -160,6 +160,34 @@ ScrollView {
                 }
             }
 
+            // ---------- рабочий день (D-121): состояние и быстрые действия, как в статус-баре
+            Rectangle { Layout.leftMargin: 28; Layout.rightMargin: 28; Layout.fillWidth: true
+                        radius: Theme2.radiusL; color: Theme2.surface; border.color: Theme2.cardBorder
+                        implicitHeight: wdRow.implicitHeight + 20
+                RowLayout { id: wdRow; anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; margins: 10; leftMargin: 14; rightMargin: 14 } spacing: 12
+                    Icon { name: "timer"; size: 16
+                           color: page.workday.running === true ? Theme2.success : Theme2.textFaint }
+                    Text { text: page.workday.has_day === true
+                                 ? "Рабочий день: " + (page.workday.status_label || "") + " · " + (page.workday.worked_label || "")
+                                 : "Рабочий день сегодня не начат"
+                           color: Theme2.text; font.family: Theme2.family; font.pixelSize: Theme2.fsS
+                           font.weight: Font.DemiBold }
+                    Item { Layout.fillWidth: true }
+                    VButton { objectName: "homeWorkdayStart"; visible: page.workday.can_start === true
+                              text: "Начать рабочий день"; kind: "primary"; iconName: "check"
+                              onClicked: backend.workdayMark("home-wd", "start") }
+                    VButton { visible: page.workday.can_pause === true; text: "Перерыв"; kind: "soft"; iconName: "minus"
+                              onClicked: backend.workdayMark("home-wd", "pause") }
+                    VButton { visible: page.workday.can_resume === true; text: "Продолжить"; kind: "soft"; iconName: "check"
+                              onClicked: backend.workdayMark("home-wd", "resume") }
+                    VButton { visible: page.workday.can_finish === true; text: "Завершить день"; kind: "soft"; iconName: "x"
+                              onClicked: backend.workdayMark("home-wd", "finish") }
+                    Text { text: "Подробнее…"; color: Theme2.primary; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                           MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                               onClicked: page.shell.go("worktime") } }
+                }
+            }
+
             // ---------- последние уведомления (D-115): полоса во всю ширину, щелчок ведёт в раздел события
             Rectangle { Layout.leftMargin: 28; Layout.rightMargin: 28; Layout.bottomMargin: 28; Layout.fillWidth: true
                         radius: Theme2.radiusL; color: Theme2.surface; border.color: Theme2.cardBorder
@@ -203,6 +231,7 @@ ScrollView {
 
     // ---------- данные
     readonly property var notifItems: backend.notificationsOverview.items || []
+    readonly property var workday: backend.workdayOverview
     readonly property var myOpenTasks: backend.tasks.filter(function(t) {
         return t.mine === true && (t.status === "open" || t.status === "in_progress")
     })

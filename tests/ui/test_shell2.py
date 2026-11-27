@@ -295,6 +295,10 @@ def test_v2_home_page(ui):
     assert len(_plain(home.property("activeProjects"))) == 2
     # Лента уведомлений (D-115): элементы приходят из notificationsOverview
     assert len(_plain(home.property("notifItems"))) > 0
+    # Полоса рабочего дня (D-121): в демо-стенде день не начат — есть кнопка «Начать»
+    wd = _plain(home.property("workday"))
+    assert wd.get("status") is not None
+    assert next((i for i in ui.items("iconName") if i.property("objectName") == "homeWorkdayStart"), None) is not None
 
 
 def test_v2_palette_finds_objects(ui):
