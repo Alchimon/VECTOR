@@ -26,6 +26,19 @@ Rectangle {
                                        ? backend.kitCalc(object.id, 0, backend.dataRevision) : ({})
     readonly property var kitCalcVersions: (kitCalcData.versions || [])
 
+    // Ревизии РКД документа (D-126): статус согласования, автор, открытые замечания, действия
+    // контура (переходы по контракту docrev). Кэш-клиент, без запроса к серверу.
+    property var docRevisions: []
+    property bool docRevCanCreate: false
+    function reloadRevisions() {
+        if (kind === "document" && object) {
+            var rd = backend.documentRevisions(object.id)
+            docRevisions = rd.items || []
+            // can_create одинаков для всего документа (по роли в проекте), не зависит от ревизии.
+            docRevCanCreate = backend.revisionActions(docRevisions.length > 0 ? docRevisions[0].id : "").can_create === true
+        } else { docRevisions = []; docRevCanCreate = false }
+    }
+
     // Мини-предпросмотр содержимого офисного документа (концепт A, D-103): первые строки файла
     // без открытия редактора. Слот backend.documentPreview — асинхронный, ответ — queryDone.
     property var previewLines: []
@@ -76,8 +89,8 @@ Rectangle {
             discussOpen = r.open_count || 0
         } else { discussItems = []; discussOpen = 0 }
     }
-    onObjectChanged: { reloadPreview(); reloadDiscussion() }
-    Connections { target: backend; function onDataChanged() { insp.reloadDiscussion() } }
+    onObjectChanged: { reloadPreview(); reloadDiscussion(); reloadRevisions() }
+    Connections { target: backend; function onDataChanged() { insp.reloadDiscussion(); insp.reloadRevisions() } }
 
     // Последние версии документов проекта (D-116): плоский список по всем комплектам, новые сверху, до 10.
     readonly property var projDocVersions: {
@@ -323,7 +336,73 @@ Rectangle {
             ColumnLayout { visible: insp.inspectorTab === "versions" && insp.object !== null
                            Layout.fillWidth: true; spacing: Theme2.gap
 
+                // ---------- документ: ревизии РКД (D-126) — статус согласования у заказчика.
+                // Шифр ревизии задаёт инженер («REV A», «01»), он не совпадает с номером версии файла;
+                // переходы — по контракту docrev (кнопки видны по роли; решит сервер).
+                RowLayout { visible: insp.kind === "document" && insp.object !== null; Layout.fillWidth: true
+                    Text { text: "Ревизии РКД"; color: Theme2.textMuted; font.family: Theme2.family
+                           font.capitalization: Font.AllUppercase; font.letterSpacing: 1.0; font.weight: Font.DemiBold
+                           font.pixelSize: Theme2.fsXs; Layout.fillWidth: true }
+                    VButton { objectName: "inspNewRevision"; visible: insp.docRevCanCreate
+                              text: "Новая ревизия"; iconName: "plus"; implicitHeight: 28
+                              tip: "Шифр ревизии (например «02», «REV A») — для заказчика; внутри она ссылается на версию файла"
+                              enabled: backend.online
+                              onClicked: revForm2.ask() }
+                }
+                Repeater {
+                    model: insp.kind === "document" ? insp.docRevisions : []
+                    delegate: Rectangle {
+                        Layout.fillWidth: true; radius: Theme2.radiusS
+                        color: Theme2.surfaceAlt
+                        implicitHeight: revCol.implicitHeight + 16
+                        ColumnLayout { id: revCol
+                            anchors { left: parent.left; right: parent.right; top: parent.top; margins: 8; leftMargin: 12; rightMargin: 12 }
+                            spacing: 4
+                            RowLayout { spacing: 8
+                                Text { text: "Ревизия " + modelData.label; color: Theme2.text
+                                       font.family: Theme2.family; font.pixelSize: Theme2.fsS; font.weight: Font.Bold }
+                                VChip { text: modelData.status_label
+                                        tone: modelData.status === "approved" ? "success"
+                                            : modelData.status === "sent" ? "info"
+                                            : modelData.status === "customer_comments" || modelData.status === "returned_to_engineer" ? "warning"
+                                            : "neutral" }
+                                Item { Layout.fillWidth: true }
+                                Text { visible: modelData.open_comments > 0
+                                       text: modelData.open_comments + " откр. замеч."; color: Theme2.warning
+                                       font.family: Theme2.family; font.pixelSize: Theme2.fsXs } }
+                            Text { text: modelData.author_name + " · " + modelData.created_label
+                                   color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+                            Text { visible: (modelData.note || "") !== ""; text: modelData.note
+                                   color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                                   wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                            Flow { spacing: 6; Layout.fillWidth: true
+                                Repeater {
+                                    model: backend.revisionActions(modelData.id).items
+                                    delegate: VButton {
+                                        objectName: "revAction"
+                                        text: modelData.label; kind: modelData.kind; implicitHeight: 28
+                                        enabled: backend.online
+                                        tip: modelData.needs_reason ? "Потребуется причина (основание)" : ""
+                                        onClicked: revTransForm2.ask(insp.docRevisions[index], modelData.to,
+                                                                     modelData.label, modelData.needs_reason,
+                                                                     backend.revisionActions(insp.docRevisions[index].id).version || 1)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Text { visible: insp.kind === "document" && insp.object && insp.docRevisions.length === 0
+                       text: "Ревизий РКД ещё нет — шифр ревизии («01», «REV A») создаётся для отправки заказчику и не совпадает с номером версии файла."
+                       color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                       wrapMode: Text.WordWrap; Layout.fillWidth: true }
+
                 // ---------- документ: таймлайн файловых версий
+                Text { visible: insp.kind === "document" && insp.object && insp.docRevisions.length > 0; Layout.topMargin: 6
+                       text: "Версии файла"
+                       color: Theme2.textMuted; font.family: Theme2.family
+                       font.capitalization: Font.AllUppercase; font.letterSpacing: 1.0; font.weight: Font.DemiBold
+                       font.pixelSize: Theme2.fsXs }
                 Repeater {
                     model: insp.kind === "document" && insp.object ? insp.object.versions || [] : []
                     delegate: RowLayout {
@@ -606,6 +685,76 @@ Rectangle {
                 editForm2.working = false
                 if (r.status === "accepted") editForm2.close()
                 else editForm2.error = r.message_ru || "Карточка не изменена."
+            }
+        }
+    }
+
+    // ---------- диалог «Новая ревизия» (D-126): шифр ревизии + привязка к версии файла (docrev.create).
+    // Можно офлайн (очередь): сервер при применении проверит уникальность шифра и версию файла.
+    FormDialog {
+        id: revForm2
+        objectName: "inspRevForm"
+        property string tag: "insp-rev-" + Math.random().toString(36).slice(2)
+        title: "Новая ревизия РКД"
+        subtitle: insp.object ? insp.object.code + " · " + insp.object.title : ""
+        note: "Шифр ревизии («01», «REV A») — внешний номер для заказчика, уникален в документе и не повышается при возврате на доработку. Ревизия ссылается на конкретную версию файла."
+        confirmText: "Создать"
+        canConfirm: rLabel2.text.trim() !== "" && rVer2.currentIndex >= 0 && (insp.object ? (insp.object.versions || []).length > 0 : false)
+        function ask() { rLabel2.text = ""; rNote2.text = ""; rVer2.currentIndex = 0; open() }
+        onConfirmed: { working = true; error = ""
+            var vers = insp.object ? (insp.object.versions || []) : []
+            backend.execute(revForm2.tag, "docrev.create", ({ id: backend.newId(), document_id: insp.object.id,
+                label: rLabel2.text.trim(), doc_version_id: vers[rVer2.currentIndex].id,
+                note: rNote2.text.trim() }), 0) }
+        VField { id: rLabel2; label: "Шифр ревизии"; required: true; placeholder: "Например: 01 или REV A" }
+        VSelect { id: rVer2; label: "Версия файла"
+                  model: insp.object ? (insp.object.versions || []).map(function(v) {
+                      return { id: v.id, label: "Версия " + v.version_no + " · " + (v.file_name || "") } }) : [] }
+        VField { id: rNote2; label: "Примечание"; placeholder: "Состав изменений, основание" }
+        Connections {
+            target: backend
+            function onCommandDone(t, r) {
+                if (t !== revForm2.tag) return
+                revForm2.working = false
+                if (r.status === "accepted") revForm2.close()
+                else revForm2.error = r.message_ru || "Ревизия не создана."
+            }
+        }
+    }
+
+    // ---------- диалог «Переход ревизии» (D-126): смена статуса по контракту docrev; причина —
+    // когда контракт требует (возврат на доработку, отзыв разрешения, согласование заказчиком).
+    FormDialog {
+        id: revTransForm2
+        objectName: "inspRevTransForm"
+        property var rev: null
+        property string toStatus: ""
+        property string actionLabel: ""
+        property bool reasonRequired: false
+        property int revVersion: 1
+        property string tag: "insp-revtr-" + Math.random().toString(36).slice(2)
+        title: revTransForm2.actionLabel
+        subtitle: revTransForm2.rev ? "Ревизия " + revTransForm2.rev.label + " · " + (revTransForm2.rev.status_label || "") : ""
+        note: revTransForm2.reasonRequired ? "Причина обязательна: она попадёт в журнал проекта и уведомление автору."
+                             : "Переход выполняется по контракту документооборота РКД; сервер проверит права и версию."
+        confirmText: "Подтвердить"
+        canConfirm: (!revTransForm2.reasonRequired || trReason2.text.trim() !== "") && backend.online
+        function ask(r, to, label, needReason, ver) {
+            rev = r; toStatus = to; actionLabel = label; reasonRequired = needReason; revVersion = ver
+            trReason2.text = ""; open()
+        }
+        onConfirmed: { working = true; error = ""
+            backend.execute(tag, "docrev.transition", ({ id: revTransForm2.rev.id, to: revTransForm2.toStatus,
+                reason: trReason2.text.trim() }), revTransForm2.revVersion) }
+        VField { id: trReason2; label: revTransForm2.reasonRequired ? "Причина (обязательно)" : "Причина (если нужна)"
+                 required: revTransForm2.reasonRequired; placeholder: "Например: письмо № 45-12 от 12.11" }
+        Connections {
+            target: backend
+            function onCommandDone(t, r) {
+                if (t !== revTransForm2.tag) return
+                revTransForm2.working = false
+                if (r.status === "accepted") revTransForm2.close()
+                else revTransForm2.error = r.message_ru || "Переход не выполнен."
             }
         }
     }

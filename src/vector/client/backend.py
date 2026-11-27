@@ -643,6 +643,74 @@ class Backend(QObject):
         return qml_safe({"items": items, "open_count": sum(1 for i in items if i["open"])})
 
     @Slot(str, result="QVariantMap")
+    def documentRevisions(self, document_id: str) -> dict:
+        """Ревизии РКД документа для инспектора 2.0 (D-126): статус, автор, время, открытые замечания.
+
+        Из клиентского снимка (document_revisions/comments), без запроса к серверу.
+        """
+        st = self._stock
+        comments = st.get("document_comments") or []
+        items = []
+        for r in st.get("document_revisions") or []:
+            if r.get("document_id") != document_id:
+                continue
+            open_c = sum(1 for c in comments if c.get("revision_id") == r["id"] and c.get("status") == "open")
+            items.append({
+                "id": r["id"], "label": r.get("label", ""), "status": r.get("status") or "",
+                "status_label": r.get("status_label") or r.get("status") or "—",
+                "note": r.get("note") or "",
+                "author_name": self._people.get(r.get("created_by") or "", "—"),
+                "created_label": (r.get("created_at") or "")[:16].replace("T", " "),
+                "open_comments": open_c,
+            })
+        items.sort(key=lambda i: i["label"], reverse=True)
+        return qml_safe({"items": items})
+
+    @Slot(str, result="QVariantMap")
+    def revisionActions(self, revision_id: str) -> dict:
+        """Доступные действия над ревизией РКД (D-126): переходы контракта docrev по ролям и статусу.
+
+        Правила переходов берём из contracts/workflows (docrev), права — как на сервере
+        (docrev.review — решения РП проекта; docrev.transition — авторская сторона). Сервер при
+        применении всё перепроверит; без данных о ролях кнопки не показываем.
+        """
+        from vector.core import rkd as rk
+        st = self._stock
+        rev = next((r for r in st.get("document_revisions") or [] if r.get("id") == revision_id), None)
+        if rev is None:
+            return qml_safe({"items": [], "can_create": False})
+        docs = {d["id"]: d for d in self._data.get("document", [])}
+        doc = docs.get(rev.get("document_id"))
+        kits = {k["id"]: k for k in self._data.get("kit", [])}
+        pid = (kits.get(doc["kit_id"]) or {}).get("project_id") if doc else None
+        if not pid:
+            return qml_safe({"items": [], "can_create": False})
+        wf = rk.revision_workflow(self.contracts.workflows)
+        transitions = wf.get("transitions", {})
+        # Права: решения проверки — РП/ГИП проекта, авторские переходы — любая роль проекта.
+        rp = self._has_project_role(pid, ("rp",))
+        author_side = self._has_project_role(pid, ("gip", "rp", "participant")) or not self._assignments_known(pid)
+        if not self._assignments_known(pid):
+            rp = True  # как kitCalc: роли ещё не загружены — показываем, решит сервер
+        btn_label = {"ready_for_rp": "Передать на проверку", "returned_to_engineer": "Вернуть на доработку",
+                     "ready_to_transmit": "Разрешить к отправке", "in_work": "Взять в работу",
+                     "revision_in_work": "Начать доработку", "approved": "Зарегистрировать согласование"}
+        items = []
+        for to in transitions.get(rev.get("status") or "", ()):
+            if to in rk.SYSTEM_ONLY_TARGETS:
+                continue  # sent/customer_comments ставят transmittal.create / comment.add — не кнопкой
+            reviewer = to in rk.REVIEW_TARGETS or ((rev.get("status") or ""), to) == ("ready_to_transmit", "in_work")
+            if reviewer and not rp:
+                continue
+            if not reviewer and not author_side:
+                continue
+            items.append({"to": to, "label": btn_label.get(to, wf["labels_ru"].get(to, to)),
+                          "needs_reason": rk.needs_reason(self.contracts.workflows, rev["status"], to),
+                          "kind": "primary" if to in ("ready_for_rp", "ready_to_transmit", "revision_in_work",
+                                                      "approved") else "soft"})
+        return qml_safe({"items": items, "can_create": author_side, "version": rev.get("version", 1)})
+
+    @Slot(str, result="QVariantMap")
     def kitDiscussion(self, kit_id: str) -> dict:
         """Вкладка «Обсуждение» комплекта 2.0 (D-122): замечания ревизий по всем документам комплекта.
 

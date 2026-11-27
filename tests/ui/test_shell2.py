@@ -369,6 +369,49 @@ def test_v2_document_discussion(ui):
     assert _plain(insp.property("discussItems")) == []
 
 
+def test_v2_document_revisions_contour(ui):
+    """Вкладка «Версии» документа 2.0 (D-126): ревизии РКД из кэша, действия контура по контракту docrev."""
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    doc = next(d for d in _plain(ui.backend.property("documents")) if d.get("code") == "АТХ-001")
+    from PySide6.QtCore import Q_ARG, QMetaObject, QObject
+    QMetaObject.invokeMethod(sh, "selectObject", Q_ARG("QVariant", "document"), Q_ARG("QVariant", doc))
+    ui.wait_idle()
+    insp = ui.find("inspector2")
+    insp.setProperty("inspectorTab", "versions")
+    ui.wait_idle()
+    revs = _plain(insp.property("docRevisions"))
+    assert len(revs) == 1                       # демо: одна ревизия «01»
+    r = revs[0]
+    assert r["label"] == "01" and r["status"] == "sent"
+    assert r["status_label"] == "Отправлена заказчику"
+    assert r["open_comments"] == 0 and r["author_name"]
+    # Слот действий: у отправленной ревизии доступна регистрация согласования (с причиной)
+    acts = ui.backend.revisionActions(r["id"])
+    assert acts["items"] == [{"to": "approved", "label": "Зарегистрировать согласование",
+                              "needs_reason": True, "kind": "primary"}]
+    assert acts["can_create"] is True           # РП проекта
+    assert insp.property("docRevCanCreate") is True
+    # Диалог перехода: причина обязательна, подтверждение меняет статус
+    rf = ui.find("inspRevTransForm")
+    QMetaObject.invokeMethod(rf, "ask", Q_ARG("QVariant", r), Q_ARG("QVariant", "approved"),
+                             Q_ARG("QVariant", "Зарегистрировать согласование"), Q_ARG("QVariant", True),
+                             Q_ARG("QVariant", acts.get("version", 1)))
+    ui.wait_idle()
+    assert rf.property("visible") and rf.property("title") == "Зарегистрировать согласование"
+    assert not rf.property("canConfirm")        # причина пуста
+    fld = next(o for o in rf.findChildren(QObject)
+               if o.property("label") and "Причина" in (o.property("label") or ""))
+    fld.setProperty("text", "Письмо заказчика № 45-12 от 12.11")
+    ui.wait_idle()
+    assert rf.property("canConfirm")
+    QMetaObject.invokeMethod(rf, "confirmed")
+    ui.wait_idle()
+    assert rf.property("error") == "" and not rf.property("visible")
+    revs2 = ui.backend.documentRevisions(doc["id"])["items"]
+    assert revs2[0]["status"] == "approved"
+
+
 def test_v2_tab_stepping(ui):
     """Вкладки 2.0 (D-120): stepTab листает вкладки с зацикливанием (Ctrl+Tab)."""
     ui.login("a.smirnova")
