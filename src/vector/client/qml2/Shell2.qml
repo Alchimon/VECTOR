@@ -668,13 +668,15 @@ Item {
                                                 }
                                                 MouseArea { id: projNodeMa; anchors.fill: parent; hoverEnabled: true
                                                     cursorShape: Qt.PointingHandCursor
-                                                    onClicked: {
+                                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                                    onClicked: function(mouse) {
+                                                        if (mouse.button === Qt.RightButton) { treeMenu.openFor("project", treeProj.project.id, treeProj.project); return }
                                                         if (shell2.treeExpandedProject === treeProj.project.id) shell2.treeExpandedProject = ""
                                                         else shell2.treeExpandedProject = treeProj.project.id
                                                     }
                                                     onDoubleClicked: shell2.openObject("project", treeProj.project.id) }
                                                 VToolTip { visible: projNodeMa.containsMouse; text: treeProj.project.title
-                                                           + " — щелчок раскрывает, двойной щелчок открывает во вкладке" }
+                                                           + " — щелчок раскрывает, двойной щелчок открывает во вкладке, правый щелчок — меню" }
                                             }
                                             // --- дети: комплекты и документы (без учётных записей в корзине)
                                             Column {
@@ -698,7 +700,11 @@ Item {
                                                         }
                                                         MouseArea { id: kitNodeMa; anchors.fill: parent; hoverEnabled: true
                                                             cursorShape: Qt.PointingHandCursor
-                                                            onClicked: shell2.openObject("kit", kitNode.kit.id) }
+                                                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                                            onClicked: function(mouse) {
+                                                                if (mouse.button === Qt.RightButton) { treeMenu.openFor("kit", kitNode.kit.id, kitNode.kit); return }
+                                                                shell2.openObject("kit", kitNode.kit.id)
+                                                            } }
                                                         VToolTip { visible: kitNodeMa.containsMouse
                                                                    text: kitNode.kit.title + " — открыть комплект во вкладке" }
                                                     }
@@ -758,7 +764,11 @@ Item {
                                                         }
                                                         MouseArea { id: docNodeMa; anchors.fill: parent; hoverEnabled: true
                                                             cursorShape: Qt.PointingHandCursor
-                                                            onClicked: shell2.selectObject("document", docNode.doc)
+                                                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                                            onClicked: function(mouse) {
+                                                                if (mouse.button === Qt.RightButton) { treeMenu.openFor("document", docNode.doc.id, docNode.doc); return }
+                                                                shell2.selectObject("document", docNode.doc)
+                                                            }
                                                             onDoubleClicked: shell2.openDocument(docNode.doc) }
                                                         VToolTip { visible: docNodeMa.containsMouse
                                                                    text: docNode.doc.title + " — щелчок: предпросмотр, двойной щелчок: редактор" }
@@ -875,6 +885,27 @@ Item {
     // ---------- палитра команд и офисный редактор (документы из инспектора)
     CommandPalette2 { id: palette; commands: shell2.commandsCache }
     OfficeEditor { id: officeEd }
+
+    // ---------- контекстное меню дерева проектов (D-124): правый щелчок по узлу
+    Menu {
+        id: treeMenu
+        objectName: "treeMenu"
+        property string kind: ""
+        property string objId: ""
+        property var obj: null
+        function openFor(kind, id, obj) {
+            treeMenu.kind = kind; treeMenu.objId = id; treeMenu.obj = obj
+            treeMenu.popup()
+        }
+        MenuItem { text: treeMenu.kind === "document" ? "Открыть в редакторе" : "Открыть во вкладке"
+            onTriggered: treeMenu.kind === "document" ? shell2.openDocument(treeMenu.obj)
+                         : shell2.openObject(treeMenu.kind, treeMenu.objId) }
+        MenuItem { visible: treeMenu.kind === "document"; text: "Показать в инспекторе"
+            onTriggered: shell2.selectObject("document", treeMenu.obj) }
+        MenuItem { visible: treeMenu.kind === "project"; height: visible ? implicitHeight : 0
+                   text: shell2.treeExpandedProject === treeMenu.objId ? "Свернуть" : "Развернуть"
+            onTriggered: shell2.treeExpandedProject = shell2.treeExpandedProject === treeMenu.objId ? "" : treeMenu.objId }
+    }
 
     // ---------- диалоги рабочего дня и переподключения (те же, что в классике, — правила не меняются)
     FormDialog {
