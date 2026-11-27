@@ -159,10 +159,50 @@ ScrollView {
                     }
                 }
             }
+
+            // ---------- последние уведомления (D-115): полоса во всю ширину, щелчок ведёт в раздел события
+            Rectangle { Layout.leftMargin: 28; Layout.rightMargin: 28; Layout.bottomMargin: 28; Layout.fillWidth: true
+                        radius: Theme2.radiusL; color: Theme2.surface; border.color: Theme2.cardBorder
+                        implicitHeight: notifCol.implicitHeight + 24
+                ColumnLayout { id: notifCol; anchors { left: parent.left; right: parent.right; top: parent.top; margins: 12 } spacing: 8
+                    RowLayout { spacing: 8
+                        Icon { name: "bell"; size: 15; color: Theme2.warning }
+                        Text { text: "Последние уведомления"; color: Theme2.text; font.family: Theme2.family
+                               font.pixelSize: Theme2.fsM; font.weight: Font.DemiBold; Layout.fillWidth: true }
+                        Text { text: "Все…"; color: Theme2.primary; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                               MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                   onClicked: page.shell.go("notifications") } }
+                    }
+                    Repeater {
+                        model: page.notifItems.slice(0, 5)
+                        delegate: Rectangle {
+                            required property var modelData
+                            Layout.fillWidth: true; implicitHeight: nRow.implicitHeight + 12; radius: Theme2.radiusS
+                            color: nMa.containsMouse ? Theme2.hover : (modelData.unread ? Qt.alpha(Theme2.warning, 0.07) : Theme2.surfaceAlt)
+                            RowLayout { id: nRow; anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; margins: 8; leftMargin: 10; rightMargin: 10 } spacing: 10
+                                Rectangle { visible: modelData.unread; width: 7; height: 7; radius: 4; color: Theme2.warning }
+                                ColumnLayout { spacing: 1; Layout.fillWidth: true
+                                    Text { text: modelData.title || ""; color: Theme2.text; font.family: Theme2.family
+                                           font.pixelSize: Theme2.fsS; Layout.fillWidth: true; elide: Text.ElideRight
+                                           font.weight: modelData.unread ? Font.DemiBold : Font.Normal }
+                                    Text { text: (modelData.actor_name !== "" ? modelData.actor_name + " · " : "") + (modelData.when || "")
+                                           color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+                                }
+                                Icon { visible: (modelData.page || "") !== ""; name: "chevron-right"; size: 13; color: Theme2.textFaint }
+                            }
+                            MouseArea { id: nMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: if ((modelData.page || "") !== "") page.shell.go(modelData.page) }
+                        }
+                    }
+                    Text { visible: page.notifItems.length === 0; text: "Уведомлений нет."
+                           color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsS; Layout.fillWidth: true }
+                }
+            }
         }
     }
 
     // ---------- данные
+    readonly property var notifItems: backend.notificationsOverview.items || []
     readonly property var myOpenTasks: backend.tasks.filter(function(t) {
         return t.mine === true && (t.status === "open" || t.status === "in_progress")
     })
