@@ -642,6 +642,20 @@ class Backend(QObject):
         items.sort(key=lambda i: (i["revision_label"], i["seq"]), reverse=True)
         return qml_safe({"items": items, "open_count": sum(1 for i in items if i["open"])})
 
+    @Slot(str, result="QVariantMap")
+    def kitDiscussion(self, kit_id: str) -> dict:
+        """Вкладка «Обсуждение» комплекта 2.0 (D-122): замечания ревизий по всем документам комплекта.
+
+        Сборка из documentDiscussion каждого документа; у записей добавлен код документа.
+        """
+        items = []
+        for d in self._data.get("document", []):
+            if d.get("kit_id") != kit_id:
+                continue
+            for it in self.documentDiscussion(d["id"]).get("items", []):
+                items.append({**it, "doc_code": d.get("code", "")})
+        return qml_safe({"items": items, "open_count": sum(1 for i in items if i["open"])})
+
     @Slot("QVariantList", str, result="QVariantMap")
     def calcPreview(self, lines, currency: str) -> dict:
         """Проверка рабочей копии позиций в форме (без сервера): суммы, замечания по строкам, итог."""

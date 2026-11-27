@@ -360,8 +360,10 @@ def test_v2_document_discussion(ui):
     r = ui.backend.documentDiscussion(doc["id"])
     assert "items" in r and "open_count" in r
     assert _plain(insp.property("discussItems")) == []
-    # Для комплекта — заглушка: список пуст
+    # Для комплекта (D-122) — агрегат по его документам: тоже пусто, но слот отвечает нужной формой
     kit = next(k for k in _plain(ui.backend.property("kits")) if k["code"] == "АТХ")
+    r2 = ui.backend.kitDiscussion(kit["id"])
+    assert "items" in r2 and "open_count" in r2
     QMetaObject.invokeMethod(sh, "selectObject", Q_ARG("QVariant", "kit"), Q_ARG("QVariant", kit))
     ui.wait_idle()
     assert _plain(insp.property("discussItems")) == []
