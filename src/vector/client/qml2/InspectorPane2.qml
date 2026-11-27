@@ -63,6 +63,19 @@ Rectangle {
     Rectangle { anchors.left: parent.left; width: 1; height: parent.height; color: Theme2.border }
 
     readonly property var selKits: kind === "project" && object ? backend.kits.filter(k => k.project_id === object.id) : []
+    // Последние версии документов проекта (D-116): плоский список по всем комплектам, новые сверху, до 10.
+    readonly property var projDocVersions: {
+        if (kind !== "project" || object === null) return []
+        var out = []
+        selDocs.forEach(function(d) {
+            (d.versions || []).forEach(function(v) {
+                var o = Object.assign({}, v); o.doc_code = d.code; out.push(o)
+            })
+        })
+        out.sort(function(a, b) { return (a.created_at || "") > (b.created_at || "") ? -1 : 1 })
+        return out.slice(0, 10)
+    }
+
     // Команда проекта выбранного объекта (для формы «Новая задача»): участники назначений проекта.
     readonly property var selDocs: kind === "kit" && object ? backend.documents.filter(d => d.kit_id === object.id)
                                    : kind === "project" && object ? backend.documents.filter(d => (backend.kits.find(k => k.id === d.kit_id) || {}).project_id === object.id) : []
@@ -371,6 +384,34 @@ Rectangle {
                     Text { text: "Версии конкретного документа — в его инспекторе: выберите документ в дереве проекта слева."
                            color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
                            wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                }
+
+                // ---------- проект: последние версии документов проекта (D-116) — живая хронология
+                Text { visible: insp.kind === "project" && insp.projDocVersions.length > 0; Layout.topMargin: 8
+                       text: "Последние версии документов"
+                       color: Theme2.textMuted; font.family: Theme2.family
+                       font.capitalization: Font.AllUppercase; font.letterSpacing: 1.0; font.weight: Font.DemiBold
+                       font.pixelSize: Theme2.fsXs }
+                Repeater {
+                    model: insp.kind === "project" ? insp.projDocVersions : []
+                    delegate: RowLayout {
+                        Layout.fillWidth: true; spacing: 10
+                        Rectangle { width: 10; height: 10; radius: 5; Layout.alignment: Qt.AlignTop; Layout.topMargin: 4
+                                    color: index === 0 ? Theme2.success : Theme2.textFaint }
+                        ColumnLayout { spacing: 2; Layout.fillWidth: true
+                            RowLayout { spacing: 8
+                                Text { text: modelData.doc_code + " · версия " + modelData.version_no; color: Theme2.text
+                                       font.family: Theme2.family; font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold }
+                                Item { Layout.fillWidth: true }
+                                Text { text: modelData.size_label || ""; color: Theme2.textFaint
+                                       font.family: Theme2.mono; font.pixelSize: Theme2.fsXs } }
+                            Text { text: (modelData.author_name || "—") + " · " + (modelData.created_label || "")
+                                   color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+                            Text { visible: (modelData.comment || "") !== ""
+                                   text: "«" + modelData.comment + "»"
+                                   color: Theme2.text; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                                   font.italic: true; wrapMode: Text.WordWrap; Layout.fillWidth: true } }
+                    }
                 }
             }
 
