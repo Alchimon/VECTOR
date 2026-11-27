@@ -830,7 +830,7 @@ Item {
         }
 
         // ================= статус-бар
-        StatusBar2 { Layout.fillWidth: true }
+        StatusBar2 { Layout.fillWidth: true; shell: shell2 }
     }
 
     // ---------- компоненты вкладок

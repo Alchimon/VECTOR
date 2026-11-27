@@ -8,6 +8,7 @@ import "../qml"
 Rectangle {
     id: bar
     objectName: "statusBar2"
+    property var shell: null
     color: Theme2.sidebar
     implicitHeight: Theme2.statusBarH
     Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: Theme2.border }
@@ -39,12 +40,18 @@ Rectangle {
             Text { text: backend.problemCount > 0 ? "Проблемы: " + backend.problemCount : "В очереди: " + backend.pendingCount
                    color: backend.problemCount > 0 ? Theme2.danger : Theme2.warning
                    font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                   MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                       onClicked: if (bar.shell) bar.shell.go("sync") }
                    VTipArea { text: backend.problemCount > 0
-                              ? "Изменения, которые сервер отклонил, — разберите в разделе «Синхронизация»."
-                              : "Изменения ждут отправки — уйдут при синхронизации (F5)." } }
+                              ? "Изменения, которые сервер отклонил, — разберите в разделе «Синхронизация» (щелчок)."
+                              : "Изменения ждут отправки — уйдут при синхронизации (F5); щелчок открывает «Синхронизацию»." } }
         }
         Text { visible: backend.lastPull !== ""; text: "Обновлено " + backend.lastPull
-               color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+               color: pullMa.containsMouse ? Theme2.primary : Theme2.textFaint
+               font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+               MouseArea { id: pullMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                   onClicked: backend.syncNow() }
+               VTipArea { text: "Обновить данные сейчас (F5)" } }
         Item { Layout.fillWidth: true }
         RowLayout { spacing: 5; visible: bar.w.has_day === true
             Icon { name: "timer"; size: 13; color: bar.w.running === true ? Theme2.success : Theme2.textFaint }
