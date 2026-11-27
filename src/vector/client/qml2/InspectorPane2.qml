@@ -66,7 +66,11 @@ Rectangle {
     property var discussItems: []
     property int discussOpen: 0
     function reloadDiscussion() {
-        if (kind === "document" && object) {
+        if (kind === "kit" && object) {
+            var rk = backend.kitDiscussion(object.id)
+            discussItems = rk.items || []
+            discussOpen = rk.open_count || 0
+        } else if (kind === "document" && object) {
             var r = backend.documentDiscussion(object.id)
             discussItems = r.items || []
             discussOpen = r.open_count || 0
@@ -434,7 +438,7 @@ Rectangle {
 
                 // ---------- документ: замечания ревизий
                 Repeater {
-                    model: insp.kind === "document" ? insp.discussItems : []
+                    model: (insp.kind === "document" || insp.kind === "kit") ? insp.discussItems : []
                     delegate: Rectangle {
                         Layout.fillWidth: true; radius: Theme2.radiusS
                         color: modelData.open ? Qt.alpha(Theme2.warning, 0.07) : Theme2.surfaceAlt
@@ -446,7 +450,7 @@ Rectangle {
                                         tone: modelData.source === "customer" ? "warning" : "info" }
                                 VChip { visible: modelData.open; text: "Открыто"; tone: "warning" }
                                 Item { Layout.fillWidth: true }
-                                Text { text: "Рев. " + modelData.revision_label + (modelData.page !== "" ? " · лист " + modelData.page : "")
+                                Text { text: (modelData.doc_code ? modelData.doc_code + " · " : "") + "Рев. " + modelData.revision_label + (modelData.page !== "" ? " · лист " + modelData.page : "")
                                        color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs } }
                             Text { text: modelData.text; color: Theme2.text; font.family: Theme2.family
                                    font.pixelSize: Theme2.fsS; wrapMode: Text.WordWrap; Layout.fillWidth: true }
@@ -465,7 +469,7 @@ Rectangle {
                 }
 
                 // ---------- пустые состояния
-                ColumnLayout { visible: insp.kind === "document" && insp.discussItems.length === 0
+                ColumnLayout { visible: (insp.kind === "document" || insp.kind === "kit") && insp.discussItems.length === 0
                                Layout.fillWidth: true; spacing: 6; Layout.topMargin: 24
                     Icon { name: "message-circle"; size: 30; color: Theme2.textFaint; Layout.alignment: Qt.AlignHCenter }
                     Text { text: "Замечаний нет"; color: Theme2.textMuted; font.family: Theme2.family
@@ -474,7 +478,7 @@ Rectangle {
                            color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
                            wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
                 }
-                ColumnLayout { visible: insp.kind !== "document"
+                ColumnLayout { visible: insp.kind !== "document" && insp.kind !== "kit"
                                Layout.fillWidth: true; spacing: 6; Layout.topMargin: 24
                     Icon { name: "message-circle"; size: 30; color: Theme2.textFaint; Layout.alignment: Qt.AlignHCenter }
                     Text { text: "Пока пусто"; color: Theme2.textMuted; font.family: Theme2.family
