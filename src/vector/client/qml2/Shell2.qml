@@ -239,6 +239,22 @@ Item {
         for (var t = 0; t < openTabs.length; t++)
             add("Перейти: " + openTabs[t].title, "Открытая вкладка", openTabs[t].icon, "",
                 (function(key) { return function() { shell2.activateTab(key) } })(openTabs[t].key))
+        // D-110: объекты — проекты, комплекты, документы (щелчок открывает во вкладке).
+        for (var p = 0; p < backend.projects.length; p++) {
+            var pr = backend.projects[p]
+            add(pr.code + " · " + pr.title, "Проект", "folder-kanban", "",
+                (function(o) { return function() { shell2.openObject("project", o.id) } })(pr))
+        }
+        for (var k = 0; k < backend.kits.length; k++) {
+            var kt = backend.kits[k]
+            add(kt.code + " · " + kt.title, "Комплект", "layers", "",
+                (function(o) { return function() { shell2.openObject("kit", o.id) } })(kt))
+        }
+        for (var d = 0; d < backend.documents.length; d++) {
+            var dc = backend.documents[d]
+            add(dc.code + " · " + dc.title, "Документ", dc.kind === "sheet" ? "table" : "file-text", "",
+                (function(o) { return function() { shell2.selectObject("document", o); shell2.openDocument(o) } })(dc))
+        }
         return out
     }
 
