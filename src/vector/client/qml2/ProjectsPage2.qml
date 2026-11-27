@@ -18,7 +18,9 @@ Item {
         if (filter === "archive") return p.status === "archived"
         return true
     })
+    // Карточки — по коду убывания (свежие проекты сверху, D-123).
     readonly property var items: filtered.filter(p => search === "" || (p.code + " " + p.title + " " + (p.tender_title || "")).toLowerCase().indexOf(search.toLowerCase()) >= 0)
+                                         .slice().sort((a, b) => (a.code < b.code) ? 1 : -1)
 
     // Переход к проекту из другого раздела (например, из тендера) — сразу открываем его вкладку.
     function handleNavTarget() {
@@ -185,7 +187,10 @@ Item {
                 visible: page.items.length === 0
                 anchors.centerIn: parent; spacing: Theme2.gap
                 Icon { name: "folder-kanban"; size: 44; color: Theme2.textFaint; Layout.alignment: Qt.AlignHCenter }
-                Text { text: page.search !== "" ? "По запросу «" + page.search + "» ничего не найдено" : "Проектов пока нет"
+                Text { text: page.search !== "" ? "По запросу «" + page.search + "» ничего не найдено"
+                           : page.filter === "archive" ? "В архиве пусто — завершённые проекты появятся здесь"
+                           : page.filter === "all" ? "Проектов пока нет"
+                           : "Активных проектов нет — загляните в «Архив» или «Все»"
                        color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsM
                        font.weight: Font.DemiBold; Layout.alignment: Qt.AlignHCenter }
                 Text { text: "Проект появляется после действия «Начать РКД» по выигранному тендеру — или когда вас назначат в проект."
