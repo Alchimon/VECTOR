@@ -306,3 +306,17 @@ def test_v2_palette_finds_objects(ui):
     assert any("ПАЗ цеха" in l for l in labels)                       # проект
     assert any(l.startswith("АТХ ·") for l in labels)                 # комплект
     assert any("АТХ-001" in l for l in labels)                        # документ
+
+
+def test_v2_kit_inspector_new_document(ui):
+    """Инспектор комплекта 2.0 (D-112): кнопка «Новый документ» и форма создания карточки."""
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    kit = next(k for k in _plain(ui.backend.property("kits")) if k["code"] == "АТХ")
+    from PySide6.QtCore import Q_ARG, QMetaObject, QObject
+    QMetaObject.invokeMethod(sh, "selectObject", Q_ARG("QVariant", "kit"), Q_ARG("QVariant", kit))
+    ui.wait_idle()
+    insp = ui.find("inspector2")
+    btn = insp.findChild(QObject, "inspNewDoc")
+    assert btn is not None and btn.property("visible") is True
+    assert insp.findChild(QObject, "inspDocForm") is not None
