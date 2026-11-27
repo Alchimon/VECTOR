@@ -42,7 +42,6 @@ Rectangle {
         if (!backend.online) { previewNote = "Предпросмотр требует связи с сервером."; return }
         backend.documentPreview("inspPreview", object.id, object.current_version_no)
     }
-    onObjectChanged: reloadPreview()
     Connections {
         target: backend
         function onQueryDone(t, res) {
@@ -63,6 +62,19 @@ Rectangle {
     Rectangle { anchors.left: parent.left; width: 1; height: parent.height; color: Theme2.border }
 
     readonly property var selKits: kind === "project" && object ? backend.kits.filter(k => k.project_id === object.id) : []
+    // ---------- вкладка «Обсуждение» документа (D-118): замечания ревизий РКД из клиентского кэша.
+    property var discussItems: []
+    property int discussOpen: 0
+    function reloadDiscussion() {
+        if (kind === "document" && object) {
+            var r = backend.documentDiscussion(object.id)
+            discussItems = r.items || []
+            discussOpen = r.open_count || 0
+        } else { discussItems = []; discussOpen = 0 }
+    }
+    onObjectChanged: { reloadPreview(); reloadDiscussion() }
+    Connections { target: backend; function onDataChanged() { insp.reloadDiscussion() } }
+
     // Последние версии документов проекта (D-116): плоский список по всем комплектам, новые сверху, до 10.
     readonly property var projDocVersions: {
         if (kind !== "project" || object === null) return []
@@ -415,10 +427,55 @@ Rectangle {
                 }
             }
 
-            // ================= ВКЛАДКА «ОБСУЖДЕНИЕ» (концепт B, D-101): комментарии к объекту.
+            // ================= ВКЛАДКА «ОБСУЖДЕНИЕ» (концепт B, D-101): замечания и ответы.
+            // Для документа — настоящие замечания ревизий РКД (D-118); проект/комплект — заглушка.
             ColumnLayout { visible: insp.inspectorTab === "discuss" && insp.object !== null
                            Layout.fillWidth: true; spacing: Theme2.gap
-                ColumnLayout { Layout.fillWidth: true; spacing: 6; Layout.topMargin: 24
+
+                // ---------- документ: замечания ревизий
+                Repeater {
+                    model: insp.kind === "document" ? insp.discussItems : []
+                    delegate: Rectangle {
+                        Layout.fillWidth: true; radius: Theme2.radiusS
+                        color: modelData.open ? Qt.alpha(Theme2.warning, 0.07) : Theme2.surfaceAlt
+                        border.color: modelData.open ? Qt.alpha(Theme2.warning, 0.5) : "transparent"
+                        implicitHeight: cCol.implicitHeight + 16
+                        ColumnLayout { id: cCol; anchors { left: parent.left; right: parent.right; top: parent.top; margins: 8; leftMargin: 12; rightMargin: 12 } spacing: 4
+                            RowLayout { spacing: 8
+                                VChip { text: modelData.source_label + (modelData.external_ref !== "" ? " · " + modelData.external_ref : "")
+                                        tone: modelData.source === "customer" ? "warning" : "info" }
+                                VChip { visible: modelData.open; text: "Открыто"; tone: "warning" }
+                                Item { Layout.fillWidth: true }
+                                Text { text: "Рев. " + modelData.revision_label + (modelData.page !== "" ? " · лист " + modelData.page : "")
+                                       color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs } }
+                            Text { text: modelData.text; color: Theme2.text; font.family: Theme2.family
+                                   font.pixelSize: Theme2.fsS; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                            Text { text: modelData.author_name + " · " + modelData.created_label
+                                   color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+                            ColumnLayout { visible: modelData.response_text !== ""; spacing: 2; Layout.topMargin: 2
+                                Rectangle { Layout.fillWidth: true; height: 1; color: Theme2.border }
+                                Text { text: "Ответ: " + modelData.response_text; color: Theme2.textMuted
+                                       font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                                       wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                                Text { visible: modelData.response_author !== ""
+                                       text: modelData.response_author + " · " + modelData.response_label
+                                       color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs } }
+                        }
+                    }
+                }
+
+                // ---------- пустые состояния
+                ColumnLayout { visible: insp.kind === "document" && insp.discussItems.length === 0
+                               Layout.fillWidth: true; spacing: 6; Layout.topMargin: 24
+                    Icon { name: "message-circle"; size: 30; color: Theme2.textFaint; Layout.alignment: Qt.AlignHCenter }
+                    Text { text: "Замечаний нет"; color: Theme2.textMuted; font.family: Theme2.family
+                           font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold; Layout.alignment: Qt.AlignHCenter }
+                    Text { text: "Замечания появляются в ходе проверки ревизий (внутренние) и от заказчика (на отправленную ревизию) — в контуре РКД."
+                           color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                           wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
+                }
+                ColumnLayout { visible: insp.kind !== "document"
+                               Layout.fillWidth: true; spacing: 6; Layout.topMargin: 24
                     Icon { name: "message-circle"; size: 30; color: Theme2.textFaint; Layout.alignment: Qt.AlignHCenter }
                     Text { text: "Пока пусто"; color: Theme2.textMuted; font.family: Theme2.family
                            font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold; Layout.alignment: Qt.AlignHCenter }

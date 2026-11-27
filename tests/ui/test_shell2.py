@@ -341,3 +341,23 @@ def test_v2_project_versions_timeline(ui):
     assert len(rows) == 4                                    # 3 версии АТХ-001 + 1 версия АТХ-002
     assert rows[0]["version_no"] >= rows[-1]["version_no"]   # новые сверху
     assert rows[0]["doc_code"].startswith("АТХ")
+
+
+def test_v2_document_discussion(ui):
+    """Вкладка «Обсуждение» документа 2.0 (D-118): замечания ревизий РКД из клиентского кэша."""
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    doc = next(d for d in _plain(ui.backend.property("documents")) if d.get("code") == "АТХ-001")
+    from PySide6.QtCore import Q_ARG, QMetaObject
+    QMetaObject.invokeMethod(sh, "selectObject", Q_ARG("QVariant", "document"), Q_ARG("QVariant", doc))
+    ui.wait_idle()
+    insp = ui.find("inspector2")
+    # В демо у АТХ-001 замечаний нет — честный пустой список; слот отвечает нужной формой
+    r = ui.backend.documentDiscussion(doc["id"])
+    assert "items" in r and "open_count" in r
+    assert _plain(insp.property("discussItems")) == []
+    # Для комплекта — заглушка: список пуст
+    kit = next(k for k in _plain(ui.backend.property("kits")) if k["code"] == "АТХ")
+    QMetaObject.invokeMethod(sh, "selectObject", Q_ARG("QVariant", "kit"), Q_ARG("QVariant", kit))
+    ui.wait_idle()
+    assert _plain(insp.property("discussItems")) == []

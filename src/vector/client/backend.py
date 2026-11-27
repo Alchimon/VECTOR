@@ -606,6 +606,42 @@ class Backend(QObject):
         v["can_see_revisions"] = self._has_project_role(pid, ("gip", "rp")) or "accountant" in self._me.get("roles", [])
         return qml_safe(v)
 
+    @Slot(str, result="QVariantMap")
+    def documentDiscussion(self, document_id: str) -> dict:
+        """Вкладка «Обсуждение» документа 2.0 (D-118): замечания ревизий РКД этого документа с ответами.
+
+        Данные уже в клиентском снимке (stock: document_revisions/comments/responses) — запроса на
+        сервер не требуется. Каждая запись: ревизия, источник (внутреннее/заказчик с основанием),
+        текст, лист, статус, автор и время, ответ (кто и когда закрыл). Пусто — честная пометка в QML.
+        """
+        st = self._stock
+        revs = {r["id"]: r for r in st.get("document_revisions") or []}
+        doc_revs = {rid: r for rid, r in revs.items() if r.get("document_id") == document_id}
+        responses: dict[str, dict] = {}
+        for resp in st.get("document_comment_responses") or []:
+            responses.setdefault(resp["comment_id"], resp)
+        items = []
+        for c in st.get("document_comments") or []:
+            if c.get("revision_id") not in doc_revs:
+                continue
+            rev = doc_revs[c["revision_id"]]
+            resp = responses.get(c["id"])
+            items.append({
+                "id": c["id"], "revision_label": rev.get("label", ""), "seq": c.get("seq") or 0,
+                "source": c.get("source"),
+                "source_label": "Заказчик" if c.get("source") == "customer" else "Внутреннее",
+                "page": c.get("page") or "", "text": c.get("text") or "",
+                "external_ref": c.get("external_ref") or "",
+                "open": c.get("status") == "open",
+                "author_name": self._people.get(c.get("created_by") or "", "—"),
+                "created_label": (c.get("created_at") or "")[:16].replace("T", " "),
+                "response_text": (resp or {}).get("text") or "",
+                "response_author": self._people.get((resp or {}).get("created_by") or "", ""),
+                "response_label": ((resp or {}).get("created_at") or "")[:16].replace("T", " ") if resp else "",
+            })
+        items.sort(key=lambda i: (i["revision_label"], i["seq"]), reverse=True)
+        return qml_safe({"items": items, "open_count": sum(1 for i in items if i["open"])})
+
     @Slot("QVariantList", str, result="QVariantMap")
     def calcPreview(self, lines, currency: str) -> dict:
         """Проверка рабочей копии позиций в форме (без сервера): суммы, замечания по строкам, итог."""
