@@ -363,14 +363,19 @@ Item {
                         }
                     }
                 }
-                // Хлебные крошки: раздел → открытый объект
+                // Хлебные крошки: раздел (кликабелен, D-117) → открытый объект
                 RowLayout { spacing: 6; Layout.fillWidth: true
-                    Text { objectName: "crumbPage"; text: ({ customers: "Заказчики", tenders: "Тендеры и ТКП", leads: "Лиды",
+                    Text { objectName: "crumbPage"; text: ({ home: "Главная", customers: "Заказчики", tenders: "Тендеры и ТКП", leads: "Лиды",
                            projects: "Проекты", finance: "Итоги проектов", analytics: "Аналитика", worktime: "Рабочее время",
                            stock: "Склад", procurement: "Закупка", production: "Производство", products: "Изделия и паспорта",
                            quality: "Качество", sync: "Синхронизация", notifications: "Уведомления", delegations: "Замещения",
                            org: "Оргструктура", help: "Справка", admin: "Администрирование" })[shell2.page] || ""
-                           color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsS }
+                           color: crumbPageMa.containsMouse ? Theme2.primary : Theme2.textMuted
+                           font.family: Theme2.family; font.pixelSize: Theme2.fsS
+                           MouseArea { id: crumbPageMa; anchors.fill: parent; hoverEnabled: true
+                                       cursorShape: Qt.PointingHandCursor
+                                       onClicked: shell2.go(shell2.page) }
+                           VToolTip { visible: crumbPageMa.containsMouse; text: "Открыть раздел «" + parent.text + "»" } }
                     Text { visible: shell2.activeTab !== null && shell2.activeTab.kind !== "page"; text: "/"
                            color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsS }
                     Text { visible: shell2.activeTab !== null && shell2.activeTab.kind !== "page"
