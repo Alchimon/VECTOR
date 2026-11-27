@@ -32,6 +32,22 @@ ScrollView {
                        color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsS }
             }
 
+            // ---------- полоса внимания: просроченные задачи (D-111)
+            Rectangle { visible: page.overdueTasks.length > 0; Layout.leftMargin: 28; Layout.rightMargin: 28
+                        Layout.fillWidth: true; radius: Theme2.radiusL
+                        color: Qt.alpha(Theme2.warning, 0.10); border.color: Qt.alpha(Theme2.warning, 0.5)
+                        implicitHeight: overdueCol.implicitHeight + 18
+                ColumnLayout { id: overdueCol; anchors { left: parent.left; right: parent.right; top: parent.top; margins: 9; leftMargin: 14; rightMargin: 14 } spacing: 4
+                    RowLayout { spacing: 8
+                        Icon { name: "triangle-alert"; size: 15; color: Theme2.warning }
+                        Text { text: "Просрочено задач: " + page.overdueTasks.length + " — сроки прошли, нужно решение"
+                               color: Theme2.text; font.family: Theme2.family; font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold } }
+                    Text { text: page.overdueTasks.slice(0, 3).map(function(t) { return t.title + " (до " + t.due_date + ")" }).join(" · ")
+                           color: Theme2.textMuted; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                           elide: Text.ElideRight; Layout.fillWidth: true }
+                }
+            }
+
             // ---------- три сводные карточки
             RowLayout { Layout.leftMargin: 28; Layout.rightMargin: 28; spacing: Theme2.gap
                 Repeater {
@@ -95,7 +111,7 @@ ScrollView {
                                                color: modelData.status === "in_progress" ? Theme2.info : Theme2.textMuted
                                                font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
                                         Text { visible: (modelData.document_code || "") !== ""; text: modelData.document_code || ""
-                                               color: Theme2.textFaint; font.family: Theme2.familyMono; font.pixelSize: Theme2.fsXs }
+                                               color: Theme2.textFaint; font.family: Theme2.mono; font.pixelSize: Theme2.fsXs }
                                     }
                                 }
                                 MouseArea { id: taskMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
@@ -153,4 +169,9 @@ ScrollView {
     readonly property var activeProjects: backend.projects.filter(function(p) {
         return p.status === "rkd_in_progress" || p.status === "closing"
     })
+    // D-111: просроченные мои задачи (срок истёк до сегодня) — внимание на «Главной».
+    readonly property var overdueTasks: {
+        var today = new Date().toISOString().slice(0, 10)
+        return myOpenTasks.filter(function(t) { return (t.due_date || "") !== "" && t.due_date < today })
+    }
 }
