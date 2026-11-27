@@ -293,6 +293,8 @@ def test_v2_home_page(ui):
     # У a.smirnova (РП) в демо нет назначенных открытых задач — честный 0
     assert len(_plain(home.property("myOpenTasks"))) == 0
     assert len(_plain(home.property("activeProjects"))) == 2
+    # Лента уведомлений (D-115): элементы приходят из notificationsOverview
+    assert len(_plain(home.property("notifItems"))) > 0
 
 
 def test_v2_palette_finds_objects(ui):
