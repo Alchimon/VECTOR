@@ -196,7 +196,7 @@ Item {
         onOpened: { gReason.text = ""; gUntil.text = "" }
         onConfirmed: gCmd.run("admin.grant_role", { user_id: page.sel.id, role: gRole.currentValue, reason: gReason.text.trim(), valid_until: gUntil.text.trim() ? gUntil.text.trim() + "T23:59:59.000000Z" : null })
         VSelect { id: gRole; label: "Роль"; model: backend.roleOptions }
-        VField { id: gUntil; label: "Действует до (необязательно)"; placeholder: "ГГГГ-ММ-ДД"; error: text !== "" && !/^\d{4}-\d{2}-\d{2}$/.test(text.trim()) ? "Формат даты: ГГГГ-ММ-ДД." : ""; hint: "Для замещения на период отпуска и т. п." }
+        DateField { id: gUntil; label: "Действует до (необязательно)"; hint: "Для замещения на период отпуска и т. п." }
         VField { id: gReason; label: "Основание"; required: true; placeholder: "Приказ № …" }
     }
     Cmd { id: gCmd; dialog: grant; tag: "adm-grant" }

@@ -146,8 +146,7 @@ Popup {
             VSelect { id: vatSel; objectName: "poVatMode"; label: "Цены в счёте"; model: ed.ov.vat_modes || []; Layout.fillWidth: true
                       onCurrentIndexChanged: ed.editRev++ }
             VField { id: refField; label: "Счёт / КП поставщика"; placeholder: "Необязательно"; Layout.fillWidth: true }
-            VField { id: dateField; label: "Ожидаемая поставка (для справки)"; placeholder: "ГГГГ-ММ-ДД"; Layout.fillWidth: true
-                     error: text.trim() === "" || /^\d{4}-\d{2}-\d{2}$/.test(text.trim()) ? "" : "Дата в виде ГГГГ-ММ-ДД" }
+            DateField { id: dateField; label: "Ожидаемая поставка (для справки)"; Layout.fillWidth: true }
             VField { id: noteField; label: "Примечание"; placeholder: "Необязательно"; Layout.fillWidth: true }
             // Суммы из счёта поставщика — для сверки с расчётом (D-34); пусто — сверки нет.
             VField { id: invGross; objectName: "poInvoiceGross"; label: "Итого по счёту, с НДС"; placeholder: "Для сверки, необязательно"; Layout.fillWidth: true

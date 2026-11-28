@@ -71,8 +71,26 @@ Rectangle {
     }
 
     color: Theme2.surface
-    implicitWidth: Theme2.inspectorW
+    // Ширина инспектора: из настроек (D-135, перетаскивание разделителя), 0 — по умолчанию из плотности.
+    implicitWidth: backend.inspectorWidth > 0 ? backend.inspectorWidth : Theme2.inspectorW
     Rectangle { anchors.left: parent.left; width: 1; height: parent.height; color: Theme2.border }
+    // Разделитель «потянуть мышью» (D-135): вертикальная полоса у левого края; двойной щелчок — сброс.
+    MouseArea {
+        objectName: "inspectorResizer"
+        anchors.left: parent.left; anchors.top: parent.top; anchors.bottom: parent.bottom
+        width: 7; hoverEnabled: true
+        cursorShape: Qt.SplitHCursor
+        property real startX: 0
+        property real startW: 0
+        onPressed: function (m) { startX = m.x + insp.x; startW = insp.width }
+        onPositionChanged: function (m) {
+            if (!pressed) return
+            backend.inspectorWidth = startW + (startX - (m.x + insp.x))   // тянем влево — шире
+        }
+        onDoubleClicked: backend.resetLayout()
+        Rectangle { anchors.centerIn: parent; width: 1; height: parent.height; color: parent.containsMouse || parent.pressed ? Theme2.borderStrong : "transparent" }
+        Accessible.name: "Ширина панели предпросмотра: потяните мышью; двойной щелчок — сбросить раскладку"
+    }
 
     readonly property var selKits: kind === "project" && object ? backend.kits.filter(k => k.project_id === object.id) : []
     // ---------- вкладка «Обсуждение» документа (D-118): замечания ревизий РКД из клиентского кэша.

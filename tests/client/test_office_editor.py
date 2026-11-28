@@ -262,3 +262,40 @@ class TestOfficeLoadSlot:
         res = got["cmd"]
         assert res["status"] == "rejected"
         assert "не читается" in res["message_ru"] and "Ошибка клиента" not in res["message_ru"]
+
+
+class TestLayoutSettings:
+    """Ширина инспектора и «Сбросить раскладку» (D-135): настройка хранится в QSettings, сброс — к умолчанию."""
+
+    def _backend(self, tmp_path):
+        pytest.importorskip("PySide6.QtCore")
+        from PySide6.QtCore import QCoreApplication, QSettings
+
+        from vector.client.backend import Backend
+        QCoreApplication.instance() or QCoreApplication([])
+        return Backend(client_factory=lambda *a: None,
+                       settings=QSettings(str(tmp_path / "s.ini"), QSettings.Format.IniFormat),
+                       auto_timers=False)
+
+    def test_inspector_width_saved_and_reset(self, tmp_path):
+        be = self._backend(tmp_path)
+        assert be.inspectorWidth == 0                    # по умолчанию — из плотности интерфейса
+        be.inspectorWidth = 333
+        assert be.inspectorWidth == 333
+        be.inspectorWidth = 9000                         # за пределами допустимого — игнорируется
+        assert be.inspectorWidth == 333
+        # Пересозданный Backend на том же файле настроек видит сохранённую ширину.
+        be2 = self._backend(tmp_path)
+        assert be2.inspectorWidth == 333
+        be2.resetLayout()
+        assert be2.inspectorWidth == 0
+
+    def test_copy_text_uses_clipboard(self, tmp_path):
+        """copyText не падает без GUI-приложения; с QGuiApplication — пишет в буфер (полная проверка — UI-тест)."""
+        pytest.importorskip("PySide6.QtGui")
+        from PySide6.QtGui import QGuiApplication
+        inst = QGuiApplication.instance()                # в этой сессии мог быть создан QCoreApplication
+        be = self._backend(tmp_path)
+        be.copyText("АТХ-15.02")
+        if isinstance(inst, QGuiApplication):
+            assert inst.clipboard().text() == "АТХ-15.02"

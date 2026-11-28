@@ -504,3 +504,41 @@ def test_v2_tab_stepping(ui):
     QMetaObject.invokeMethod(sh, "stepTab", Q_ARG("QVariant", -1))     # назад — на последнюю
     ui.wait_idle()
     assert sh.property("activeTabKey") == "kit:" + ui.ids["kits"]["АТХ"]
+
+
+def test_v2_tab_context_menu_pin_and_close_others(ui):
+    """Меню вкладки (D-137): закрепить — вкладка переживает «закрыть другие» и «закрыть все»;
+    закрыть справа убирает только поздние; копирование шифра кладёт шифр в буфер обмена."""
+    from PySide6.QtCore import Q_ARG, QMetaObject
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    _open_object(sh, "project", ui.ids["project"])
+    _open_object(sh, "kit", ui.ids["kits"]["АТХ"])
+    ui.wait_idle()
+    proj_key = "project:" + ui.ids["project"]
+    kit_key = "kit:" + ui.ids["kits"]["АТХ"]
+    # Закрепить проект — массовые закрытия его не трогают.
+    QMetaObject.invokeMethod(sh, "togglePinTab", Q_ARG("QVariant", proj_key))
+    ui.wait_idle()
+    tabs = {t["key"]: t for t in _tabs(sh)}
+    assert tabs[proj_key]["pinned"] is True and tabs[kit_key]["pinned"] is False
+    # «Закрыть» закреплённой не срабатывает.
+    QMetaObject.invokeMethod(sh, "closeTab", Q_ARG("QVariant", proj_key))
+    ui.wait_idle()
+    assert len(_tabs(sh)) == 3
+    # «Закрыть другие» от закреплённого проекта: комплект ушёл, домашняя страница и проект остались.
+    QMetaObject.invokeMethod(sh, "closeOtherTabs", Q_ARG("QVariant", proj_key))
+    ui.wait_idle()
+    assert [t["key"] for t in _tabs(sh)] == ["page:home", proj_key]
+    # «Закрыть все»: закреплённый проект остался, активна живая вкладка.
+    _open_object(sh, "kit", ui.ids["kits"]["АТХ"])
+    ui.wait_idle()
+    QMetaObject.invokeMethod(sh, "closeAllTabs")
+    ui.wait_idle()
+    keys = [t["key"] for t in _tabs(sh)]
+    assert keys == ["page:home", proj_key]
+    assert sh.property("activeTabKey") in keys
+    # Копирование шифра вкладки — в буфер обмена.
+    QMetaObject.invokeMethod(sh, "copyTabCode", Q_ARG("QVariant", proj_key))
+    from PySide6.QtGui import QGuiApplication
+    assert "П-2026-014" in QGuiApplication.clipboard().text()

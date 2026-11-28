@@ -61,7 +61,7 @@ Item {
                        help: "circle-help", admin: "shield-check" })
         if (tabFor(key) === null)
             openTabs = openTabs.concat([{ key: key, kind: "page", id: p, title: titles[p] || p,
-                                          icon: icons[p] || "file-text", closable: openTabs.length > 0 }])
+                                          icon: icons[p] || "file-text", closable: openTabs.length > 0, pinned: false }])
         activateTab(key)
     }
     function openObject(kind, id) {
@@ -72,7 +72,7 @@ Item {
             if (obj === null || obj === undefined) return
             openTabs = openTabs.concat([{ key: key, kind: kind, id: id,
                 title: (obj.code ? obj.code : obj.title || ""), icon: kind === "project" ? "folder-kanban" : "layers",
-                closable: true }])
+                closable: true, pinned: false }])
         }
         activateTab(key)
     }
@@ -84,11 +84,34 @@ Item {
     }
     function closeTab(key) {
         var t = tabFor(key)
-        if (t === null || t.closable !== true) return
+        if (t === null || t.closable !== true || t.pinned === true) return   // закреплённую — сначала открепить
         var idx = openTabs.findIndex(x => x.key === key)
         openTabs = openTabs.filter(x => x.key !== key)
         if (activeTabKey === key)
             activateTab(openTabs.length > 0 ? openTabs[Math.max(0, idx - 1)].key : "")
+    }
+    // ---------- контекстное меню вкладок (D-137): закрыть другие/справа/все, закрепить, копировать шифр.
+    // Закреплённые вкладки массовые закрытия не трогают (как в VS Code).
+    function togglePinTab(key) {
+        openTabs = openTabs.map(function (t) { if (t.key === key) t.pinned = !(t.pinned === true); return t })
+    }
+    function closeOtherTabs(key) {
+        openTabs = openTabs.filter(x => x.key === key || x.closable !== true || x.pinned === true)
+        if (tabFor(activeTabKey) === null) activateTab(key)
+    }
+    function closeTabsRight(key) {
+        var idx = openTabs.findIndex(x => x.key === key)
+        if (idx < 0) return
+        openTabs = openTabs.filter(function (x, i) { return i <= idx || x.closable !== true || x.pinned === true })
+        if (tabFor(activeTabKey) === null) activateTab(key)
+    }
+    function closeAllTabs() {
+        openTabs = openTabs.filter(x => x.closable !== true || x.pinned === true)
+        if (tabFor(activeTabKey) === null) activateTab(openTabs.length > 0 ? openTabs[0].key : "")
+    }
+    function copyTabCode(key) {
+        var t = tabFor(key)
+        if (t !== null) backend.copyText(t.title)          // шифр объекта — заголовок вкладки
     }
 
     // ---------- выбранный объект (инспектор справа)
@@ -173,6 +196,10 @@ Item {
                 A({ text: backend.uiDensity === "compact" ? "Уютно" : "Компактно", icon: "sliders-horizontal",
                     tip: "Плотность интерфейса: просторно или компактно (для небольших мониторов)",
                     run: function() { backend.uiDensity = backend.uiDensity === "compact" ? "cozy" : "compact" } }),
+                A({ text: "Сбросить раскладку", icon: "rotate-ccw",
+                    tip: "Ширина панели предпросмотра — по умолчанию (двойной щелчок по разделителю — то же самое)",
+                    visible: backend.inspectorWidth > 0,
+                    run: function() { backend.resetLayout() } }),
                 A({ text: "Классика", icon: "undo-2", tip: "Вернуться к привычному интерфейсу (выбор сохранится)",
                     run: function() { backend.uiMode = "classic" } }) ] } ]
         if (tab === "project") return [
@@ -598,6 +625,11 @@ Item {
                     activeKey: shell2.activeTabKey
                     onActivated: function(key) { shell2.activateTab(key) }
                     onCloseRequested: function(key) { shell2.closeTab(key) }
+                    onCloseOthersRequested: function(key) { shell2.closeOtherTabs(key) }
+                    onCloseRightRequested: function(key) { shell2.closeTabsRight(key) }
+                    onCloseAllRequested: shell2.closeAllTabs()
+                    onPinToggled: function(key) { shell2.togglePinTab(key) }
+                    onCopyCodeRequested: function(key) { shell2.copyTabCode(key) }
                 }
 
                 RowLayout {
@@ -905,6 +937,9 @@ Item {
         MenuItem { visible: treeMenu.kind === "project"; height: visible ? implicitHeight : 0
                    text: shell2.treeExpandedProject === treeMenu.objId ? "Свернуть" : "Развернуть"
             onTriggered: shell2.treeExpandedProject = shell2.treeExpandedProject === treeMenu.objId ? "" : treeMenu.objId }
+        MenuSeparator {}
+        MenuItem { objectName: "treeMenuCopyCode"; text: "Копировать шифр"
+            onTriggered: backend.copyText((treeMenu.obj && (treeMenu.obj.code || treeMenu.obj.title)) || treeMenu.objId) }
     }
 
     // ---------- диалоги рабочего дня и переподключения (те же, что в классике, — правила не меняются)

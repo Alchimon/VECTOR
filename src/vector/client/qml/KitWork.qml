@@ -112,6 +112,9 @@ ColumnLayout {
             Layout.fillWidth: true
             implicitHeight: tRow.implicitHeight + 24
             opacity: modelData.terminal ? 0.7 : 1
+            // Правый щелчок — контекстное меню задачи (D-137); левая кнопка и кнопки карточки работают как раньше.
+            MouseArea { anchors.fill: parent; z: 5; acceptedButtons: Qt.RightButton
+                        onClicked: taskMenu.openFor(taskCard.modelData) }
             ColumnLayout {
                 id: tRow
                 anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12
@@ -185,6 +188,9 @@ ColumnLayout {
             property bool expanded: modelData.versions.length > 0 && modelData.versions.length <= 3
             Layout.fillWidth: true
             implicitHeight: dCol.implicitHeight + 24
+            // Правый щелчок — контекстное меню документа (D-137): редактор, карточка, копирование шифра.
+            MouseArea { anchors.fill: parent; z: 5; acceptedButtons: Qt.RightButton
+                        onClicked: docMenu.openFor(docCard.modelData) }
             ColumnLayout {
                 id: dCol
                 anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12
@@ -294,12 +300,48 @@ ColumnLayout {
         VField { id: tDesc; label: "Подробности"; placeholder: "Необязательно" }
         VSelect { id: tWho; label: "Исполнитель"; model: kw.assigneeOptions
                   hint: kw.team.length === 0 ? "Список участников недоступен офлайн — назначьте позже." : "" }
-        VField { id: tDue; label: "Срок"; placeholder: "ГГГГ-ММ-ДД"
-                 // Формат проверяем сразу, саму дату (например 31 февраля) — сервер.
-                 error: text.trim() === "" || /^\d{4}-\d{2}-\d{2}$/.test(text.trim()) ? "" : "Формат даты: ГГГГ-ММ-ДД" }
+        // Срок — календарём (D-136): ввод даты с кнопкой-календарём и «Сегодня»/«+7 дней»/«Очистить».
+        DateField { id: tDue; label: "Срок" }
         VSelect { id: tDoc; label: "Документ"; model: kw.docOptions }
     }
     Cmd { id: tCmd; dialog: taskForm }
+
+    // ---------- контекстные меню карточек (D-137): правый щелчок по задаче или карточке документа.
+    Menu {
+        id: taskMenu
+        objectName: "taskMenu"
+        property var task: null
+        function openFor(t) { taskMenu.task = t; taskMenu.popup() }
+        MenuItem { text: "Изменить задачу"
+                   enabled: taskMenu.task !== null && taskMenu.task.version > 0 && !taskMenu.task.terminal
+                   onTriggered: taskForm.openEdit(taskMenu.task) }
+        MenuItem { text: "Копировать название"
+                   onTriggered: backend.copyText(taskMenu.task ? taskMenu.task.title : "") }
+        MenuItem { visible: taskMenu.task !== null && (taskMenu.task.document_code || "") !== ""
+                   height: visible ? implicitHeight : 0
+                   text: "Копировать шифр документа"
+                   onTriggered: backend.copyText(taskMenu.task ? taskMenu.task.document_code : "") }
+    }
+    Menu {
+        id: docMenu
+        objectName: "docMenu"
+        property var doc: null
+        readonly property bool officeFile: doc !== null && doc.versions && doc.versions.length > 0
+                                           && /\.(vsheetx|vdocx)$/.test(doc.versions[0].file_name || "")
+        function openFor(d) { docMenu.doc = d; docMenu.popup() }
+        MenuItem { text: "Открыть в редакторе ВЕКТОР"; visible: docMenu.officeFile
+                   height: visible ? implicitHeight : 0
+                   enabled: backend.online && docMenu.doc !== null && docMenu.doc.version > 0
+                   onTriggered: officeEd.openFor(docMenu.doc, docMenu.doc.current_version_no) }
+        MenuItem { text: "Изменить карточку документа"
+                   enabled: docMenu.doc !== null && docMenu.doc.version > 0
+                   onTriggered: docForm.openEdit(docMenu.doc) }
+        MenuSeparator {}
+        MenuItem { text: "Копировать шифр"
+                   onTriggered: backend.copyText(docMenu.doc ? docMenu.doc.code : "") }
+        MenuItem { text: "Копировать название"
+                   onTriggered: backend.copyText(docMenu.doc ? docMenu.doc.title : "") }
+    }
 
     FormDialog {
         id: trans

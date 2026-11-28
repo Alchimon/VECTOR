@@ -292,6 +292,8 @@ class Backend(QObject):
         # разделов. Плотность: «cozy» (просторно, базовый шрифт 15) или «compact» (13) — для старых мониторов.
         self._ui_mode = self._settings.value("ui/mode", "v2")
         self._ui_density = self._settings.value("ui/density", "cozy")
+        # Ширина инспектора (предпросмотр справа), px; 0 — по умолчанию из плотности (D-135).
+        self._inspector_width = int(self._settings.value("ui/inspector_width", 0) or 0)
         self._login_error = ""
         self._queue: list = []
         self._assignments: list = []
@@ -425,6 +427,36 @@ class Backend(QObject):
             self._ui_density = v
             self._settings.setValue("ui/density", v)
             self.changed.emit()
+
+    @Property(int, notify=changed)
+    def inspectorWidth(self):
+        """Ширина панели инспектора (предпросмотра справа), px; 0 — по умолчанию из плотности (D-135)."""
+        return self._inspector_width
+
+    @inspectorWidth.setter
+    def inspectorWidth(self, v):
+        """Запомнить ширину инспектора (перетаскивание разделителя); 240–560 px, иначе — к значению по умолчанию."""
+        v = int(v or 0)
+        if v and not (240 <= v <= 560):
+            return
+        if v != self._inspector_width:
+            self._inspector_width = v
+            self._settings.setValue("ui/inspector_width", v)
+            self.changed.emit()
+
+    @Slot()
+    def resetLayout(self):
+        """«Сбросить раскладку» (D-135): ширина инспектора — по умолчанию из плотности интерфейса."""
+        self.inspectorWidth = 0
+
+    @Slot(str)
+    def copyText(self, text: str):
+        """Скопировать текст в буфер обмена (D-137: «копировать шифр» в меню вкладок/дерева, ячейки таблиц).
+        Без GUI-приложения (консольный Backend в инструментах) — тихо ничего не делает."""
+        from PySide6.QtGui import QGuiApplication
+        app = QGuiApplication.instance()
+        if isinstance(app, QGuiApplication):
+            app.clipboard().setText(text or "")
 
     @Property(str, constant=True)
     def version(self):
