@@ -96,6 +96,13 @@ Rectangle {
     // ---------- вкладка «Обсуждение» документа (D-118): замечания ревизий РКД из клиентского кэша.
     property var discussItems: []
     property int discussOpen: 0
+    // ---------- общие комментарии объекта с @упоминаниями (P3-2) — для любого вида объекта.
+    property var commentItems: []
+    property bool commentCanAdd: false
+    property bool commentCanModerate: false
+    property string replyToId: ""
+    property string replyToName: ""
+    property string mentionQuery: ""
     function reloadDiscussion() {
         if (kind === "kit" && object) {
             var rk = backend.kitDiscussion(object.id)
@@ -106,6 +113,33 @@ Rectangle {
             discussItems = r.items || []
             discussOpen = r.open_count || 0
         } else { discussItems = []; discussOpen = 0 }
+        if (object) {
+            var oc = backend.objectDiscussion(kind, object.id)
+            commentItems = oc.items || []
+            commentCanAdd = oc.can_add === true
+            commentCanModerate = oc.can_moderate === true
+        } else { commentItems = []; commentCanAdd = false; commentCanModerate = false }
+    }
+    // Автодополнение @упоминания: фрагмент после последнего «@» фильтрует справочник людей.
+    function updateMention() {
+        var t = commentInput.text, i = t.lastIndexOf("@")
+        if (i < 0) { mentionQuery = ""; return }
+        var frag = t.substring(i + 1)
+        mentionQuery = (frag.length <= 30 && frag.indexOf("\n") < 0 && frag.indexOf("@") < 0) ? frag : ""
+    }
+    function applyMention(name) {
+        var t = commentInput.text, i = t.lastIndexOf("@")
+        commentInput.text = t.substring(0, i) + "@" + name + " "
+        mentionQuery = ""
+        commentInput.forceActiveFocus()
+    }
+    readonly property var mentionOptions: {
+        if (mentionQuery === "") return []
+        var q = mentionQuery.toLowerCase(), out = []
+        backend.people.forEach(function(p) {
+            if (out.length < 5 && p.display_name.toLowerCase().indexOf(q) >= 0) out.push(p)
+        })
+        return out
     }
     onObjectChanged: { reloadPreview(); reloadDiscussion(); reloadRevisions() }
     Connections { target: backend; function onDataChanged() { insp.reloadDiscussion(); insp.reloadRevisions() } }
@@ -565,7 +599,7 @@ Rectangle {
                     }
                 }
 
-                // ---------- пустые состояния
+                // ---------- пустое состояние замечаний РКД
                 ColumnLayout { visible: (insp.kind === "document" || insp.kind === "kit") && insp.discussItems.length === 0
                                Layout.fillWidth: true; spacing: 6; Layout.topMargin: 24
                     Icon { name: "message-circle"; size: 30; color: Theme2.textFaint; Layout.alignment: Qt.AlignHCenter }
@@ -575,14 +609,107 @@ Rectangle {
                            color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
                            wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
                 }
-                ColumnLayout { visible: insp.kind !== "document" && insp.kind !== "kit"
-                               Layout.fillWidth: true; spacing: 6; Layout.topMargin: 24
-                    Icon { name: "message-circle"; size: 30; color: Theme2.textFaint; Layout.alignment: Qt.AlignHCenter }
-                    Text { text: "Пока пусто"; color: Theme2.textMuted; font.family: Theme2.family
-                           font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold; Layout.alignment: Qt.AlignHCenter }
-                    Text { text: "Комментарии к объекту появятся с модулем согласований: отметки, решения и вопросы по месту — не в почте."
-                           color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
-                           wrapMode: Text.WordWrap; horizontalAlignment: Text.AlignHCenter; Layout.fillWidth: true }
+
+                // ================= КОММЕНТАРИИ (P3-2): треды и @упоминания к любому объекту.
+                RowLayout { Layout.topMargin: (insp.kind === "document" || insp.kind === "kit") ? 12 : 0
+                    Rectangle { width: 3; height: 16; radius: 1.5; color: Theme2.primary }
+                    Text { text: "Комментарии" + (insp.commentItems.length > 0 ? " · " + insp.commentItems.length : "")
+                           color: Theme2.text; font.family: Theme2.family; font.pixelSize: Theme2.fsS; font.weight: Font.DemiBold }
+                    Item { Layout.fillWidth: true }
+                }
+
+                Repeater {
+                    model: insp.commentItems
+                    delegate: Rectangle {
+                        Layout.fillWidth: true; Layout.leftMargin: modelData.depth * 20; radius: Theme2.radiusS
+                        color: modelData.deleted ? "transparent" : Theme2.surfaceAlt
+                        border.color: "transparent"
+                        implicitHeight: cmCol.implicitHeight + 16
+                        ColumnLayout { id: cmCol; anchors { left: parent.left; right: parent.right; top: parent.top; margins: 8; leftMargin: 12; rightMargin: 12 } spacing: 4
+                            RowLayout { spacing: 8
+                                Text { text: modelData.author_name; color: Theme2.text; font.family: Theme2.family
+                                       font.pixelSize: Theme2.fsXs; font.weight: Font.DemiBold }
+                                Text { visible: modelData.created_label !== ""; text: modelData.created_label
+                                       color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+                                VChip { visible: modelData.edited && !modelData.deleted; text: "изменён"; tone: "info" }
+                                VChip { visible: modelData.pending; text: "Отправляется"; tone: "warning"; iconName: "clock" }
+                                Item { Layout.fillWidth: true }
+                                VButton { visible: !modelData.deleted && !modelData.pending && insp.commentCanAdd
+                                          text: "Ответить"; kind: "ghost"; compact: true
+                                          onClicked: { insp.replyToId = modelData.id; insp.replyToName = modelData.author_name; commentInput.forceActiveFocus() } }
+                                VButton { visible: !modelData.deleted && !modelData.pending && modelData.mine
+                                          text: "Изменить"; kind: "ghost"; compact: true
+                                          onClicked: commentEditForm.ask(modelData) }
+                                VButton { visible: !modelData.deleted && !modelData.pending && (modelData.mine || insp.commentCanModerate)
+                                          text: "Удалить"; kind: "ghost"; compact: true
+                                          onClicked: commentDelForm.ask(modelData) }
+                            }
+                            Text { visible: modelData.deleted; text: "Комментарий удалён"
+                                   color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                                   font.italic: true }
+                            Text { visible: !modelData.deleted; text: modelData.body
+                                   color: Theme2.text; font.family: Theme2.family; font.pixelSize: Theme2.fsS
+                                   wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                            Text { visible: !modelData.deleted && modelData.mention_names.length > 0
+                                   text: "Упомянуты: " + modelData.mention_names.join(", ")
+                                   color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+                        }
+                    }
+                }
+
+                // ---------- пустое состояние комментариев
+                Text { visible: insp.commentItems.length === 0
+                       text: insp.commentCanAdd ? "Комментариев пока нет — начните обсуждение ниже."
+                                                : "Комментариев нет. Комментировать могут участники проекта."
+                       color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                       wrapMode: Text.WordWrap; Layout.fillWidth: true }
+
+                // ---------- форма нового комментария / ответа (P3-2)
+                ColumnLayout { visible: insp.commentCanAdd; Layout.fillWidth: true; spacing: 6
+                    Rectangle { visible: insp.replyToId !== ""; Layout.fillWidth: true; height: 26; radius: Theme2.radiusS
+                                color: Theme2.primarySoft
+                        RowLayout { anchors { fill: parent; leftMargin: 10; rightMargin: 6 } spacing: 8
+                            Text { text: "Ответ для: " + insp.replyToName; color: Theme2.primary
+                                   font.family: Theme2.family; font.pixelSize: Theme2.fsXs; Layout.fillWidth: true
+                                   elide: Text.ElideRight }
+                            VButton { text: "Отмена"; kind: "ghost"; compact: true
+                                      onClicked: { insp.replyToId = ""; insp.replyToName = "" } }
+                        }
+                    }
+                    ScrollView { Layout.fillWidth: true; Layout.preferredHeight: 64
+                        TextArea { id: commentInput; objectName: "commentInput"
+                                   placeholderText: "Комментарий… @Имя — упомянуть коллегу"
+                                   color: Theme2.text; font.family: Theme2.family; font.pixelSize: Theme2.fsS
+                                   wrapMode: TextEdit.Wrap; selectByMouse: true
+                                   onTextChanged: insp.updateMention()
+                                   background: Rectangle { radius: Theme2.radiusS; color: Theme2.surface
+                                                           border.color: commentInput.activeFocus ? Theme2.primary : Theme2.border } }
+                    }
+                    // Кандидаты для @упоминания (справочник людей, фильтр по фрагменту после «@»).
+                    Flow { visible: insp.mentionOptions.length > 0; Layout.fillWidth: true; spacing: 4
+                        Repeater {
+                            model: insp.mentionOptions
+                            delegate: Rectangle { radius: Theme2.radiusS; color: Theme2.surfaceAlt
+                                                  implicitWidth: mt.implicitWidth + 16; implicitHeight: 24
+                                Text { id: mt; anchors.centerIn: parent; text: "@" + modelData.display_name
+                                       color: Theme2.primary; font.family: Theme2.family; font.pixelSize: Theme2.fsXs }
+                                MouseArea { anchors.fill: parent; onClicked: insp.applyMention(modelData.display_name)
+                                            cursorShape: Qt.PointingHandCursor }
+                            }
+                        }
+                    }
+                    RowLayout { Layout.fillWidth: true
+                        Text { text: "Упомянутый получит уведомление. Упомянуть можно только участника проекта."
+                               color: Theme2.textFaint; font.family: Theme2.family; font.pixelSize: Theme2.fsXs
+                               wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                        VButton { text: "Отправить"; objectName: "commentSend"; iconName: "send"
+                                  enabled: commentInput.text.trim() !== ""
+                                  onClicked: {
+                                      backend.addComment("insp-comment-" + insp.kind, insp.kind, insp.object.id,
+                                                         commentInput.text.trim(), insp.replyToId)
+                                      commentInput.text = ""; insp.replyToId = ""; insp.replyToName = ""
+                                  } }
+                    }
                 }
             }
         }
@@ -773,6 +900,60 @@ Rectangle {
                 revTransForm2.working = false
                 if (r.status === "accepted") revTransForm2.close()
                 else revTransForm2.error = r.message_ru || "Переход не выполнен."
+            }
+        }
+    }
+
+    // ---------- диалог «Изменить комментарий» (P3-2): только автор, сервер пропускает в течение 24 часов.
+    FormDialog {
+        id: commentEditForm
+        objectName: "commentEditForm"
+        property var item: null
+        property string tag: "insp-comment-edit-" + Math.random().toString(36).slice(2)
+        title: "Изменить комментарий"
+        note: "Правка возможна в течение 24 часов после публикации; в ленте появится отметка «изменён»."
+        confirmText: "Сохранить"
+        canConfirm: ceText.text.trim() !== ""
+        function ask(c) { item = c; ceText.text = c.body; error = ""; open() }
+        onConfirmed: { working = true; error = ""
+                       backend.editComment(tag, item.id, ceText.text.trim(), item.version) }
+        ScrollView { Layout.fillWidth: true; Layout.preferredHeight: 90
+            TextArea { id: ceText; objectName: "commentEditText"; color: Theme2.text
+                       font.family: Theme2.family; font.pixelSize: Theme2.fs; wrapMode: TextEdit.Wrap; selectByMouse: true
+                       background: Rectangle { radius: Theme2.radiusS; color: Theme2.surface
+                                               border.color: ceText.activeFocus ? Theme2.primary : Theme2.border } } }
+        Connections {
+            target: backend
+            function onCommandDone(t, r) {
+                if (t !== commentEditForm.tag) return
+                commentEditForm.working = false
+                if (r.status === "accepted") commentEditForm.close()
+                else commentEditForm.error = r.message_ru || "Комментарий не изменён."
+            }
+        }
+    }
+
+    // ---------- подтверждение удаления комментария (P3-2): мягкое удаление, ответы остаются.
+    FormDialog {
+        id: commentDelForm
+        objectName: "commentDelForm"
+        property var item: null
+        property string tag: "insp-comment-del-" + Math.random().toString(36).slice(2)
+        title: "Удалить комментарий?"
+        subtitle: item ? item.author_name + " · " + item.created_label : ""
+        note: "Текст будет скрыт, в ленте останется отметка «Комментарий удалён»; ответы на него сохранятся."
+        confirmText: "Удалить"
+        confirmKind: "danger"
+        function ask(c) { item = c; error = ""; open() }
+        onConfirmed: { working = true; error = ""
+                       backend.deleteComment(tag, item.id, item.version) }
+        Connections {
+            target: backend
+            function onCommandDone(t, r) {
+                if (t !== commentDelForm.tag) return
+                commentDelForm.working = false
+                if (r.status === "accepted") commentDelForm.close()
+                else commentDelForm.error = r.message_ru || "Комментарий не удалён."
             }
         }
     }

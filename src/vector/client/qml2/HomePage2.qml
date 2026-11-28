@@ -219,7 +219,10 @@ ScrollView {
                                 Icon { visible: (modelData.page || "") !== ""; name: "chevron-right"; size: 13; color: Theme2.textFaint }
                             }
                             MouseArea { id: nMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                onClicked: if ((modelData.page || "") !== "") page.shell.go(modelData.page) }
+                                onClicked: {
+                                    if ((modelData.link || "") !== "") page.shell.openLink(modelData.link)
+                                    else if ((modelData.page || "") !== "") page.shell.go(modelData.page)
+                                } }
                         }
                     }
                     Text { visible: page.notifItems.length === 0; text: "Уведомлений нет."

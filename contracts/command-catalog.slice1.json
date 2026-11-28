@@ -1150,6 +1150,23 @@
    "offline": "online_required",
    "object": "office_doc",
    "label_ru": "Сформировать документ из шаблона (подстановка полей проекта)"
+  },
+  "discuss.add": {
+   "offline": "queued",
+   "object": "comment",
+   "label_ru": "Добавить комментарий"
+  },
+  "discuss.edit": {
+   "offline": "queued",
+   "object": "comment",
+   "label_ru": "Изменить комментарий",
+   "requires_expected_version": true
+  },
+  "discuss.delete": {
+   "offline": "queued",
+   "object": "comment",
+   "label_ru": "Удалить комментарий",
+   "requires_expected_version": true
   }
  },
  "queries": {

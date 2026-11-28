@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from PySide6.QtCore import Property, QObject, QSettings, QTimer, QUrl, Signal, Slot
 
@@ -248,7 +248,9 @@ class Backend(QObject):
                                        # Таймер рабочего дня (D-46): свои дни и запросы на фактическое начало дня.
                                        "workday": [], "workday_start_request": [],
                                        # D-47: запросы на фактическое окончание дня (забыли «Завершить»).
-                                       "workday_end_request": []}
+                                       "workday_end_request": [],
+                                       # Обсуждения объектов (P3-2): комментарии с тредами и @упоминаниями.
+                                       "comment": []}
         # Показать ли окно «Начните рабочий день» (D-46, A-49 п. 4) — считается в рабочем потоке со снимком. В тестах и
         # на стенде интерфейса (auto_timers=False) окно само не открывается, чтобы не закрывать экраны; включается
         # setWorkdayPromptAuto(True).
@@ -758,6 +760,89 @@ class Backend(QObject):
                 items.append({**it, "doc_code": d.get("code", "")})
         return qml_safe({"items": items, "open_count": sum(1 for i in items if i["open"])})
 
+    # ------------------------------------------------------------ обсуждения объектов (P3-2)
+
+    def _object_project_id(self, object_type: str, object_id: str) -> Optional[str]:
+        """Проект обсуждаемого объекта (для подсказки прав): проект — сам; комплект и задача хранят project_id;
+        документ — через свой комплект. Объекта нет в кэше (нет прав/не синхронизирован) → None."""
+        if object_type == "project":
+            return object_id
+        if object_type == "kit":
+            return self._name("kit", object_id, "project_id") or None
+        if object_type == "task":
+            return self._name("task", object_id, "project_id") or None
+        if object_type == "document":
+            kit_id = self._name("document", object_id, "kit_id")
+            return (self._name("kit", kit_id, "project_id") or None) if kit_id else None
+        return None
+
+    @Slot(str, str, result="QVariantMap")
+    def objectDiscussion(self, object_type: str, object_id: str) -> dict:
+        """Вкладка «Обсуждение» (P3-2): комментарии объекта (проект/комплект/документ/задача) с тредами.
+
+        Из клиентского снимка — без запроса к серверу; работает и без связи. Неотправленные (в очереди)
+        комментарии показываются с пометкой «Отправляется». Каждая запись: автор, текст (у удалённого — пусто,
+        в QML заглушка «Комментарий удалён»), время, «изменён», мой ли, версия (для правки/удаления), имена
+        упомянутых. Порядок — древо: корневые по времени, за каждым его ответы (depth — глубина отступа)."""
+        me = (self._me or {}).get("user_id") or ""
+        allc = [c for c in self._data.get("comment", [])
+                if c.get("object_type") == object_type and c.get("object_id") == object_id]
+        by_id = {c.get("id"): c for c in allc}
+        children: dict[str, list] = {}
+        roots = []
+        for c in allc:
+            pid = c.get("parent_id") or ""
+            if pid and pid in by_id:
+                children.setdefault(pid, []).append(c)
+            else:
+                roots.append(c)
+        # Локальная копия из очереди не имеет created_at — «отправляется», идёт в конец своего уровня.
+        key = lambda c: (c.get("created_at") or "9999", c.get("id") or "")  # noqa: E731
+
+        def view(c, depth) -> dict:
+            pending = not c.get("created_at")
+            author = c.get("author_id") or me
+            return {"id": c.get("id") or "", "parent_id": c.get("parent_id") or "", "depth": min(depth, 3),
+                    "author_name": self._people.get(author, "Вы"),
+                    "body": c.get("body") or "", "deleted": bool(c.get("deleted")),
+                    "edited": bool(c.get("edited_at")),
+                    "created_label": (c.get("created_at") or "")[:16].replace("T", " "),
+                    "pending": pending, "version": int(c.get("version") or 1),
+                    "mine": bool(author and author == me),
+                    "mention_names": [self._people.get(u, "—") for u in (c.get("mentions") or [])]}
+
+        items: list[dict] = []
+
+        def walk(c, depth):
+            items.append(view(c, depth))
+            for ch in sorted(children.get(c.get("id"), []), key=key):
+                walk(ch, depth + 1)
+
+        for r in sorted(roots, key=key):
+            walk(r, 0)
+        pid = self._object_project_id(object_type, object_id)
+        return qml_safe({"items": items, "count": sum(1 for i in items if not i["deleted"]),
+                         "can_add": bool(pid and self._has_project_role(pid, ("gip", "rp", "participant"))),
+                         "can_moderate": bool(pid and self._has_project_role(pid, ("gip", "rp")))})
+
+    @Slot(str, str, str, str, str)
+    def addComment(self, tag: str, object_type: str, object_id: str, body: str, parent_id: str):
+        """«Отправить» комментарий (discuss.add, можно офлайн — очередь). parent_id "" — корневой комментарий."""
+        payload = {"id": self.newId(), "object_type": object_type, "object_id": object_id, "body": body.strip()}
+        if parent_id:
+            payload["parent_id"] = parent_id
+        self.execute(tag, "discuss.add", payload, 0)
+
+    @Slot(str, str, str, int)
+    def editComment(self, tag: str, comment_id: str, body: str, version: int):
+        """«Сохранить» правку своего комментария (discuss.edit; сервер пропускает только автора в окне 24 ч)."""
+        self.execute(tag, "discuss.edit", {"id": comment_id, "body": body.strip()}, int(version))
+
+    @Slot(str, str, int)
+    def deleteComment(self, tag: str, comment_id: str, version: int):
+        """«Удалить» комментарий (discuss.delete; мягкое удаление — автор либо РП/ГИП проекта)."""
+        self.execute(tag, "discuss.delete", {"id": comment_id}, int(version))
+
     @Slot("QVariantList", str, result="QVariantMap")
     def calcPreview(self, lines, currency: str) -> dict:
         """Проверка рабочей копии позиций в форме (без сервера): суммы, замечания по строкам, итог."""
@@ -902,7 +987,10 @@ class Backend(QObject):
         """Раздел «Уведомления»: свои уведомления (новые сверху), число непрочитанных, можно ли отметить."""
         return qml_safe(notification_view.notifications_view(
             self._stock.get("notifications") or [], self._people, self._online and self._session_mode == "online",
-            datetime.now(UTC)))
+            datetime.now(UTC),
+            # Обсуждения (P3-2): уведомление ссылается на комментарий — «Открыть» ведёт на сам объект обсуждения.
+            links={c.get("id"): f"vector://{c.get('object_type')}/{c.get('object_id')}"
+                   for c in self._data.get("comment", []) if c.get("id")}))
 
     @Slot(str, str, result="QVariantMap")
     def transferDonors(self, item_id: str, to_project_id: str) -> dict:

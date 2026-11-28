@@ -572,3 +572,66 @@ def test_v2_internal_links_copy_and_open(ui):
     dlg = ui.find("linkDialog")
     assert dlg is not None and dlg.property("visible") and "не найден" in dlg.property("subtitle")
     dlg.close()
+def test_v2_object_comments_mentions(ui):
+    """Вкладка «Обсуждение» 2.0 (P3-2): общие комментарии к объекту — треды, @упоминания с автодополнением,
+    правка (своё, ≤24 ч) и мягкое удаление; уведомление упомянутого ведёт на объект (vector://)."""
+    from PySide6.QtCore import Q_ARG, QMetaObject
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    kit = next(k for k in _plain(ui.backend.property("kits")) if k["code"] == "АТХ")
+    QMetaObject.invokeMethod(sh, "selectObject", Q_ARG("QVariant", "kit"), Q_ARG("QVariant", kit))
+    ui.wait_idle()
+    insp = ui.find("inspector2")
+    insp.setProperty("inspectorTab", "discuss")
+    ui.wait_idle()
+    assert _plain(insp.property("commentItems")) == []
+    assert insp.property("commentCanAdd") is True
+    # Автодополнение @упоминания: фрагмент после «@» фильтрует справочник людей.
+    ci = ui.find("commentInput")
+    ci.setProperty("text", "Посмотрите марку кабеля, @Волк")
+    ui.wait_idle()
+    opts = _plain(insp.property("mentionOptions"))
+    assert [o["display_name"] for o in opts] == ["Волков Павел"]
+    QMetaObject.invokeMethod(insp, "applyMention", Q_ARG("QVariant", "Волков Павел"))
+    ui.wait_idle()
+    assert ci.property("text").endswith("@Волков Павел ")
+    # Отправка кнопкой (демо-стенд онлайн — сервер подтверждает сразу).
+    ui.click(ui.find("commentSend"))
+    items = _plain(insp.property("commentItems"))
+    assert len(items) == 1
+    c = items[0]
+    assert c["author_name"] == "Смирнова Анна" and c["mention_names"] == ["Волков Павел"]
+    assert c["pending"] is False and c["mine"] is True
+    # Ответ тредом (через backend, как кнопка «Ответить» под кнопкой формы).
+    ui.backend.addComment("ui-t", "kit", kit["id"], "Ответ по схеме", c["id"])
+    ui.wait_idle()
+    items = _plain(insp.property("commentItems"))
+    assert [i["id"] for i in items][:2] == [c["id"], items[1]["id"]]
+    assert items[1]["depth"] == 1 and items[1]["parent_id"] == c["id"]
+    # Правка своего комментария через диалог: отметка «изменён», версия выросла.
+    ef = ui.find("commentEditForm")
+    QMetaObject.invokeMethod(ef, "ask", Q_ARG("QVariant", c))
+    ui.wait_idle()
+    assert ef.property("visible") and ui.find("commentEditText").property("text") == c["body"]
+    ui.find("commentEditText").setProperty("text", "Марку кабеля проверил сам — всё верно")
+    QMetaObject.invokeMethod(ef, "confirmed")
+    ui.wait_idle()
+    assert not ef.property("visible")
+    items = _plain(insp.property("commentItems"))
+    assert items[0]["edited"] is True and items[0]["version"] == 2
+    assert items[0]["body"].startswith("Марку кабеля")
+    # Мягкое удаление: заглушка остаётся, тред не разваливается.
+    df = ui.find("commentDelForm")
+    QMetaObject.invokeMethod(df, "ask", Q_ARG("QVariant", items[0]))
+    ui.wait_idle()
+    assert df.property("visible")
+    QMetaObject.invokeMethod(df, "confirmed")
+    ui.wait_idle()
+    items = _plain(insp.property("commentItems"))
+    assert items[0]["deleted"] is True and items[0]["body"] == ""
+    assert items[1]["deleted"] is False and items[1]["parent_id"] == items[0]["id"]
+    # Уведомление упомянутого ведёт vector://-ссылкой на объект обсуждения (P3-1 + P3-2).
+    ui.login("p.volkov")
+    notes = _plain(ui.backend.property("notificationsOverview"))["items"]
+    mine = [n for n in notes if n.get("kind") == "mention"]
+    assert mine and mine[0]["link"] == "vector://kit/" + kit["id"]
