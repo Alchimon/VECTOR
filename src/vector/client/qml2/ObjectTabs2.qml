@@ -19,6 +19,7 @@ Rectangle {
     signal closeAllRequested()
     signal pinToggled(string key)
     signal copyCodeRequested(string key)
+    signal copyLinkRequested(string key)
 
     color: Theme2.sidebar
     implicitHeight: Theme2.tabsH
@@ -112,5 +113,9 @@ Rectangle {
                    onTriggered: tabs.pinToggled(tabMenu.key) }
         MenuItem { objectName: "tabMenuCopyCode"; text: "Копировать шифр"
                    onTriggered: tabs.copyCodeRequested(tabMenu.key) }
+        // Внутренняя ссылка vector://… (P3-1): для объектных вкладок (проект/комплект/документ).
+        MenuItem { objectName: "tabMenuCopyLink"; text: "Копировать ссылку"
+                   enabled: tabMenu.tabObj !== null && ["project", "kit", "document"].indexOf(tabMenu.tabObj.kind) >= 0
+                   onTriggered: tabs.copyLinkRequested(tabMenu.key) }
     }
 }

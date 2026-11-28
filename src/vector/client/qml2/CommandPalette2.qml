@@ -11,10 +11,18 @@ Popup {
     objectName: "commandPalette"
     property var commands: []            // [{label, hint, icon, run}]
     property string query: ""
+    // Обработчик внутренней ссылки (P3-1): оболочка передаёт Shell2.openLink; вставленная vector://… —
+    // первый результат «Перейти по ссылке».
+    property var linkHandler: null
+    readonly property bool isLink: /^vector:\/\/\S+$/.test(query.trim())
     readonly property var filtered: {
         var q = query.trim().toLowerCase()
-        if (q === "") return commands
-        return commands.filter(c => (c.label + " " + (c.hint || "")).toLowerCase().indexOf(q) >= 0)
+        var base = (q === "") ? commands
+            : commands.filter(c => (c.label + " " + (c.hint || "")).toLowerCase().indexOf(q) >= 0)
+        if (isLink && linkHandler !== null)
+            return [{ label: "Перейти по ссылке: " + query.trim(), hint: "Внутренняя ссылка ВЕКТОР на объект",
+                      icon: "link", run: function() { pal.linkHandler(query.trim()) } }].concat(base)
+        return base
     }
     property int current: 0
     signal picked(var cmd)

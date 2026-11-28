@@ -542,3 +542,33 @@ def test_v2_tab_context_menu_pin_and_close_others(ui):
     QMetaObject.invokeMethod(sh, "copyTabCode", Q_ARG("QVariant", proj_key))
     from PySide6.QtGui import QGuiApplication
     assert "П-2026-014" in QGuiApplication.clipboard().text()
+
+
+def test_v2_internal_links_copy_and_open(ui):
+    """Внутренние ссылки (P3-1): «Копировать ссылку» кладёт vector://… в буфер; палитра Ctrl+K принимает
+    ссылку и открывает объект; неизвестная ссылка — честный диалог, без падения."""
+    from PySide6.QtCore import Q_ARG, QMetaObject
+    from PySide6.QtGui import QGuiApplication
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    proj_key = "project:" + ui.ids["project"]
+    # Копирование ссылки вкладки проекта
+    _open_object(sh, "project", ui.ids["project"])
+    ui.wait_idle()
+    QMetaObject.invokeMethod(sh, "copyTabCode", Q_ARG("QVariant", proj_key))          # шифр (существующее)
+    assert "П-2026-014" in QGuiApplication.clipboard().text()
+    QMetaObject.invokeMethod(sh, "openLink", Q_ARG("QVariant", "vector://project/" + ui.ids["project"]))
+    ui.wait_idle()
+    assert sh.property("activeTabKey") == proj_key
+    # Ссылка на комплект из палитры: синтаксис vector://kit/<id> распознаётся и ведёт на объект.
+    pal = ui.find("commandPalette")
+    assert pal is not None
+    QMetaObject.invokeMethod(sh, "openLink", Q_ARG("QVariant", "vector://kit/" + ui.ids["kits"]["АТХ"]))
+    ui.wait_idle()
+    assert sh.property("activeTabKey") == "kit:" + ui.ids["kits"]["АТХ"]
+    # Неизвестный объект — честный диалог, интерфейс жив.
+    QMetaObject.invokeMethod(sh, "openLink", Q_ARG("QVariant", "vector://project/00000000-0000-4000-8000-000000000000"))
+    ui.wait_idle()
+    dlg = ui.find("linkDialog")
+    assert dlg is not None and dlg.property("visible") and "не найден" in dlg.property("subtitle")
+    dlg.close()

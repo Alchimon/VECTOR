@@ -113,6 +113,26 @@ Item {
         var t = tabFor(key)
         if (t !== null) backend.copyText(t.title)          // шифр объекта — заголовок вкладки
     }
+    // ---------- внутренние ссылки (P3-1): vector://project|kit|document|task/<id> — переход из палитры
+    // (Ctrl+K) и пункт «Копировать ссылку» в меню вкладок/дерева/карточек. Ссылка не зависит от адреса
+    // сервера: её можно вставить коллеге в письмо — у того откроется в его клиенте.
+    function linkFor(kind, id) { return "vector://" + kind + "/" + id }
+    function openLink(url) {
+        var m = /^vector:\/\/(project|kit|document|task)\/([0-9A-Za-z-]+)\s*$/.exec((url || "").trim())
+        if (m === null) { linkDlg.show("Это не внутренняя ссылка ВЕКТОР (ожидается vector://проект|комплект|документ|задача/…)."); return }
+        var kind = m[1], id = m[2]
+        if (kind === "project" || kind === "kit") {
+            var obj = kind === "project" ? backend.projects.find(p => p.id === id) : backend.kits.find(k => k.id === id)
+            if (obj) { openObject(kind, id); return }
+        } else if (kind === "document") {
+            var doc = backend.documents.find(d => d.id === id)
+            if (doc) { selectObject("document", doc); return }          // инспектор: свойства, версии, «Редактор»
+        } else if (kind === "task") {
+            var t = backend.tasks.find(x => x.id === id)
+            if (t && t.kit_id) { openObject("kit", t.kit_id); return }  // задача — во вкладке своего комплекта
+        }
+        linkDlg.show("Объект не найден в локальном кэше. Если он создан недавно — нажмите F5 (синхронизация) и повторите.")
+    }
 
     // ---------- выбранный объект (инспектор справа)
     property var selectedObject: null
@@ -630,6 +650,10 @@ Item {
                     onCloseAllRequested: shell2.closeAllTabs()
                     onPinToggled: function(key) { shell2.togglePinTab(key) }
                     onCopyCodeRequested: function(key) { shell2.copyTabCode(key) }
+                    onCopyLinkRequested: function(key) {
+                        var t = tabFor(key)
+                        if (t !== null) backend.copyText(shell2.linkFor(t.kind, t.id))
+                    }
                 }
 
                 RowLayout {
@@ -915,8 +939,20 @@ Item {
     Component { id: analyticsC; AnalyticsPage2 { shell: shell2 } }   // D-127: аналитика в стиле 2.0
 
     // ---------- палитра команд и офисный редактор (документы из инспектора)
-    CommandPalette2 { id: palette; commands: shell2.commandsCache }
+    CommandPalette2 { id: palette; commands: shell2.commandsCache
+                      linkHandler: function(url) { shell2.openLink(url) } }
     OfficeEditor { id: officeEd }
+
+    // ---------- диалог перехода по внутренней ссылке (P3-1): ссылка не распознана или объект не в кэше
+    FormDialog {
+        id: linkDlg
+        objectName: "linkDialog"
+        title: "Ссылка ВЕКТОР"
+        confirmText: "Понятно"
+        cancelText: ""
+        function show(text) { linkDlg.subtitle = text; linkDlg.open() }
+        onConfirmed: linkDlg.close()
+    }
 
     // ---------- контекстное меню дерева проектов (D-124): правый щелчок по узлу
     Menu {
@@ -940,6 +976,8 @@ Item {
         MenuSeparator {}
         MenuItem { objectName: "treeMenuCopyCode"; text: "Копировать шифр"
             onTriggered: backend.copyText((treeMenu.obj && (treeMenu.obj.code || treeMenu.obj.title)) || treeMenu.objId) }
+        MenuItem { objectName: "treeMenuCopyLink"; text: "Копировать ссылку"
+            onTriggered: backend.copyText(shell2.linkFor(treeMenu.kind, treeMenu.objId)) }
     }
 
     // ---------- диалоги рабочего дня и переподключения (те же, что в классике, — правила не меняются)

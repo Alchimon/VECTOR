@@ -321,6 +321,9 @@ ColumnLayout {
                    height: visible ? implicitHeight : 0
                    text: "Копировать шифр документа"
                    onTriggered: backend.copyText(taskMenu.task ? taskMenu.task.document_code : "") }
+        // Внутренняя ссылка vector://task/<id> (P3-1) — коллега вставит её в палитру Ctrl+K.
+        MenuItem { text: "Копировать ссылку"
+                   onTriggered: backend.copyText(taskMenu.task ? "vector://task/" + taskMenu.task.id : "") }
     }
     Menu {
         id: docMenu
@@ -341,6 +344,8 @@ ColumnLayout {
                    onTriggered: backend.copyText(docMenu.doc ? docMenu.doc.code : "") }
         MenuItem { text: "Копировать название"
                    onTriggered: backend.copyText(docMenu.doc ? docMenu.doc.title : "") }
+        MenuItem { text: "Копировать ссылку"
+                   onTriggered: backend.copyText(docMenu.doc ? "vector://document/" + docMenu.doc.id : "") }
     }
 
     FormDialog {
