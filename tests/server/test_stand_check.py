@@ -39,7 +39,10 @@ def svc(tmp_path_factory):
     s = Service(eng)
     s.bootstrap_admin("admin", PWD, "Администратор системы")
     _seed(s, "admin", PWD, PWD)
-    return s
+    yield s
+    # Windows держит .sqlite открытым, пока живы соединения пула, и не даёт pytest убрать временный
+    # каталог (WinError 32) — закрываем движок явно.
+    eng.dispose()
 
 
 @pytest.fixture

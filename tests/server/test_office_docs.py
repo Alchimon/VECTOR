@@ -206,11 +206,11 @@ class TestLicenseGate:
         w, rp, _pid, kit = _licensed_world(request, engine, clock, fast_policy)
         r = rp.cmd("office_doc.create", {"id": new_id(), "kit_id": kit, "code": "СП-1", "title": "Спец",
                                          "kind": "sheet"})
-        # Префикс office_doc. → «Текст» по умолчанию (см. карту модулей): без text в лицензии отказ идёт
-        # ПО ПРЕФИКСУ раньше, чем команда дошла до гейта по kind. «Таблицы» появляются в отказе, когда
-        # text разрешён, а sheets — нет (проверено ниже вторым прогоном).
+        # Префикс office_doc. → «Текст» (ВЕКТОР Венера) по умолчанию (см. карту модулей): без text в лицензии
+        # отказ идёт ПО ПРЕФИКСУ раньше, чем команда дошла до гейта по kind. «Таблицы» (ВЕКТОР Меркурий)
+        # появляются в отказе, когда text разрешён, а sheets — нет (проверено ниже вторым прогоном).
         assert (r["status"], r["code"]) == ("rejected", "module_not_licensed")
-        assert "Текст" in r["message_ru"]
+        assert "ВЕКТОР Венера" in r["message_ru"]
         r = rp.cmd("office_doc.create", {"id": new_id(), "kit_id": kit, "code": "Д-1", "title": "Док",
                                          "kind": "doc"})
         assert (r["status"], r["code"]) == ("rejected", "module_not_licensed")
@@ -228,7 +228,7 @@ class TestLicenseGate:
 
     def test_kind_gate_tables(self, request, clock, engine, fast_policy):
         """Лицензия «pdm + text»: команда create(kind=sheet) доходит до внутреннего гейта и отклоняется
-        по «Таблицам»; create(kind=doc) работает."""
+        по «Таблицам» (ВЕКТОР Меркурий); create(kind=doc) работает."""
         key = request.node.callspec.id
         if key not in _LIC_WORLD_TEXT:
             lic = M.License(license_id="L-2", customer="Тест", issued_at=date(2026, 1, 1), kind="perpetual",
@@ -248,5 +248,5 @@ class TestLicenseGate:
         r = rp.cmd("office_doc.create", {"id": new_id(), "kit_id": kit, "code": "СП-2", "title": "Спец",
                                          "kind": "sheet"})
         assert (r["status"], r["code"]) == ("rejected", "module_not_licensed")
-        assert "Таблицы" in r["message_ru"]
+        assert "ВЕКТОР Меркурий" in r["message_ru"]
         rp.ok("office_doc.create", {"id": new_id(), "kit_id": kit, "code": "Д-2", "title": "Док", "kind": "doc"})

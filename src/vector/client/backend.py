@@ -24,6 +24,8 @@ from PySide6.QtCore import Property, QObject, QSettings, QTimer, QUrl, Signal, S
 from vector import __version__
 from vector.core import stock
 from vector.core.contracts import Contracts
+from vector.office.vdocx import DocFormatError
+from vector.office.vsheetx import SheetFormatError
 
 from . import (
     calc_view,
@@ -2255,8 +2257,8 @@ class Backend(QObject):
             data = dest.read_bytes()
             dest.unlink(missing_ok=True)
             try:
-                pv = office_view.document_preview(data, self._doc_kind(document_id))
-            except (ValueError, KeyError, OSError):
+                pv = office_view.document_preview(data)
+            except (ValueError, KeyError, OSError, DocFormatError, SheetFormatError):
                 return {"status": "rejected", "message_ru": "Предпросмотр недоступен: файл не читается как документ ВЕКТОР."}
             return {"status": "accepted", "document_id": document_id, **pv}
         self._run(job, lambda res: self.queryDone.emit(tag, qml_safe(res)))
@@ -2276,24 +2278,12 @@ class Backend(QObject):
             data = dest.read_bytes()
             dest.unlink(missing_ok=True)
             try:
-                if self._doc_kind(document_id) == "doc":
-                    from vector.office.vdocx import read_vdocx
-                    doc = read_vdocx(data)
-                    return {"status": "accepted", "kind": "doc", "document_id": document_id, "title": doc.title,
-                            "rows": office_view.doc_to_view(doc)}
-                from vector.office.vsheetx import read_vsheetx
-                wb = read_vsheetx(data)
-                return {"status": "accepted", "kind": "sheet", "document_id": document_id, "workbook": wb,
-                        "view": office_view.sheet_to_view(wb)}
-            except (ValueError, KeyError, OSError) as e:      # битый/чужой файл — честный отказ редактора
+                # Вид документа — по содержимому пакета (D-130): кэш версий может не знать имя файла,
+                # и угадывание по расширению отдавало текст .vdocx парсеру таблиц (SheetFormatError).
+                return {"status": "accepted", "document_id": document_id, **office_view.load_office_document(data)}
+            except (ValueError, KeyError, OSError, DocFormatError, SheetFormatError) as e:  # битый/чужой файл — честный отказ редактора
                 return {"status": "rejected", "message_ru": f"Файл не читается как документ ВЕКТОР: {e}"}
         self._run(job, lambda res: self._office_loaded(tag, res))
-
-    def _doc_kind(self, document_id: str) -> str:
-        """Вид офисного документа по имени файла текущей версии (.vsheetx/.vdocx) из кэша."""
-        v = next((v for v in self._doc_versions if v.get("document_id") == document_id), None)
-        fn = (v or {}).get("file_name", "")
-        return "doc" if fn.endswith(".vdocx") else "sheet"
 
     def _office_loaded(self, tag: str, res: dict):
         if res.get("status") != "accepted":

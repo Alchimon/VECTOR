@@ -54,8 +54,8 @@ def test_roundtrip_same_dbms(world, tmp_path, keyfile, backend, clock):
     out = tmp_path / "a.vbak"
     rep = bk.create_backup(world.svc.engine, out, bk.KeySource(key_file=keyfile))
     assert rep.counts["audit_log"] > 10 and not (tmp_path / "a.vbak.partial").exists()
-    assert oct(keyfile.stat().st_mode & 0o777) == "0o600"
-    if os.name == "posix":
+    if os.name == "posix":                                   # биты прав ФС — только POSIX (Windows их не отражает)
+        assert oct(keyfile.stat().st_mode & 0o777) == "0o600"  # ключ — только владельцу
         assert oct(out.stat().st_mode & 0o777) == "0o600"      # копия — только владельцу
     assert bk.verify_backup(out, bk.KeySource(key_file=keyfile)).ok
 

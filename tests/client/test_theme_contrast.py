@@ -65,6 +65,7 @@ def test_screens_have_no_hardcoded_colors():
 
 def test_brand_images_exist_and_logo_is_transparent():
     """Фирменные изображения — графический пак экосистемы (D-99, assets/vektor): логотипы, фон, значок окна."""
+    pytest.importorskip("PySide6.QtGui", reason="нет GUI-стека (минимальная машина тестирования)")
     from PySide6.QtGui import QImage
     pack = ROOT / "src" / "vector" / "client" / "assets" / "vektor"
     for name in ("app_icons/logo/vektor_platform_horizontal.png", "app_icons/logo/vektor_emblem_only.png",

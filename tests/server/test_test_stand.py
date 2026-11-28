@@ -62,9 +62,11 @@ def test_scripts_reference_existing_templates():
     sh = (LINUX / "setup-test-stand.sh").read_text(encoding="utf-8")
     for name in ("start-server.sh", "start-client.sh", "backup.sh"):
         assert name in sh and (LINUX / name).is_file()
+    import os
     for f in LINUX.glob("*.sh"):
         assert b"\r" not in f.read_bytes(), f.name
-        assert f.stat().st_mode & 0o111, f"{f.name}: нет права на исполнение"
+        if os.name == "posix":                               # бит исполнения — только POSIX (Windows его не хранит)
+            assert f.stat().st_mode & 0o111, f"{f.name}: нет права на исполнение"
     assert "deploy/test-stand/constraints.txt" in sh and "deploy\\test-stand\\constraints.txt" in ps
     assert "server.test.toml" in sh and "server.test.toml" in ps
 

@@ -74,7 +74,7 @@ def test_assemble_day_shift_break_measured_and_estimated_lines():
                         obj="ООО «Ромашка»")],
         "timers": [{"start": at("15:00"), "end": at("16:30"), "project_id": P1, "project_code": "П-1",
                     "label": "Наряд № 3 · Сборка"}]}
-    r = wt.assemble_report(DAY, activity, [P1], NOW)
+    r = wt.assemble_report(DAY, activity, [P1], NOW, tz=timezone.utc)
     assert (r["shift_start"], r["shift_end"], r["break_minutes"]) == (8 * 60 + 52, 17 * 60 + 31, 0)
     net = r["shift_end"] - r["shift_start"] - r["break_minutes"]
     assert sum(ln["minutes"] for ln in r["lines"]) == net == 519
@@ -98,11 +98,11 @@ def test_assemble_uses_local_time_of_offline_actions_and_skips_empty_days():
     """Сделанное без связи попадает в день, когда сделано (время очереди компьютера), а не в день синхронизации;
     день без действий — None; только вход — смена без строк."""
     synced_next_day = {"actions": [{**act("10:00"), "at": at("08:00", date(2026, 11, 17)), "operation_id": "op-1"}]}
-    assert wt.assemble_report(DAY, synced_next_day, [P1], NOW) is None
-    r = wt.assemble_report(DAY, synced_next_day, [P1], NOW, local_times={"op-1": at("10:00")})
+    assert wt.assemble_report(DAY, synced_next_day, [P1], NOW, tz=timezone.utc) is None
+    r = wt.assemble_report(DAY, synced_next_day, [P1], NOW, tz=timezone.utc, local_times={"op-1": at("10:00")})
     assert (r["shift_start"], r["shift_end"]) == (600, 601) and r["lines"][0]["minutes"] == 1
-    assert wt.assemble_report(DAY, {"actions": [], "timers": []}, [P1], NOW) is None
-    only_login = wt.assemble_report(DAY, {"actions": [{"at": at("09:00"), "command": "auth.login"}]}, [P1], NOW)
+    assert wt.assemble_report(DAY, {"actions": [], "timers": []}, [P1], NOW, tz=timezone.utc) is None
+    only_login = wt.assemble_report(DAY, {"actions": [{"at": at("09:00"), "command": "auth.login"}]}, [P1], NOW, tz=timezone.utc)
     assert only_login["lines"] == [] and only_login["summary"]["actions"] == 0
 
 
