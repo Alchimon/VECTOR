@@ -132,6 +132,8 @@ ADDED_IN: dict[int, list[sa.Table]] = {
     44: [db.office_documents],
     # Обсуждения объектов с @упоминаниями (P3-2).
     45: [db.comments],
+    # База знаний и справочники компании (P3-3).
+    46: [db.kb_articles, db.vendors, db.equipment_catalog],
 }
 
 
@@ -331,6 +333,7 @@ STEPS: dict[int, Callable] = {3: _create_tables(ADDED_IN[4]), 4: _create_tables(
                               42: _create_tables(ADDED_IN[43]),
                               43: _create_tables(ADDED_IN[44]),
                               44: _create_tables(ADDED_IN[45]),
+                              45: _create_tables(ADDED_IN[46]),
 }
 
 

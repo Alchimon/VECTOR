@@ -52,13 +52,13 @@ Item {
                         stock: "Склад", procurement: "Закупка", production: "Производство",
                         products: "Изделия и паспорта", quality: "Качество", sync: "Синхронизация",
                         notifications: "Уведомления", delegations: "Замещения", org: "Оргструктура",
-                        help: "Справка", admin: "Администрирование" })
+                        help: "Справка", admin: "Администрирование", knowledge: "Знания" })
         var icons = ({ home: "house", customers: "building-2", tenders: "gavel", leads: "sparkles", projects: "folder-kanban",
                        finance: "wallet", analytics: "sliders-horizontal", worktime: "clock",
                        stock: "warehouse", procurement: "shopping-cart", production: "factory",
                        products: "package-check", quality: "shield-check", sync: "refresh-cw",
                        notifications: "bell", delegations: "user-check", org: "network",
-                       help: "circle-help", admin: "shield-check" })
+                       help: "circle-help", admin: "shield-check", knowledge: "bookmark" })
         if (tabFor(key) === null)
             openTabs = openTabs.concat([{ key: key, kind: "page", id: p, title: titles[p] || p,
                                           icon: icons[p] || "file-text", closable: openTabs.length > 0, pinned: false }])
@@ -183,7 +183,7 @@ Item {
             projects: projects2C, sync: syncC, admin: adminC, finance: financeC, stock: stockC,
             procurement: procurementC, delegations: delegationsC, notifications: notificationsC,
             production: productionC, products: productsC, quality: qualityC, help: helpC,
-            worktime: worktimeC, org: orgC, analytics: analyticsC })
+            worktime: worktimeC, org: orgC, analytics: analyticsC, knowledge: knowledgeC })
         commandsCache = buildCommands()
         pickStart()
         if (wantsWorkdayPrompt) workdayPrompt.open()
@@ -196,7 +196,7 @@ Item {
         ribbonTab = (["projects", "customers", "tenders", "leads", "finance", "analytics"].indexOf(page) >= 0) ? "project"
             : (["stock", "procurement"].indexOf(page) >= 0) ? "supply"
             : (["production", "products", "quality"].indexOf(page) >= 0) ? "production"
-            : (["sync", "notifications", "delegations", "org", "help", "admin", "worktime"].indexOf(page) >= 0) ? "system"
+            : (["sync", "notifications", "delegations", "org", "help", "admin", "worktime", "knowledge"].indexOf(page) >= 0) ? "system"
             : ribbonTab
         commandsCache = buildCommands()   // и палитра следует за контекстом
     }
@@ -266,6 +266,7 @@ Item {
                 A({ text: "Уведомления", icon: "bell", run: function() { shell2.go("notifications") } }),
                 A({ text: "Замещения", icon: "user-check", run: function() { shell2.go("delegations") } }),
                 A({ text: "Оргструктура", icon: "network", run: function() { shell2.go("org") } }),
+                A({ text: "Знания", icon: "bookmark", run: function() { shell2.go("knowledge") } }),
                 A({ text: "Рабочее время", icon: "clock", run: function() { shell2.go("worktime") } }) ] },
             { group: "Справка", actions: [
                 A({ text: "Справка", icon: "circle-help", run: function() { shell2.go("help") } }),
@@ -308,6 +309,22 @@ Item {
             var dc = backend.documents[d]
             add(dc.code + " · " + dc.title, "Документ", dc.kind === "sheet" ? "table" : "file-text", "",
                 (function(o) { return function() { shell2.selectObject("document", o); shell2.openDocument(o) } })(dc))
+        }
+        // P3-3: статьи базы знаний, подрядчики и оборудование — открываются в разделе «Знания».
+        for (var a = 0; a < backend.kbArticles.length; a++) {
+            var ka = backend.kbArticles[a]
+            add(ka.code + " · " + ka.title, "Статья базы знаний", "bookmark", "",
+                (function(o) { return function() { shell2.go("knowledge", "articles|" + o.id) } })(ka))
+        }
+        for (var v = 0; v < backend.vendors.length; v++) {
+            var vn = backend.vendors[v]
+            add(vn.name + (vn.inn ? " · ИНН " + vn.inn : ""), "Подрядчик", "truck", "",
+                (function(o) { return function() { shell2.go("knowledge", "vendors|" + o.id) } })(vn))
+        }
+        for (var e = 0; e < backend.equipment.length; e++) {
+            var eq = backend.equipment[e]
+            add(eq.code + " · " + eq.name, "Оборудование", "wrench", "",
+                (function(o) { return function() { shell2.go("knowledge", "equipment|" + o.id) } })(eq))
         }
         return out
     }
@@ -597,6 +614,8 @@ Item {
                                 badge: ((backend.worktimeOverview.counts || {}).to_review || 0) + ((backend.worktimeOverview.counts || {}).returned || 0)
                                 badgeTone: ((backend.worktimeOverview.counts || {}).returned || 0) > 0 ? "danger" : "warning"
                                 Layout.alignment: Qt.AlignHCenter; onClicked: shell2.go("worktime") }
+                            RailItem2 { objectName: "railKnowledge"; text: "Знания"; iconName: "bookmark"; active: shell2.page === "knowledge"
+                                Layout.alignment: Qt.AlignHCenter; onClicked: shell2.go("knowledge") }
                             Rectangle { visible: shell2.seesStock || shell2.seesNeeds; Layout.fillWidth: true; height: 1
                                         color: Theme2.border; Layout.topMargin: 4; Layout.bottomMargin: 4 }
                             RailItem2 { text: "Склад"; iconName: "warehouse"; active: shell2.page === "stock"
@@ -937,6 +956,7 @@ Item {
     Component { id: worktimeC; WorktimePage { shell: shell2 } }
     Component { id: orgC; OrgPage { shell: shell2 } }
     Component { id: analyticsC; AnalyticsPage2 { shell: shell2 } }   // D-127: аналитика в стиле 2.0
+    Component { id: knowledgeC; KnowledgePage2 { shell: shell2 } }   // P3-3: база знаний и справочники компании
 
     // ---------- палитра команд и офисный редактор (документы из инспектора)
     CommandPalette2 { id: palette; commands: shell2.commandsCache

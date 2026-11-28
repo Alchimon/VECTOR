@@ -250,7 +250,9 @@ class Backend(QObject):
                                        # D-47: запросы на фактическое окончание дня (забыли «Завершить»).
                                        "workday_end_request": [],
                                        # Обсуждения объектов (P3-2): комментарии с тредами и @упоминаниями.
-                                       "comment": []}
+                                       "comment": [],
+                                       # База знаний и справочники компании (P3-3).
+                                       "kb_article": [], "vendor": [], "equipment": []}
         # Показать ли окно «Начните рабочий день» (D-46, A-49 п. 4) — считается в рабочем потоке со снимком. В тестах и
         # на стенде интерфейса (auto_timers=False) окно само не открывается, чтобы не закрывать экраны; включается
         # setWorkdayPromptAuto(True).
@@ -497,6 +499,10 @@ class Backend(QObject):
     kits = _lst("kit", dataChanged)
     tasks = _lst("task", dataChanged)
     documents = _lst("document", dataChanged)
+    # P3-3: база знаний (статьи), подрядчики и оборудование компании.
+    kbArticles = _lst("kb_article", dataChanged)
+    vendors = _lst("vendor", dataChanged)
+    equipment = _lst("equipment", dataChanged)
 
     @Property("QVariantList", notify=dataChanged)
     def people(self):
@@ -568,6 +574,8 @@ class Backend(QObject):
             return sorted(out, key=lambda d: (order.get(d.get("status"), 9), str(d.get("title") or "").lower()))
         key = {"customer": "name", "tender": "title", "tkp": "label", "project": "code", "kit": "code", "document": "code",
                "warehouse": "code", "stock_item": "code", "supplier": "code",
+               # P3-3: база знаний и справочники компании.
+               "kb_article": "code", "vendor": "name", "equipment": "code",
                # Порядок заказов задаёт purchasing_view.orders_view (по номеру); здесь — любой стабильный.
                "purchase_order": "id", "supplier_contract": "number"}[kind]
         return sorted(out, key=lambda d: (str(d.get(key) or "")).lower())
@@ -2274,7 +2282,10 @@ class Backend(QObject):
                                  # D-47: графики работы и их назначения приходят только снимком (справочник компании).
                                  "schedule",
                                  # D-48: производственный календарь — тоже только снимком.
-                                 "calendar"})
+                                 "calendar",
+                                 # P3-3: база знаний и справочники компании (подрядчики, оборудование) приходят
+                                 # только снимком pull — после команд перечитываем (и локальный предпросмотр).
+                                 "kb", "vendor", "equipment"})
 
     def _finish_command(self, tag: str, command: str, res: dict, ok_text: str = ""):
         """Общий разбор результата команды: снимок данных, уведомление, сигнал commandDone для формы. ok_text — своё

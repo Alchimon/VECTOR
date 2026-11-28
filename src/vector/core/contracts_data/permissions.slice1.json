@@ -2168,6 +2168,63 @@
     }
    ],
    "note": "Удалить комментарий — автор или РП/ГИП проекта (проверяет обработчик); мягкое удаление."
+  },
+  "kb.create": {
+   "any_of": [
+    {
+     "project_role": [
+      "rp",
+      "gip",
+      "participant"
+     ]
+    },
+    {
+     "global_role": [
+      "lead_engineer",
+      "dept_head"
+     ]
+    }
+   ],
+   "note": "P3-3. Статью проекта пишут его участники (project_role в этом проекте — проверяет обработчик); стандарты компании (scope=company) — ведущий инженер или руководитель отдела (проверяет обработчик)."
+  },
+  "kb.update": {
+   "same_as": "kb.create"
+  },
+  "kb.archive": {
+   "same_as": "kb.create"
+  },
+  "vendor.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "procurement"
+     ]
+    }
+   ],
+   "note": "P3-3: общий справочник подрядчиков/поставщиков ведёт закупка (как suppliers, A-34)."
+  },
+  "vendor.update": {
+   "same_as": "vendor.create"
+  },
+  "vendor.archive": {
+   "same_as": "vendor.create"
+  },
+  "equipment.create": {
+   "any_of": [
+    {
+     "global_role": [
+      "lead_engineer",
+      "technologist"
+     ]
+    }
+   ],
+   "note": "P3-3: каталог оборудования (паспортные характеристики) ведут ведущий инженер и технолог."
+  },
+  "equipment.update": {
+   "same_as": "equipment.create"
+  },
+  "equipment.archive": {
+   "same_as": "equipment.create"
   }
  }
 }
