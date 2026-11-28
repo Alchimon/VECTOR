@@ -17,13 +17,15 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from PySide6.QtCore import Property, QObject, QSettings, QTimer, QUrl, Signal, Slot
 
 from vector import __version__
 from vector.core import stock
 from vector.core.contracts import Contracts
+from vector.office.vdocx import DocFormatError
+from vector.office.vsheetx import SheetFormatError
 
 from . import (
     calc_view,
@@ -246,7 +248,11 @@ class Backend(QObject):
                                        # Таймер рабочего дня (D-46): свои дни и запросы на фактическое начало дня.
                                        "workday": [], "workday_start_request": [],
                                        # D-47: запросы на фактическое окончание дня (забыли «Завершить»).
-                                       "workday_end_request": []}
+                                       "workday_end_request": [],
+                                       # Обсуждения объектов (P3-2): комментарии с тредами и @упоминаниями.
+                                       "comment": [],
+                                       # База знаний и справочники компании (P3-3).
+                                       "kb_article": [], "vendor": [], "equipment": []}
         # Показать ли окно «Начните рабочий день» (D-46, A-49 п. 4) — считается в рабочем потоке со снимком. В тестах и
         # на стенде интерфейса (auto_timers=False) окно само не открывается, чтобы не закрывать экраны; включается
         # setWorkdayPromptAuto(True).
@@ -290,6 +296,8 @@ class Backend(QObject):
         # разделов. Плотность: «cozy» (просторно, базовый шрифт 15) или «compact» (13) — для старых мониторов.
         self._ui_mode = self._settings.value("ui/mode", "v2")
         self._ui_density = self._settings.value("ui/density", "cozy")
+        # Ширина инспектора (предпросмотр справа), px; 0 — по умолчанию из плотности (D-135).
+        self._inspector_width = int(self._settings.value("ui/inspector_width", 0) or 0)
         self._login_error = ""
         self._queue: list = []
         self._assignments: list = []
@@ -424,6 +432,36 @@ class Backend(QObject):
             self._settings.setValue("ui/density", v)
             self.changed.emit()
 
+    @Property(int, notify=changed)
+    def inspectorWidth(self):
+        """Ширина панели инспектора (предпросмотра справа), px; 0 — по умолчанию из плотности (D-135)."""
+        return self._inspector_width
+
+    @inspectorWidth.setter
+    def inspectorWidth(self, v):
+        """Запомнить ширину инспектора (перетаскивание разделителя); 240–560 px, иначе — к значению по умолчанию."""
+        v = int(v or 0)
+        if v and not (240 <= v <= 560):
+            return
+        if v != self._inspector_width:
+            self._inspector_width = v
+            self._settings.setValue("ui/inspector_width", v)
+            self.changed.emit()
+
+    @Slot()
+    def resetLayout(self):
+        """«Сбросить раскладку» (D-135): ширина инспектора — по умолчанию из плотности интерфейса."""
+        self.inspectorWidth = 0
+
+    @Slot(str)
+    def copyText(self, text: str):
+        """Скопировать текст в буфер обмена (D-137: «копировать шифр» в меню вкладок/дерева, ячейки таблиц).
+        Без GUI-приложения (консольный Backend в инструментах) — тихо ничего не делает."""
+        from PySide6.QtGui import QGuiApplication
+        app = QGuiApplication.instance()
+        if isinstance(app, QGuiApplication):
+            app.clipboard().setText(text or "")
+
     @Property(str, constant=True)
     def version(self):
         """Версия программы (для окна «О программе» и журнала)."""
@@ -461,6 +499,10 @@ class Backend(QObject):
     kits = _lst("kit", dataChanged)
     tasks = _lst("task", dataChanged)
     documents = _lst("document", dataChanged)
+    # P3-3: база знаний (статьи), подрядчики и оборудование компании.
+    kbArticles = _lst("kb_article", dataChanged)
+    vendors = _lst("vendor", dataChanged)
+    equipment = _lst("equipment", dataChanged)
 
     @Property("QVariantList", notify=dataChanged)
     def people(self):
@@ -532,6 +574,8 @@ class Backend(QObject):
             return sorted(out, key=lambda d: (order.get(d.get("status"), 9), str(d.get("title") or "").lower()))
         key = {"customer": "name", "tender": "title", "tkp": "label", "project": "code", "kit": "code", "document": "code",
                "warehouse": "code", "stock_item": "code", "supplier": "code",
+               # P3-3: база знаний и справочники компании.
+               "kb_article": "code", "vendor": "name", "equipment": "code",
                # Порядок заказов задаёт purchasing_view.orders_view (по номеру); здесь — любой стабильный.
                "purchase_order": "id", "supplier_contract": "number"}[kind]
         return sorted(out, key=lambda d: (str(d.get(key) or "")).lower())
@@ -724,6 +768,89 @@ class Backend(QObject):
                 items.append({**it, "doc_code": d.get("code", "")})
         return qml_safe({"items": items, "open_count": sum(1 for i in items if i["open"])})
 
+    # ------------------------------------------------------------ обсуждения объектов (P3-2)
+
+    def _object_project_id(self, object_type: str, object_id: str) -> Optional[str]:
+        """Проект обсуждаемого объекта (для подсказки прав): проект — сам; комплект и задача хранят project_id;
+        документ — через свой комплект. Объекта нет в кэше (нет прав/не синхронизирован) → None."""
+        if object_type == "project":
+            return object_id
+        if object_type == "kit":
+            return self._name("kit", object_id, "project_id") or None
+        if object_type == "task":
+            return self._name("task", object_id, "project_id") or None
+        if object_type == "document":
+            kit_id = self._name("document", object_id, "kit_id")
+            return (self._name("kit", kit_id, "project_id") or None) if kit_id else None
+        return None
+
+    @Slot(str, str, result="QVariantMap")
+    def objectDiscussion(self, object_type: str, object_id: str) -> dict:
+        """Вкладка «Обсуждение» (P3-2): комментарии объекта (проект/комплект/документ/задача) с тредами.
+
+        Из клиентского снимка — без запроса к серверу; работает и без связи. Неотправленные (в очереди)
+        комментарии показываются с пометкой «Отправляется». Каждая запись: автор, текст (у удалённого — пусто,
+        в QML заглушка «Комментарий удалён»), время, «изменён», мой ли, версия (для правки/удаления), имена
+        упомянутых. Порядок — древо: корневые по времени, за каждым его ответы (depth — глубина отступа)."""
+        me = (self._me or {}).get("user_id") or ""
+        allc = [c for c in self._data.get("comment", [])
+                if c.get("object_type") == object_type and c.get("object_id") == object_id]
+        by_id = {c.get("id"): c for c in allc}
+        children: dict[str, list] = {}
+        roots = []
+        for c in allc:
+            pid = c.get("parent_id") or ""
+            if pid and pid in by_id:
+                children.setdefault(pid, []).append(c)
+            else:
+                roots.append(c)
+        # Локальная копия из очереди не имеет created_at — «отправляется», идёт в конец своего уровня.
+        key = lambda c: (c.get("created_at") or "9999", c.get("id") or "")  # noqa: E731
+
+        def view(c, depth) -> dict:
+            pending = not c.get("created_at")
+            author = c.get("author_id") or me
+            return {"id": c.get("id") or "", "parent_id": c.get("parent_id") or "", "depth": min(depth, 3),
+                    "author_name": self._people.get(author, "Вы"),
+                    "body": c.get("body") or "", "deleted": bool(c.get("deleted")),
+                    "edited": bool(c.get("edited_at")),
+                    "created_label": (c.get("created_at") or "")[:16].replace("T", " "),
+                    "pending": pending, "version": int(c.get("version") or 1),
+                    "mine": bool(author and author == me),
+                    "mention_names": [self._people.get(u, "—") for u in (c.get("mentions") or [])]}
+
+        items: list[dict] = []
+
+        def walk(c, depth):
+            items.append(view(c, depth))
+            for ch in sorted(children.get(c.get("id"), []), key=key):
+                walk(ch, depth + 1)
+
+        for r in sorted(roots, key=key):
+            walk(r, 0)
+        pid = self._object_project_id(object_type, object_id)
+        return qml_safe({"items": items, "count": sum(1 for i in items if not i["deleted"]),
+                         "can_add": bool(pid and self._has_project_role(pid, ("gip", "rp", "participant"))),
+                         "can_moderate": bool(pid and self._has_project_role(pid, ("gip", "rp")))})
+
+    @Slot(str, str, str, str, str)
+    def addComment(self, tag: str, object_type: str, object_id: str, body: str, parent_id: str):
+        """«Отправить» комментарий (discuss.add, можно офлайн — очередь). parent_id "" — корневой комментарий."""
+        payload = {"id": self.newId(), "object_type": object_type, "object_id": object_id, "body": body.strip()}
+        if parent_id:
+            payload["parent_id"] = parent_id
+        self.execute(tag, "discuss.add", payload, 0)
+
+    @Slot(str, str, str, int)
+    def editComment(self, tag: str, comment_id: str, body: str, version: int):
+        """«Сохранить» правку своего комментария (discuss.edit; сервер пропускает только автора в окне 24 ч)."""
+        self.execute(tag, "discuss.edit", {"id": comment_id, "body": body.strip()}, int(version))
+
+    @Slot(str, str, int)
+    def deleteComment(self, tag: str, comment_id: str, version: int):
+        """«Удалить» комментарий (discuss.delete; мягкое удаление — автор либо РП/ГИП проекта)."""
+        self.execute(tag, "discuss.delete", {"id": comment_id}, int(version))
+
     @Slot("QVariantList", str, result="QVariantMap")
     def calcPreview(self, lines, currency: str) -> dict:
         """Проверка рабочей копии позиций в форме (без сервера): суммы, замечания по строкам, итог."""
@@ -824,6 +951,18 @@ class Backend(QObject):
         lic["app_version"] = __version__
         return lic
 
+    @Property("QVariantMap", notify=changed)
+    def orbitaStatus(self):
+        """Состояние связи с сервером экосистемы ВЕКТОР Орбита (D-131): адрес и режим — для блока «О программе»."""
+        url = os.environ.get("VECTOR_SERVER_URL") or self._settings.value("server/url", "")
+        host = url.split("//", 1)[-1].split("/", 1)[0] if url else ""
+        state = ("online" if self._online else
+                 "reconnect" if self._session_mode == "offline" and self._me else "offline")
+        label = {"online": "подключено — изменения отправляются сразу",
+                 "reconnect": "сервер доступен, вход выполнен без связи — очередь ждёт подключения",
+                 "offline": "нет связи — работа в автономном режиме, изменения в очереди"}[state]
+        return qml_safe({"url": url, "host": host, "state": state, "label": label})
+
     @Slot(str, result=bool)
     def moduleOk(self, module_id: str) -> bool:
         """Полный доступ к модулю (active/grace): создание и изменения пройдут. readonly — только чтение.
@@ -856,7 +995,10 @@ class Backend(QObject):
         """Раздел «Уведомления»: свои уведомления (новые сверху), число непрочитанных, можно ли отметить."""
         return qml_safe(notification_view.notifications_view(
             self._stock.get("notifications") or [], self._people, self._online and self._session_mode == "online",
-            datetime.now(UTC)))
+            datetime.now(UTC),
+            # Обсуждения (P3-2): уведомление ссылается на комментарий — «Открыть» ведёт на сам объект обсуждения.
+            links={c.get("id"): f"vector://{c.get('object_type')}/{c.get('object_id')}"
+                   for c in self._data.get("comment", []) if c.get("id")}))
 
     @Slot(str, str, result="QVariantMap")
     def transferDonors(self, item_id: str, to_project_id: str) -> dict:
@@ -2140,7 +2282,10 @@ class Backend(QObject):
                                  # D-47: графики работы и их назначения приходят только снимком (справочник компании).
                                  "schedule",
                                  # D-48: производственный календарь — тоже только снимком.
-                                 "calendar"})
+                                 "calendar",
+                                 # P3-3: база знаний и справочники компании (подрядчики, оборудование) приходят
+                                 # только снимком pull — после команд перечитываем (и локальный предпросмотр).
+                                 "kb", "vendor", "equipment"})
 
     def _finish_command(self, tag: str, command: str, res: dict, ok_text: str = ""):
         """Общий разбор результата команды: снимок данных, уведомление, сигнал commandDone для формы. ok_text — своё
@@ -2255,8 +2400,8 @@ class Backend(QObject):
             data = dest.read_bytes()
             dest.unlink(missing_ok=True)
             try:
-                pv = office_view.document_preview(data, self._doc_kind(document_id))
-            except (ValueError, KeyError, OSError):
+                pv = office_view.document_preview(data)
+            except (ValueError, KeyError, OSError, DocFormatError, SheetFormatError):
                 return {"status": "rejected", "message_ru": "Предпросмотр недоступен: файл не читается как документ ВЕКТОР."}
             return {"status": "accepted", "document_id": document_id, **pv}
         self._run(job, lambda res: self.queryDone.emit(tag, qml_safe(res)))
@@ -2276,24 +2421,12 @@ class Backend(QObject):
             data = dest.read_bytes()
             dest.unlink(missing_ok=True)
             try:
-                if self._doc_kind(document_id) == "doc":
-                    from vector.office.vdocx import read_vdocx
-                    doc = read_vdocx(data)
-                    return {"status": "accepted", "kind": "doc", "document_id": document_id, "title": doc.title,
-                            "rows": office_view.doc_to_view(doc)}
-                from vector.office.vsheetx import read_vsheetx
-                wb = read_vsheetx(data)
-                return {"status": "accepted", "kind": "sheet", "document_id": document_id, "workbook": wb,
-                        "view": office_view.sheet_to_view(wb)}
-            except (ValueError, KeyError, OSError) as e:      # битый/чужой файл — честный отказ редактора
+                # Вид документа — по содержимому пакета (D-130): кэш версий может не знать имя файла,
+                # и угадывание по расширению отдавало текст .vdocx парсеру таблиц (SheetFormatError).
+                return {"status": "accepted", "document_id": document_id, **office_view.load_office_document(data)}
+            except (ValueError, KeyError, OSError, DocFormatError, SheetFormatError) as e:  # битый/чужой файл — честный отказ редактора
                 return {"status": "rejected", "message_ru": f"Файл не читается как документ ВЕКТОР: {e}"}
         self._run(job, lambda res: self._office_loaded(tag, res))
-
-    def _doc_kind(self, document_id: str) -> str:
-        """Вид офисного документа по имени файла текущей версии (.vsheetx/.vdocx) из кэша."""
-        v = next((v for v in self._doc_versions if v.get("document_id") == document_id), None)
-        fn = (v or {}).get("file_name", "")
-        return "doc" if fn.endswith(".vdocx") else "sheet"
 
     def _office_loaded(self, tag: str, res: dict):
         if res.get("status") != "accepted":

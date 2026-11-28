@@ -83,12 +83,12 @@ Item {
                     // Знак «V» из логотипа владельца (D-28) и название; полный логотип — на экране входа.
                     Image { objectName: "shellMark"; source: Theme.mark; Layout.preferredWidth: 46; Layout.preferredHeight: 46
                             sourceSize: Qt.size(128, 128); fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true
-                            Accessible.name: "ВЕКТОР ПЛАТФОРМА"
-                            VTipArea { text: "ВЕКТОР ПЛАТФОРМА — единая платформа для инженеров и бизнеса: тендеры, проекты, расчёты, склад, закупка, производство, качество, рабочее время" } }
+                            Accessible.name: "ВЕКТОР Платформа"
+                            VTipArea { text: "ВЕКТОР Платформа — единая платформа для инженеров и бизнеса: тендеры, проекты, расчёты, склад, закупка, производство, качество, рабочее время" } }
                     // Подпись — полностью, как в логотипе владельца (D-28): «Единая платформа / для инженеров и бизнеса»,
                     // в две строки, чтобы поместиться в ширину боковой панели и не обрезаться.
                     ColumnLayout { spacing: 0
-                        Text { text: "ВЕКТОР ПЛАТФОРМА"; color: Theme.text; font.family: Theme.family; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: 1.2 }
+                        Text { text: "ВЕКТОР Платформа"; color: Theme.text; font.family: Theme.family; font.pixelSize: 14; font.weight: Font.DemiBold; font.letterSpacing: 1.2 }
                         Text { objectName: "shellTagline"; text: "Единая платформа\nдля инженеров и бизнеса"; color: Theme.textFaint; font.family: Theme.family
                                font.pixelSize: Theme.fsXs; lineHeight: 0.95 } }
                 }

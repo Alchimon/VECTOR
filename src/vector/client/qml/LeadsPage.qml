@@ -136,7 +136,7 @@ ColumnLayout {
         VSelect { id: custSel; label: "Заказчик (из справочника)" }
         VField { id: custNameF; label: "Заказчик (текстом)"; visible: custSel.currentIndex === 0
                  hint: "Если заказчика нет в справочнике — название текстом; перед переводом в тендер выберите из справочника" }
-        VField { id: expF; label: "Ожидаемая дата решения"; placeholder: "2026-12-31"; hint: "Формат: ГГГГ-ММ-ДД" }
+        DateField { id: expF; label: "Ожидаемая дата решения" }
         VField { id: noteF; label: "Примечание" }
     }
 
@@ -171,6 +171,6 @@ ColumnLayout {
                                     submission_deadline: deadlineC.text.trim() !== "" ? deadlineC.text.trim() : null },
                                     convertDialog.lead.version)
         VField { id: titleC; label: "Название тендера"; hint: "По умолчанию — название лида" }
-        VField { id: deadlineC; label: "Срок подачи заявки"; placeholder: "2026-12-31"; hint: "Формат: ГГГГ-ММ-ДД" }
+        DateField { id: deadlineC; label: "Срок подачи заявки" }
     }
 }

@@ -15,6 +15,12 @@ from conftest import PWD
 PY = [sys.executable, "-m", "vector.server.cli"]
 
 
+def _toml(p) -> str:
+    """Путь для TOML basic-строки: на Windows обратные слэши экранируются — иначе слэш перед
+    «U»/«u» в пути (профиль пользователя) разбирается как hex-экранирование (TOMLDecodeError)."""
+    return str(p).replace("\\", "\\\\")
+
+
 def run(args, env=None, ok=True):
     """Запустить vector-server в отдельном процессе (как администратор из консоли); ok=True — код возврата обязан быть
     0.
@@ -31,7 +37,7 @@ def setup(tmp_path):
     certs = tmp_path / "certs"
     run(["dev-cert", "--dir", str(certs), "--host", "127.0.0.1"])
     url_file = tmp_path / "db.url"
-    url_file.write_text(f"sqlite:///{tmp_path / 'vector.sqlite'}")
+    url_file.write_text(f"sqlite:///{tmp_path.as_posix()}/vector.sqlite")
     url_file.chmod(0o600)
     port = _free_port()
     cfg = tmp_path / "server.toml"
@@ -39,14 +45,14 @@ def setup(tmp_path):
 [server]
 host = "127.0.0.1"
 port = {port}
-tls_cert = "{certs / 'server.pem'}"
-tls_key = "{certs / 'server.key'}"
+tls_cert = "{_toml(certs / 'server.pem')}"
+tls_key = "{_toml(certs / 'server.key')}"
 
 [database]
-url_file = "{url_file}"
+url_file = "{_toml(url_file)}"
 
 [backup]
-dir = "{tmp_path / 'backups'}"
+dir = "{_toml(tmp_path / 'backups')}"
 keep = 2
 ''', encoding="utf-8")
     (tmp_path / "backups").mkdir()
@@ -71,14 +77,14 @@ def test_config_rejects_secrets_and_insecure(tmp_path):
     f = tmp_path / "u"
     f.write_text("sqlite:///x")
     f.chmod(0o644)
-    bad.write_text(f'[database]\nurl_file = "{f}"\n[server]\ndev_insecure_localhost = true\nhost="127.0.0.1"\n')
+    bad.write_text(f'[database]\nurl_file = "{_toml(f)}"\n[server]\ndev_insecure_localhost = true\nhost="127.0.0.1"\n')
     with pytest.raises(ConfigError, match="600"):
         load_config(bad)
     f.chmod(0o600)
-    bad.write_text(f'[database]\nurl_file = "{f}"\n[server]\nhost = "0.0.0.0"\n')
+    bad.write_text(f'[database]\nurl_file = "{_toml(f)}"\n[server]\nhost = "0.0.0.0"\n')
     with pytest.raises(ConfigError, match="tls_cert"):
         load_config(bad)
-    bad.write_text(f'[database]\nurl_file = "{f}"\n[server]\ndev_insecure_localhost = true\nhost = "0.0.0.0"\n')
+    bad.write_text(f'[database]\nurl_file = "{_toml(f)}"\n[server]\ndev_insecure_localhost = true\nhost = "0.0.0.0"\n')
     with pytest.raises(ConfigError, match="127.0.0.1"):
         load_config(bad)
 
@@ -107,7 +113,7 @@ def test_full_ops_cycle(setup):
     # Без ключа — отказ; без фразы — отказ (секрет не из argv).
     assert run(["verify-backup", str(files[-1])], ok=False).returncode != 0
 
-    target = f"sqlite:///{tmp / 'restored.sqlite'}"
+    target = f"sqlite:///{tmp.as_posix()}/restored.sqlite"
     r = run(["restore", str(files[-1]), "--key-file", str(key)], {"VECTOR_RESTORE_DB_URL": target})
     assert "OK — БД готова к запуску" in r.stdout
     r = run(["restore", str(files[-1]), "--key-file", str(key)], {"VECTOR_RESTORE_DB_URL": target}, ok=False)
@@ -356,7 +362,7 @@ def test_audit_config_changes_report(tmp_path):
     from vector.server import db
     import types
 
-    dburl = f"sqlite:///{tmp_path}/d.sqlite"
+    dburl = f"sqlite:///{tmp_path.as_posix()}/d.sqlite"
     urlf = tmp_path / "db.url"
     urlf.write_text(dburl, encoding="utf-8")
     urlf.chmod(0o600)                                       # строка подключения — секрет (проверка прав в конфиге)

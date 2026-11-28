@@ -2,6 +2,8 @@
 варианты для форм, «кто проверяет мои отчёты», сотрудники вне оргструктуры, журнал изменений."""
 from datetime import datetime, timezone
 
+import pytest
+
 from vector.client import org_view as ov
 from vector.client.sync import STOCK_META
 
@@ -67,6 +69,7 @@ def test_events_labels_and_cache_keys():
 
 def test_authority_label_for_unit_head():
     """«Основание доступа» в истории отчёта (D-45): руководитель подразделения — с названием из кэша, без кодов."""
+    pytest.importorskip("PySide6", reason="Backend — QObject, требует PySide6 (минимальная машина тестирования)")
     from types import SimpleNamespace
 
     from vector.client.backend import Backend

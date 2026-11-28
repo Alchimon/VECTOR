@@ -164,3 +164,138 @@ class TestDocumentPreview:
             doc.para(f"Строка {i + 1}")
         pv = office_view.document_preview(write_vdocx(doc), "doc")
         assert len(pv["lines"]) == office_view.PREVIEW_MAX_LINES
+
+
+class TestSniffOfficeKind:
+    """D-130: вид офисного документа определяется по СОДЕРЖИМОМУ пакета, а не по имени файла из кэша
+    версий (кэш может не знать версию — тогда угадывание по расширению отдавало текст парсеру таблиц)."""
+
+    def test_sniff_vdocx_and_vsheetx(self):
+        from vector.office import sniff_office_kind
+        doc = Document(title="Акт")
+        doc.para("Текст")
+        wb = Workbook()
+        wb.sheet("Лист 1").set("A1", value=1)
+        assert sniff_office_kind(write_vdocx(doc)) == "doc"
+        assert sniff_office_kind(write_vsheetx(wb)) == "sheet"
+
+    def test_sniff_rejects_garbage_and_foreign_zip(self):
+        import io
+        import zipfile
+
+        from vector.office import sniff_office_kind
+        assert sniff_office_kind(b"plain text") is None
+        assert sniff_office_kind(b"") is None
+        buf = io.BytesIO()                                   # чужой ZIP без частей ВЕКТОР
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("hello.txt", "hi")
+        assert sniff_office_kind(buf.getvalue()) is None
+
+    def test_load_office_document_garbage_is_readable_value_error(self):
+        with pytest.raises(ValueError, match="не документ ВЕКТОР"):
+            office_view.load_office_document(b"plain text")
+
+
+class TestOfficeLoadSlot:
+    """Слот Backend.officeLoad (D-130): текстовый документ открывается как текст даже при пустом кэше
+    версий; битый файл — честный отказ с понятным текстом, а не «Ошибка клиента: SheetFormatError»."""
+
+    def _backend(self, tmp_path, data):
+        pytest.importorskip("PySide6.QtCore")
+        from PySide6.QtCore import QCoreApplication, QSettings
+
+        from vector.client.backend import Backend
+
+        class _Resp:
+            status = "accepted"
+            message_ru = ""
+
+        class _FakeClient:                                   # только скачивание версии — байты задаёт тест
+            def download_document_version(self, doc_id, ver, dest):
+                dest.write_bytes(data)
+                return _Resp()
+
+        app = QCoreApplication.instance() or QCoreApplication([])
+        be = Backend(client_factory=lambda *a: None,
+                     settings=QSettings(str(tmp_path / "s.ini"), QSettings.Format.IniFormat),
+                     auto_timers=False)
+        be.client = _FakeClient()
+        return be, app
+
+    def _load(self, be, app):
+        """Вызвать officeLoad и дождаться ответа (queryDone — успех, commandDone — отказ)."""
+        import time
+        got = {}
+        be.queryDone.connect(lambda tag, res: got.setdefault("query", res))
+        be.commandDone.connect(lambda tag, res: got.setdefault("cmd", res))
+        be.officeLoad("t1", "doc-1", 1)
+        deadline = time.time() + 10
+        while not got and time.time() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        app.processEvents()
+        return got
+
+    def test_doc_opens_as_text_with_cold_version_cache(self, tmp_path):
+        doc = Document(title="Акт осмотра")
+        doc.para("Осмотр выполнен.")
+        be, app = self._backend(tmp_path, write_vdocx(doc))
+        assert be._doc_versions == []                        # холодный кэш: имени файла нет
+        got = self._load(be, app)
+        assert "query" in got and "cmd" not in got, got      # успех, а не отказ
+        res = got["query"]
+        assert res["status"] == "accepted" and res["kind"] == "doc"
+        assert res["rows"][0]["text"] == "Осмотр выполнен."
+
+    def test_sheet_opens_as_sheet_with_cold_version_cache(self, tmp_path):
+        wb = Workbook()
+        wb.sheet("Спецификация").set("A1", value="Шкаф")
+        be, app = self._backend(tmp_path, write_vsheetx(wb))
+        got = self._load(be, app)
+        assert "query" in got and got["query"]["kind"] == "sheet"
+        assert got["query"]["view"]["cells"]["A1"]["text"] == "Шкаф"
+
+    def test_broken_file_is_clean_rejection_not_client_error(self, tmp_path):
+        be, app = self._backend(tmp_path, b"broken bytes")
+        got = self._load(be, app)
+        assert "cmd" in got and "query" not in got, got
+        res = got["cmd"]
+        assert res["status"] == "rejected"
+        assert "не читается" in res["message_ru"] and "Ошибка клиента" not in res["message_ru"]
+
+
+class TestLayoutSettings:
+    """Ширина инспектора и «Сбросить раскладку» (D-135): настройка хранится в QSettings, сброс — к умолчанию."""
+
+    def _backend(self, tmp_path):
+        pytest.importorskip("PySide6.QtCore")
+        from PySide6.QtCore import QCoreApplication, QSettings
+
+        from vector.client.backend import Backend
+        QCoreApplication.instance() or QCoreApplication([])
+        return Backend(client_factory=lambda *a: None,
+                       settings=QSettings(str(tmp_path / "s.ini"), QSettings.Format.IniFormat),
+                       auto_timers=False)
+
+    def test_inspector_width_saved_and_reset(self, tmp_path):
+        be = self._backend(tmp_path)
+        assert be.inspectorWidth == 0                    # по умолчанию — из плотности интерфейса
+        be.inspectorWidth = 333
+        assert be.inspectorWidth == 333
+        be.inspectorWidth = 9000                         # за пределами допустимого — игнорируется
+        assert be.inspectorWidth == 333
+        # Пересозданный Backend на том же файле настроек видит сохранённую ширину.
+        be2 = self._backend(tmp_path)
+        assert be2.inspectorWidth == 333
+        be2.resetLayout()
+        assert be2.inspectorWidth == 0
+
+    def test_copy_text_uses_clipboard(self, tmp_path):
+        """copyText не падает без GUI-приложения; с QGuiApplication — пишет в буфер (полная проверка — UI-тест)."""
+        pytest.importorskip("PySide6.QtGui")
+        from PySide6.QtGui import QGuiApplication
+        inst = QGuiApplication.instance()                # в этой сессии мог быть создан QCoreApplication
+        be = self._backend(tmp_path)
+        be.copyText("АТХ-15.02")
+        if isinstance(inst, QGuiApplication):
+            assert inst.clipboard().text() == "АТХ-15.02"

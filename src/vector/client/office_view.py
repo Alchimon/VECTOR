@@ -116,11 +116,37 @@ def doc_from_view(title: str, rows: list[dict]) -> Document:
 PREVIEW_MAX_LINES = 8
 
 
-def document_preview(data: bytes, kind: str) -> dict:
+def load_office_document(data: bytes) -> dict:
+    """Байты версии файла → рабочее представление редактора: {kind: "doc", title, rows} или
+    {kind: "sheet", workbook, view}.
+
+    Вид документа определяется по СОДЕРЖИМОМУ пакета (sniff_office_kind), а не по имени файла из
+    кэша версий: при холодном/неполном кэше угадывание по расширению отдавало текстовый документ
+    парсеру таблиц — вместо открытия всплывал SheetFormatError (D-130). Форматные ошибки читателей
+    (DocFormatError/SheetFormatError) пробрасываются как есть — у них уже понятный русский текст.
+    """
+    from vector.office import sniff_office_kind
+    kind = sniff_office_kind(data)
+    if kind == "doc":
+        from vector.office.vdocx import read_vdocx
+        doc = read_vdocx(data)
+        return {"kind": "doc", "title": doc.title, "rows": doc_to_view(doc)}
+    if kind == "sheet":
+        from vector.office.vsheetx import read_vsheetx
+        wb = read_vsheetx(data)
+        return {"kind": "sheet", "workbook": wb, "view": sheet_to_view(wb)}
+    raise ValueError("это не документ ВЕКТОР (.vdocx/.vsheetx) — в пакете нет document.xml или workbook.xml")
+
+
+def document_preview(data: bytes, kind: str | None = None) -> dict:
     """Первые строки офисного документа для мини-предпросмотра (инспектор 2.0, D-103): заголовок
     (лист/документ) и до PREVIEW_MAX_LINES непустых строк. Рабочая копия редактора не затрагивается —
-    разбор из байтов версии. kind: "sheet" (.vsheetx) | "doc" (.vdocx).
+    разбор из байтов версии. kind: "sheet" (.vsheetx) | "doc" (.vdocx); None — определить по содержимому
+    (надёжнее имени файла из кэша, D-130).
     """
+    if kind is None:
+        from vector.office import sniff_office_kind
+        kind = sniff_office_kind(data)
     if kind == "doc":
         from vector.office.vdocx import read_vdocx
         doc = read_vdocx(data)
@@ -131,6 +157,8 @@ def document_preview(data: bytes, kind: str) -> dict:
             elif isinstance(b, TableBlock):
                 lines.append(DOC_TABLE_PLACEHOLDER.format(r=len(b.rows), c=len(b.rows[0]) if b.rows else 0))
         return {"title": doc.title or "", "lines": lines[:PREVIEW_MAX_LINES]}
+    if kind != "sheet":
+        raise ValueError("это не документ ВЕКТОР (.vdocx/.vsheetx) — в пакете нет document.xml или workbook.xml")
     from vector.office.vsheetx import read_vsheetx
     wb = read_vsheetx(data)
     view = sheet_to_view(wb)

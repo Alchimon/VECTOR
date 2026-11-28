@@ -50,7 +50,7 @@ Item {
                     Layout.preferredHeight: Layout.preferredWidth * sourceSize.height / Math.max(1, sourceSize.width)
                     fillMode: Image.PreserveAspectFit
                     smooth: true; mipmap: true
-                    Accessible.name: "ВЕКТОР ПЛАТФОРМА — единая платформа для инженеров и бизнеса"
+                    Accessible.name: "ВЕКТОР Платформа — единая платформа для инженеров и бизнеса"
                 }
                 Item { Layout.fillHeight: true }
                 Text {
@@ -87,7 +87,7 @@ Item {
                 width: Math.min(400, parent.width - 64)
                 spacing: 16
                 Text { text: "Вход в систему"; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fsXl; font.weight: Font.Bold }
-                Text { text: "Используйте учётную запись, выданную администратором ВЕКТОР ПЛАТФОРМА."; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                Text { text: "Используйте учётную запись, выданную администратором ВЕКТОР Платформа."; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs; wrapMode: Text.Wrap; Layout.fillWidth: true }
                 VField { id: server; label: "Адрес сервера"; placeholder: "https://vector.company.local:8443"; text: backend.savedServer; onAccepted: login.input.forceActiveFocus() }
                 VField { id: login; label: "Логин"; placeholder: "i.ivanov"; text: backend.savedLogin; onAccepted: pwd.input.forceActiveFocus() }
                 VField { id: pwd; label: "Пароль"; password: true; onAccepted: page.submit() }

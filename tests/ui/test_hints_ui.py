@@ -106,9 +106,12 @@ def test_help_page_guide_tab(ui, qml_warnings):  # noqa: F811
     assert "![" not in body.property("text")                    # снимки заменены подписями
     # Выбор другого раздела меняет текст.
     page = ui.find("helpPage")
-    page.setProperty("guideIdx", 3)                              # «4. Работа без связи»
+    page.setProperty("guideIdx", 4)                              # «4. Работа без связи»
     ui.pump(0.2)
     assert "очеред" in body.property("text").lower()
+    # Иллюстрированный гайд (D-134): у раздела со снимком в пакете справки — иллюстрации с подписями.
+    imgs = page.property("guide")[4]["images"]
+    assert imgs and imgs[0]["src"].endswith(".png") and imgs[0]["caption"]
     assert qml_warnings == []
 
 def test_role_selects_expand_abbreviations(ui):
@@ -134,6 +137,17 @@ def test_help_page_about_tab_license_demo(ui):
     assert not ui.backend.moduleOk("schema")                      # «В разработке» — раздела ещё нет
     support = ui.find("aboutSupport")
     assert "демо" in support.property("v").lower() or "поддержк" in support.property("v").lower()
+
+
+def test_about_tab_orbita_status(ui):
+    """«О программе» (D-131/D-132): статус подключения к серверу экосистемы — ВЕКТОР Орбита — с адресом."""
+    ui.login("k.pavlov")
+    ui.go("help")
+    ui.click(ui.find("tabAbout"))
+    ui.wait_idle()
+    st = _v(ui.backend, "orbitaStatus")
+    assert st["state"] in ("online", "reconnect", "offline") and st["label"]
+    assert st["host"]                                          # адрес Орбиты из настроек стенда
 
 
 def test_license_banner_readonly_and_grace(ui):

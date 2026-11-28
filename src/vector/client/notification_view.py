@@ -73,11 +73,12 @@ def when_label(at: Optional[str], now: datetime, tz: Optional[tzinfo] = None) ->
 
 
 def notifications_view(items: list[dict], people: dict[str, str], online: bool, now: datetime,
-                       tz: Optional[tzinfo] = None) -> dict[str, Any]:
+                       tz: Optional[tzinfo] = None, links: Optional[dict[str, str]] = None) -> dict[str, Any]:
     """Всё для раздела «Уведомления»: список с подписями, число непрочитанных и что можно сделать.
 
     * items — уведомления из pull (новые сверху); у каждого добавляются when (время), actor_name, icon, tone,
-      unread, page (куда ведёт «Открыть», пусто — некуда);
+      unread, page (куда ведёт «Открыть», пусто — некуда), link (vector://-ссылка на объект — для уведомлений
+      об обсуждениях, P3-2: по ней оболочка открывает сам объект, а не раздел);
     * unread — сколько непрочитанных (бейдж в меню); unread_ids — их id (для «Прочитать все» и тестов);
     * can_mark — отметить прочитанными можно только при связи.
     """
@@ -86,7 +87,8 @@ def notifications_view(items: list[dict], people: dict[str, str], online: bool, 
         rows.append({**n, "when": when_label(n.get("created_at"), now, tz),
                      "actor_name": people.get(n.get("actor_id") or "", ""),
                      "icon": KIND_ICONS.get(n.get("kind"), "bell"), "tone": KIND_TONES.get(n.get("kind"), "neutral"),
-                     "unread": not n.get("read_at"), "page": TARGET_PAGES.get(n.get("object_type") or "", "")})
+                     "unread": not n.get("read_at"), "page": TARGET_PAGES.get(n.get("object_type") or "", ""),
+                     "link": (links or {}).get(str(n.get("object_id") or ""), "")})
     unread = [r["id"] for r in rows if r["unread"]]
     return {"items": rows, "unread": len(unread), "unread_ids": unread, "can_mark": online and bool(unread),
             "online": online, "empty_text": "Уведомлений нет. Здесь появятся заказы на согласовании, решения по ним "

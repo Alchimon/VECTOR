@@ -65,6 +65,7 @@ def test_screens_have_no_hardcoded_colors():
 
 def test_brand_images_exist_and_logo_is_transparent():
     """Фирменные изображения — графический пак экосистемы (D-99, assets/vektor): логотипы, фон, значок окна."""
+    pytest.importorskip("PySide6.QtGui", reason="нет GUI-стека (минимальная машина тестирования)")
     from PySide6.QtGui import QImage
     pack = ROOT / "src" / "vector" / "client" / "assets" / "vektor"
     for name in ("app_icons/logo/vektor_platform_horizontal.png", "app_icons/logo/vektor_emblem_only.png",
@@ -75,3 +76,26 @@ def test_brand_images_exist_and_logo_is_transparent():
     for name in ("app_icons/logo/vektor_platform_horizontal.png", "app_icons/logo/vektor_emblem_only.png"):
         img = QImage(str(pack / name))
         assert img.hasAlphaChannel() and img.pixelColor(0, 0).alpha() == 0, f"{name}: фон не прозрачен"
+
+
+def test_client_asset_pack_matches_repo_pack():
+    """Графический пак клиента (src/vector/client/assets/vektor/app_icons) — точная копия исходного пака
+    assets/vektor/app_icons (D-99): значки всех модулей и размеров, включая ВЕКТОР Орбита (vektor_orbita).
+    Рассинхронизация = в клиенте пропадут новые значки."""
+    src = ROOT / "assets" / "vektor" / "app_icons"
+    dst = ROOT / "src" / "vector" / "client" / "assets" / "vektor" / "app_icons"
+    src_files = {p.relative_to(src): p.read_bytes() for p in src.rglob("*") if p.is_file()}
+    dst_files = {p.relative_to(dst): p.read_bytes() for p in dst.rglob("*") if p.is_file()}
+    assert src_files.keys() == dst_files.keys(), (
+        f"только в исходном паке: {sorted(src_files.keys() - dst_files.keys())}, "
+        f"только в клиентском: {sorted(dst_files.keys() - src_files.keys())}")
+    diff = [str(k) for k in src_files if src_files[k] != dst_files[k]]
+    assert not diff, "расходятся файлы: " + ", ".join(diff)
+
+
+def test_orbita_icons_exist():
+    """ВЕКТОР Орбита (сервер экосистемы, D-131): значок в клиентском паке — все размеры + .ico."""
+    pack = ROOT / "src" / "vector" / "client" / "assets" / "vektor" / "app_icons"
+    for name in ("ico/vektor_orbita.ico", "png_64/vektor_orbita.png", "png_128/vektor_orbita.png",
+                 "png_256/vektor_orbita.png", "png_512/vektor_orbita.png"):
+        assert (pack / name).exists() and (pack / name).stat().st_size > 0, name

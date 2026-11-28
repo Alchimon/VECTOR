@@ -33,6 +33,8 @@ from .config_store import ConfigMixin
 from .consolidation import ConsolidationMixin
 from .delegation import DelegationMixin
 from .delivery import DeliveryMixin
+from .discuss import DiscussMixin
+from .kb import KbMixin
 from .office import OfficeMixin
 from .rkd import RkdMixin
 from .notify import NotificationMixin
@@ -47,7 +49,7 @@ from .production import ProductionMixin
 from .purchasing import PurchasingMixin
 from .stock import StockMixin
 from .work import WorkMixin
-from .db import audit_log, customers, kits, operations, project_assignments, projects, role_grants, sessions, tenders, tkp, tkp_approvals, users
+from .db import audit_log, comments as comments_t, customers, kits, operations, project_assignments, projects, role_grants, sessions, tenders, tkp, tkp_approvals, users
 
 log = logging.getLogger("vector.server")
 
@@ -98,7 +100,8 @@ class Ctx:
 
 class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, DelegationMixin, NotificationMixin,
               ProductionMixin, LifecycleMixin, QualityMixin, WorktimeMixin, OrgMixin, WorkdayMixin,
-              ScheduleMixin, CalendarMixin, DeliveryMixin, RkdMixin, ConsolidationMixin, OfficeMixin):
+              ScheduleMixin, CalendarMixin, DeliveryMixin, RkdMixin, ConsolidationMixin, OfficeMixin, DiscussMixin,
+              KbMixin):
     """Сервис команд. Задачи, документы и файлы — в примеси WorkMixin (work.py); расчёты — CalcMixin (calc.py);
     склад и закупочная потребность — StockMixin (stock.py); настройки компании — ConfigMixin (config_store.py);
     замещение и основания решений — DelegationMixin (delegation.py, D-34/D-35); уведомления — NotificationMixin
@@ -183,6 +186,15 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
             # Ревизии РКД: проверка, замечания, трансмитталы (rkd.py, этап 3 blueprint 52).
             "docrev.create": self._docrev_create, "docrev.transition": self._docrev_transition,
             "comment.add": self._comment_add, "comment.respond": self._comment_respond,
+            # Обсуждения объектов с @упоминаниями (discuss.py, P3-2).
+            "discuss.add": self._discuss_add, "discuss.edit": self._discuss_edit,
+            "discuss.delete": self._discuss_delete,
+            # База знаний и справочники компании (kb.py, P3-3).
+            "kb.create": self._kb_create, "kb.update": self._kb_update, "kb.archive": self._kb_archive,
+            "vendor.create": self._vendor_create, "vendor.update": self._vendor_update,
+            "vendor.archive": self._vendor_archive,
+            "equipment.create": self._equipment_create, "equipment.update": self._equipment_update,
+            "equipment.archive": self._equipment_archive,
             "transmittal.create": self._transmittal_create,
             "transmittal.register_receipt": self._transmittal_register_receipt,
             # Профили шифров и статусы выдачи (D-62, этап 3б blueprint 52).
@@ -1283,6 +1295,12 @@ class Service(WorkMixin, CalcMixin, StockMixin, PurchasingMixin, ConfigMixin, De
                         .order_by(project_assignments.c.id)))
         # Задачи, документы и метаданные версий (без содержимого файлов) — только по читаемым проектам.
         out.update(self._pull_work(conn, readable))
+        # База знаний и справочники компании (P3-3): статьи компании всем, проекта — читающим проект.
+        out.update(self._pull_kb(conn, uid, now, readable))
+        # Обсуждения объектов (P3-2) — по читаемым проектам, включая мягко удалённые (заглушки в тредах).
+        out["comments"] = [self.v_discuss_comment(o) for o in self._rows(
+            conn, sa.select(comments_t).where(comments_t.c.project_id.in_(readable))
+            .order_by(comments_t.c.created_at, comments_t.c.id))] if readable else []
         # Лиды, потоки проекта, риск-разрешения, события и снимок архива (D-56).
         out.update(self._pull_delivery(conn, uid, now, readable))
         # Ревизии РКД: проверка, замечания/ответы, трансмитталы (этап 3 blueprint 52).

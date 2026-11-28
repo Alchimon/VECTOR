@@ -125,10 +125,15 @@ Item {
                         delegate: RowLayout {
                             required property var modelData
                             Layout.fillWidth: true; spacing: 10
-                            Rectangle { implicitWidth: Math.max(56, kt.implicitWidth + 14); implicitHeight: 22; radius: Theme.radiusS
+                            // Табличка клавиши: ширина по тексту с ограничением — длинное сочетание не вылезает
+                            // за контейнер, а переносится внутри (P1: вёрстка горячих клавиш).
+                            Rectangle { Layout.preferredWidth: Math.min(150, Math.max(56, kt.implicitWidth + 14))
+                                        implicitHeight: kt.implicitHeight + 8; radius: Theme.radiusS
                                         color: Theme.surfaceAlt; border.color: Theme.border
-                                Text { id: kt; anchors.centerIn: parent; text: modelData[0]; color: Theme.text; font.family: Theme.family
-                                       font.pixelSize: Theme.fsXs; font.weight: Font.DemiBold } }
+                                Text { id: kt; anchors.centerIn: parent; width: parent.width - 10
+                                       text: modelData[0]; color: Theme.text; font.family: Theme.family
+                                       font.pixelSize: Theme.fsXs; font.weight: Font.DemiBold
+                                       wrapMode: Text.Wrap; horizontalAlignment: Text.AlignHCenter } }
                             Text { text: modelData[1]; color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fs
                                    wrapMode: Text.Wrap; Layout.fillWidth: true }
                         }
@@ -190,84 +195,144 @@ Item {
                     id: guideBody
                     anchors.fill: parent; anchors.margins: 24
                     contentWidth: width
-                    contentHeight: guideText.implicitHeight
+                    contentHeight: guideCol.implicitHeight
                     clip: true; boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ScrollBar {}
-                    Text {
-                        id: guideText
-                        objectName: "guideBody"
-                        width: guideBody.width
-                        text: page.guide.length > 0 ? page.guide[Math.min(page.guideIdx, page.guide.length - 1)].body : ""
-                        textFormat: Text.MarkdownText
-                        color: Theme.text
-                        font.family: Theme.family; font.pixelSize: Theme.fs
-                        wrapMode: Text.Wrap
-                        lineHeight: 1.25
+                    ColumnLayout {
+                        id: guideCol
+                        width: guideBody.width; spacing: 14
+                        Text {
+                            id: guideText
+                            objectName: "guideBody"
+                            Layout.fillWidth: true
+                            text: page.guide.length > 0 ? page.guide[Math.min(page.guideIdx, page.guide.length - 1)].body : ""
+                            textFormat: Text.MarkdownText
+                            color: Theme.text
+                            font.family: Theme.family; font.pixelSize: Theme.fs
+                            wrapMode: Text.Wrap
+                            lineHeight: 1.25
+                        }
+                        // Иллюстрации раздела (D-134): курируемые снимки экрана из папки справки
+                        // (help/screenshots) — снимок с рамкой и подписью прямо под текстом раздела.
+                        Repeater {
+                            model: page.guide.length > 0 ? (page.guide[Math.min(page.guideIdx, page.guide.length - 1)].images || []) : []
+                            delegate: ColumnLayout {
+                                required property var modelData
+                                Layout.fillWidth: true; spacing: 6
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: gimg.implicitHeight > 0 ? Math.min(gimg.implicitHeight, 420) + 2 : 2
+                                    radius: Theme.radiusS; color: Theme.surfaceAlt; border.color: Theme.border; clip: true
+                                    Image {
+                                        id: gimg
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        width: parent.width - 2
+                                        fillMode: Image.PreserveAspectFit
+                                        source: modelData.src ? "file:///" + modelData.src : ""
+                                        smooth: true; mipmap: true
+                                        Accessible.name: modelData.caption || "Снимок экрана"
+                                    }
+                                }
+                                Text { text: modelData.caption || ""; color: Theme.textMuted
+                                       font.family: Theme.family; font.pixelSize: Theme.fsS; font.italic: true
+                                       wrapMode: Text.Wrap; Layout.fillWidth: true }
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // ---- «О программе»: версия, лицензия и модули (D-81). Лицензия — из последнего снимка (pull); без
-        // файла лицензии — режим демо/стенда. Решение о доступе принимает сервер; здесь — честная информация.
+        // ---- «О программе» (D-133): двухколоночный макет — слева бренд, версия и связь с ВЕКТОР Орбита,
+        // справа лицензия и состав экосистемы. Лицензия — из последнего снимка (pull); без файла лицензии —
+        // режим демо/стенда. Решение о доступе принимает сервер; здесь — честная информация.
         Flickable {
             visible: page.tab === "about"
             Layout.fillWidth: true; Layout.fillHeight: true
             contentWidth: width; contentHeight: aboutCol.implicitHeight
             clip: true; boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
-            ColumnLayout {
+            RowLayout {
                 id: aboutCol
                 width: parent.width; spacing: 12
+                // ---- левая колонка: бренд, версия, связь с ВЕКТОР Орбита
                 VCard {
-                    Layout.fillWidth: true; implicitHeight: aboutMain.implicitHeight + 40
+                    Layout.fillWidth: true; Layout.alignment: Qt.AlignTop
+                    implicitHeight: aboutMain.implicitHeight + 40
                     ColumnLayout {
                         id: aboutMain
                         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20
                         spacing: 6
-                        // Логотип экосистемы из графического пака (D-99): на тёмной панели — как на входе,
-                        // в светлой теме серебристый читается за счёт тёмных кромок.
-                        Rectangle { Layout.fillWidth: true; implicitHeight: 86; radius: Theme.radiusS
+                        // Логотип экосистемы из графического пака (D-99): KeepAspectRatio, без обрезки и тесноты —
+                        // высокая панель, логотип по центру с воздухом.
+                        Rectangle { Layout.fillWidth: true; implicitHeight: 110; radius: Theme.radiusS
                                     color: Theme.dark ? Theme.brandBg : Theme.surfaceAlt
-                            Image { anchors.centerIn: parent; height: 62; width: height * sourceSize.width / Math.max(1, sourceSize.height)
+                            Image { anchors.centerIn: parent; height: 78; width: height * sourceSize.width / Math.max(1, sourceSize.height)
                                     source: Theme.logo; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true
-                                    Accessible.name: "ВЕКТОР ПЛАТФОРМА" } }
-                        SectionTitle { text: "ВЕКТОР ПЛАТФОРМА — рабочая среда инженерной компании"; iconName: "info" }
+                                    Accessible.name: "ВЕКТОР Платформа" } }
+                        SectionTitle { text: "ВЕКТОР Платформа — рабочая среда инженерной компании"; iconName: "info" }
                         KeyValue { k: "Версия программы"; v: backend.licenseInfo.app_version || "" }
-                        KeyValue { k: "Режим"; v: backend.licenseInfo.mode === "licensed" ? "Лицензия" : "Демо / тестовый стенд" }
-                        KeyValue { visible: backend.licenseInfo.mode === "licensed"; k: "Заказчик"; v: backend.licenseInfo.customer || "" }
-                        KeyValue { visible: backend.licenseInfo.mode === "licensed"; k: "Лицензия"; v: (backend.licenseInfo.kind_label_ru || "")
-                                     + (backend.licenseInfo.valid_until ? " до " + backend.licenseInfo.valid_until : "") }
-                        KeyValue { objectName: "aboutSupport"; k: "Поддержка"; v: backend.licenseInfo.support_label_ru || "" }
-                        KeyValue { objectName: "aboutSeats"; visible: (backend.licenseInfo.seats || 0) > 0
-                                   k: "Именные места"
-                                   v: (backend.licenseInfo.seats || 0) + " (в работе: " + (backend.licenseInfo.seats_in_use || 0) + ")"
-                                      + (backend.licenseInfo.seats_exceeded ? " — мест не хватает: свяжитесь с поставщиком, работа не блокируется" : "") }
-                        Text {
-                            Layout.fillWidth: true; wrapMode: Text.Wrap
-                            text: "Истёкшая подписка не блокирует данные: раздел переходит в режим «только чтение» — смотреть, печатать и выгружать можно всегда."
-                            color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS
-                        }
+                        // Статус подключения к серверу экосистемы (D-132): адрес ВЕКТОР Орбита и режим связи.
+                        SectionTitle { text: "Связь с ВЕКТОР Орбита"; iconName: "cloud"; Layout.topMargin: 10 }
+                        RowLayout { spacing: 8
+                            Rectangle { width: 9; height: 9; radius: 5; Layout.alignment: Qt.AlignVCenter
+                                        color: backend.orbitaStatus.state === "online" ? Theme.success
+                                             : backend.orbitaStatus.state === "reconnect" ? Theme.warning : Theme.textMuted }
+                            Text { text: backend.orbitaStatus.host || "адрес не задан"; color: Theme.text
+                                   font.family: Theme.family; font.pixelSize: Theme.fs; elide: Text.ElideRight; Layout.fillWidth: true } }
+                        Text { Layout.fillWidth: true; wrapMode: Text.Wrap
+                               text: backend.orbitaStatus.label || ""
+                               color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS }
+                        Text { Layout.fillWidth: true; wrapMode: Text.Wrap; Layout.topMargin: 10
+                               text: "© 2025–2026 ВЕКТОР. Рабочая среда инженерной компании: клиент — ВЕКТОР Платформа, сервер — ВЕКТОР Орбита, центральный модуль — ВЕКТОР ХАБ."
+                               color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS }
                     }
                 }
-                VCard {
-                    Layout.fillWidth: true; implicitHeight: aboutMods.implicitHeight + 40
-                    ColumnLayout {
-                        id: aboutMods
-                        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20
-                        spacing: 6
-                        SectionTitle { text: "Модули"; iconName: "layers" }
-                        Repeater {
-                            model: backend.licenseInfo.modules || []
-                            delegate: RowLayout {
-                                required property var modelData
-                                width: parent ? parent.width : 0; spacing: 10
-                                Text { text: modelData.title_ru; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs
-                                       Layout.fillWidth: true; elide: Text.ElideRight }
-                                Text { text: modelData.label_ru; font.family: Theme.family; font.pixelSize: Theme.fsS
-                                       color: modelData.state === "active" ? Theme.success
-                                            : modelData.state === "grace" ? Theme.warning
-                                            : Theme.textMuted }
+                // ---- правая колонка: лицензия и состав экосистемы
+                ColumnLayout {
+                    Layout.fillWidth: true; Layout.alignment: Qt.AlignTop; spacing: 12
+                    VCard {
+                        Layout.fillWidth: true; implicitHeight: aboutLic.implicitHeight + 40
+                        ColumnLayout {
+                            id: aboutLic
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20
+                            spacing: 6
+                            SectionTitle { text: "Лицензия"; iconName: "shield-check" }
+                            KeyValue { k: "Режим"; v: backend.licenseInfo.mode === "licensed" ? "Лицензия" : "Демо / тестовый стенд" }
+                            KeyValue { visible: backend.licenseInfo.mode === "licensed"; k: "Заказчик"; v: backend.licenseInfo.customer || "" }
+                            KeyValue { visible: backend.licenseInfo.mode === "licensed"; k: "Лицензия"; v: (backend.licenseInfo.kind_label_ru || "")
+                                         + (backend.licenseInfo.valid_until ? " до " + backend.licenseInfo.valid_until : "") }
+                            KeyValue { objectName: "aboutSupport"; k: "Поддержка"; v: backend.licenseInfo.support_label_ru || "" }
+                            KeyValue { objectName: "aboutSeats"; visible: (backend.licenseInfo.seats || 0) > 0
+                                       k: "Именные места"
+                                       v: (backend.licenseInfo.seats || 0) + " (в работе: " + (backend.licenseInfo.seats_in_use || 0) + ")"
+                                          + (backend.licenseInfo.seats_exceeded ? " — мест не хватает: свяжитесь с поставщиком, работа не блокируется" : "") }
+                            Text {
+                                Layout.fillWidth: true; wrapMode: Text.Wrap
+                                text: "Истёкшая подписка не блокирует данные: раздел переходит в режим «только чтение» — смотреть, печатать и выгружать можно всегда."
+                                color: Theme.textMuted; font.family: Theme.family; font.pixelSize: Theme.fsS
+                            }
+                        }
+                    }
+                    VCard {
+                        Layout.fillWidth: true; implicitHeight: aboutMods.implicitHeight + 40
+                        ColumnLayout {
+                            id: aboutMods
+                            anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 20
+                            spacing: 6
+                            SectionTitle { text: "Состав экосистемы"; iconName: "layers" }
+                            Repeater {
+                                model: backend.licenseInfo.modules || []
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    width: parent ? parent.width : 0; spacing: 10
+                                    Text { text: modelData.title_ru; color: Theme.text; font.family: Theme.family; font.pixelSize: Theme.fs
+                                           Layout.fillWidth: true; elide: Text.ElideRight }
+                                    Text { text: modelData.label_ru; font.family: Theme.family; font.pixelSize: Theme.fsS
+                                           color: modelData.state === "active" ? Theme.success
+                                                : modelData.state === "grace" ? Theme.warning
+                                                : Theme.textMuted }
+                                }
                             }
                         }
                     }

@@ -1150,6 +1150,77 @@
    "offline": "online_required",
    "object": "office_doc",
    "label_ru": "Сформировать документ из шаблона (подстановка полей проекта)"
+  },
+  "discuss.add": {
+   "offline": "queued",
+   "object": "comment",
+   "label_ru": "Добавить комментарий"
+  },
+  "discuss.edit": {
+   "offline": "queued",
+   "object": "comment",
+   "label_ru": "Изменить комментарий",
+   "requires_expected_version": true
+  },
+  "discuss.delete": {
+   "offline": "queued",
+   "object": "comment",
+   "label_ru": "Удалить комментарий",
+   "requires_expected_version": true
+  },
+  "kb.create": {
+   "offline": "queued",
+   "object": "kb_article",
+   "label_ru": "Создать статью базы знаний",
+   "note": "P3-3: scope company — ведущий инженер/руководитель отдела; scope project — участник проекта. Можно без связи (очередь)."
+  },
+  "kb.update": {
+   "offline": "queued",
+   "object": "kb_article",
+   "label_ru": "Изменить статью базы знаний",
+   "requires_expected_version": true
+  },
+  "kb.archive": {
+   "offline": "queued",
+   "object": "kb_article",
+   "label_ru": "Отправить статью в архив / вернуть",
+   "requires_expected_version": true
+  },
+  "vendor.create": {
+   "offline": "online_required",
+   "object": "vendor",
+   "label_ru": "Создать карточку подрядчика",
+   "note": "P3-3: общая база подрядчиков/поставщиков компании; справочник ведёт закупка, правки редки — только онлайн."
+  },
+  "vendor.update": {
+   "offline": "online_required",
+   "object": "vendor",
+   "label_ru": "Изменить карточку подрядчика",
+   "requires_expected_version": true
+  },
+  "vendor.archive": {
+   "offline": "online_required",
+   "object": "vendor",
+   "label_ru": "Архивировать подрядчика / вернуть",
+   "requires_expected_version": true
+  },
+  "equipment.create": {
+   "offline": "online_required",
+   "object": "equipment",
+   "label_ru": "Добавить оборудование в каталог",
+   "note": "P3-3: паспортные характеристики (JSON); ведут ведущий инженер и технолог."
+  },
+  "equipment.update": {
+   "offline": "online_required",
+   "object": "equipment",
+   "label_ru": "Изменить запись каталога оборудования",
+   "requires_expected_version": true
+  },
+  "equipment.archive": {
+   "offline": "online_required",
+   "object": "equipment",
+   "label_ru": "Архивировать запись каталога / вернуть",
+   "requires_expected_version": true
   }
  },
  "queries": {

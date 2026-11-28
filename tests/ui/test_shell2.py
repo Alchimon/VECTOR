@@ -27,6 +27,20 @@ def _tabs(sh):
     return [_plain(t) for t in _plain(sh.property("openTabs"))]
 
 
+def _find_named(root, name):
+    """Все элементы с objectName == name в визуальном дереве root (страницы 2.0 — делегаты
+    Repeater вкладок: findChild их не видит, поэтому обходим childItems вручную)."""
+    found = []
+
+    def walk(o):
+        for ch in o.childItems():
+            if ch.property("objectName") == name:
+                found.append(ch)
+            walk(ch)
+    walk(root)
+    return found
+
+
 def test_v2_loads_with_ribbon_tabs_statusbar(ui):
     """Каркас 2.0: лента, вкладки, статус-бар видны; домашний раздел — проекты (у РП)."""
     ui.login("a.smirnova")
@@ -312,6 +326,41 @@ def test_v2_analytics_page(ui):
     assert sum(r["count"] for r in v["project_rows"]) == 2
 
 
+def test_v2_customers_page(ui):
+    """Раздел «Заказчики» 2.0 (D-129): карточки слева, карточка заказчика справа, тендеры заказчика."""
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    from PySide6.QtCore import QMetaObject, Q_ARG
+    QMetaObject.invokeMethod(sh, "go", Q_ARG("QVariant", "customers"), Q_ARG("QVariant", ""))
+    ui.wait_idle()
+    page = next((p for p in _find_named(sh, "customersPage2") if p.isVisible()), None)
+    assert page is not None, "страница заказчиков 2.0 не появилась"
+    customers = _plain(ui.backend.property("customers"))
+    assert len(customers) == 4                                     # четыре демо-заказчика
+    cards = [c for c in _find_named(sh, "cu2Card") if c.isVisible()]
+    assert len(cards) == 4
+    # До выбора карточка заказчика скрыта
+    assert not any(d.isVisible() for d in _find_named(sh, "cu2Detail"))
+    # Кнопка создания видна РП (право customer.create)
+    assert any(b.isVisible() for b in _find_named(sh, "cu2Create"))
+    # Выбор карточки щелчком — как пользователь; карточка показывает реквизиты и тендеры заказчика
+    idx = next(i for i, c in enumerate(customers) if c["name"] == "АО «Энергомаш»")
+    ui.click(cards[idx])
+    detail = next((d for d in _find_named(sh, "cu2Detail") if d.isVisible()), None)
+    assert detail is not None, "карточка заказчика не появилась после выбора"
+    name = next((t for t in _find_named(sh, "cu2Name") if t.isVisible()), None)
+    assert name is not None and name.property("text") == "АО «Энергомаш»"
+    tenders = _plain(ui.backend.property("tenders"))
+    want = len([t for t in tenders if t["customer_id"] == customers[idx]["id"]])
+    rows = [r for r in _find_named(sh, "cu2TenderRow") if r.isVisible()]
+    assert len(rows) == want and want >= 1                         # у Энергомаша тендеры есть
+    # Поиск фильтрует список
+    search = next(s for s in _find_named(sh, "customers2Search"))
+    search.setProperty("text", "водоканал")
+    ui.wait_idle()
+    assert len([c for c in _find_named(sh, "cu2Card") if c.isVisible()]) == 1
+
+
 def test_v2_home_page(ui):
     """«Главная» 2.0 (D-108): рабочий стол открывается стартовой вкладкой, счётчики честные."""
     ui.login("a.smirnova")
@@ -455,3 +504,134 @@ def test_v2_tab_stepping(ui):
     QMetaObject.invokeMethod(sh, "stepTab", Q_ARG("QVariant", -1))     # назад — на последнюю
     ui.wait_idle()
     assert sh.property("activeTabKey") == "kit:" + ui.ids["kits"]["АТХ"]
+
+
+def test_v2_tab_context_menu_pin_and_close_others(ui):
+    """Меню вкладки (D-137): закрепить — вкладка переживает «закрыть другие» и «закрыть все»;
+    закрыть справа убирает только поздние; копирование шифра кладёт шифр в буфер обмена."""
+    from PySide6.QtCore import Q_ARG, QMetaObject
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    _open_object(sh, "project", ui.ids["project"])
+    _open_object(sh, "kit", ui.ids["kits"]["АТХ"])
+    ui.wait_idle()
+    proj_key = "project:" + ui.ids["project"]
+    kit_key = "kit:" + ui.ids["kits"]["АТХ"]
+    # Закрепить проект — массовые закрытия его не трогают.
+    QMetaObject.invokeMethod(sh, "togglePinTab", Q_ARG("QVariant", proj_key))
+    ui.wait_idle()
+    tabs = {t["key"]: t for t in _tabs(sh)}
+    assert tabs[proj_key]["pinned"] is True and tabs[kit_key]["pinned"] is False
+    # «Закрыть» закреплённой не срабатывает.
+    QMetaObject.invokeMethod(sh, "closeTab", Q_ARG("QVariant", proj_key))
+    ui.wait_idle()
+    assert len(_tabs(sh)) == 3
+    # «Закрыть другие» от закреплённого проекта: комплект ушёл, домашняя страница и проект остались.
+    QMetaObject.invokeMethod(sh, "closeOtherTabs", Q_ARG("QVariant", proj_key))
+    ui.wait_idle()
+    assert [t["key"] for t in _tabs(sh)] == ["page:home", proj_key]
+    # «Закрыть все»: закреплённый проект остался, активна живая вкладка.
+    _open_object(sh, "kit", ui.ids["kits"]["АТХ"])
+    ui.wait_idle()
+    QMetaObject.invokeMethod(sh, "closeAllTabs")
+    ui.wait_idle()
+    keys = [t["key"] for t in _tabs(sh)]
+    assert keys == ["page:home", proj_key]
+    assert sh.property("activeTabKey") in keys
+    # Копирование шифра вкладки — в буфер обмена.
+    QMetaObject.invokeMethod(sh, "copyTabCode", Q_ARG("QVariant", proj_key))
+    from PySide6.QtGui import QGuiApplication
+    assert "П-2026-014" in QGuiApplication.clipboard().text()
+
+
+def test_v2_internal_links_copy_and_open(ui):
+    """Внутренние ссылки (P3-1): «Копировать ссылку» кладёт vector://… в буфер; палитра Ctrl+K принимает
+    ссылку и открывает объект; неизвестная ссылка — честный диалог, без падения."""
+    from PySide6.QtCore import Q_ARG, QMetaObject
+    from PySide6.QtGui import QGuiApplication
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    proj_key = "project:" + ui.ids["project"]
+    # Копирование ссылки вкладки проекта
+    _open_object(sh, "project", ui.ids["project"])
+    ui.wait_idle()
+    QMetaObject.invokeMethod(sh, "copyTabCode", Q_ARG("QVariant", proj_key))          # шифр (существующее)
+    assert "П-2026-014" in QGuiApplication.clipboard().text()
+    QMetaObject.invokeMethod(sh, "openLink", Q_ARG("QVariant", "vector://project/" + ui.ids["project"]))
+    ui.wait_idle()
+    assert sh.property("activeTabKey") == proj_key
+    # Ссылка на комплект из палитры: синтаксис vector://kit/<id> распознаётся и ведёт на объект.
+    pal = ui.find("commandPalette")
+    assert pal is not None
+    QMetaObject.invokeMethod(sh, "openLink", Q_ARG("QVariant", "vector://kit/" + ui.ids["kits"]["АТХ"]))
+    ui.wait_idle()
+    assert sh.property("activeTabKey") == "kit:" + ui.ids["kits"]["АТХ"]
+    # Неизвестный объект — честный диалог, интерфейс жив.
+    QMetaObject.invokeMethod(sh, "openLink", Q_ARG("QVariant", "vector://project/00000000-0000-4000-8000-000000000000"))
+    ui.wait_idle()
+    dlg = ui.find("linkDialog")
+    assert dlg is not None and dlg.property("visible") and "не найден" in dlg.property("subtitle")
+    dlg.close()
+def test_v2_object_comments_mentions(ui):
+    """Вкладка «Обсуждение» 2.0 (P3-2): общие комментарии к объекту — треды, @упоминания с автодополнением,
+    правка (своё, ≤24 ч) и мягкое удаление; уведомление упомянутого ведёт на объект (vector://)."""
+    from PySide6.QtCore import Q_ARG, QMetaObject
+    ui.login("a.smirnova")
+    sh = _to_v2(ui)
+    kit = next(k for k in _plain(ui.backend.property("kits")) if k["code"] == "АТХ")
+    QMetaObject.invokeMethod(sh, "selectObject", Q_ARG("QVariant", "kit"), Q_ARG("QVariant", kit))
+    ui.wait_idle()
+    insp = ui.find("inspector2")
+    insp.setProperty("inspectorTab", "discuss")
+    ui.wait_idle()
+    assert _plain(insp.property("commentItems")) == []
+    assert insp.property("commentCanAdd") is True
+    # Автодополнение @упоминания: фрагмент после «@» фильтрует справочник людей.
+    ci = ui.find("commentInput")
+    ci.setProperty("text", "Посмотрите марку кабеля, @Волк")
+    ui.wait_idle()
+    opts = _plain(insp.property("mentionOptions"))
+    assert [o["display_name"] for o in opts] == ["Волков Павел"]
+    QMetaObject.invokeMethod(insp, "applyMention", Q_ARG("QVariant", "Волков Павел"))
+    ui.wait_idle()
+    assert ci.property("text").endswith("@Волков Павел ")
+    # Отправка кнопкой (демо-стенд онлайн — сервер подтверждает сразу).
+    ui.click(ui.find("commentSend"))
+    items = _plain(insp.property("commentItems"))
+    assert len(items) == 1
+    c = items[0]
+    assert c["author_name"] == "Смирнова Анна" and c["mention_names"] == ["Волков Павел"]
+    assert c["pending"] is False and c["mine"] is True
+    # Ответ тредом (через backend, как кнопка «Ответить» под кнопкой формы).
+    ui.backend.addComment("ui-t", "kit", kit["id"], "Ответ по схеме", c["id"])
+    ui.wait_idle()
+    items = _plain(insp.property("commentItems"))
+    assert [i["id"] for i in items][:2] == [c["id"], items[1]["id"]]
+    assert items[1]["depth"] == 1 and items[1]["parent_id"] == c["id"]
+    # Правка своего комментария через диалог: отметка «изменён», версия выросла.
+    ef = ui.find("commentEditForm")
+    QMetaObject.invokeMethod(ef, "ask", Q_ARG("QVariant", c))
+    ui.wait_idle()
+    assert ef.property("visible") and ui.find("commentEditText").property("text") == c["body"]
+    ui.find("commentEditText").setProperty("text", "Марку кабеля проверил сам — всё верно")
+    QMetaObject.invokeMethod(ef, "confirmed")
+    ui.wait_idle()
+    assert not ef.property("visible")
+    items = _plain(insp.property("commentItems"))
+    assert items[0]["edited"] is True and items[0]["version"] == 2
+    assert items[0]["body"].startswith("Марку кабеля")
+    # Мягкое удаление: заглушка остаётся, тред не разваливается.
+    df = ui.find("commentDelForm")
+    QMetaObject.invokeMethod(df, "ask", Q_ARG("QVariant", items[0]))
+    ui.wait_idle()
+    assert df.property("visible")
+    QMetaObject.invokeMethod(df, "confirmed")
+    ui.wait_idle()
+    items = _plain(insp.property("commentItems"))
+    assert items[0]["deleted"] is True and items[0]["body"] == ""
+    assert items[1]["deleted"] is False and items[1]["parent_id"] == items[0]["id"]
+    # Уведомление упомянутого ведёт vector://-ссылкой на объект обсуждения (P3-1 + P3-2).
+    ui.login("p.volkov")
+    notes = _plain(ui.backend.property("notificationsOverview"))["items"]
+    mine = [n for n in notes if n.get("kind") == "mention"]
+    assert mine and mine[0]["link"] == "vector://kit/" + kit["id"]

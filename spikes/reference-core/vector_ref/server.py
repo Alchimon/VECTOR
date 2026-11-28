@@ -142,6 +142,12 @@ OUT_OF_SPIKE_SCOPE = frozenset({
     "checklist.archive", "checklist.create", "checklist.unarchive", "checklist.update",
     "claim.action_done", "claim.check", "claim.classify", "claim.plan", "claim.register", "claim.respond", "claim.set_due", "claim.start_analysis", "claim.submit_check",
     "comment.add", "comment.respond",
+    # Обсуждения объектов с @упоминаниями (P3-2) — продуктовая функция поверх среза 1, вне области спайка.
+    "discuss.add", "discuss.delete", "discuss.edit",
+    # База знаний и справочники компании (P3-3) — вне области спайка.
+    "kb.archive", "kb.create", "kb.update",
+    "vendor.archive", "vendor.create", "vendor.update",
+    "equipment.archive", "equipment.create", "equipment.update",
     "contract.create", "contract.update",
     "delegation.create", "delegation.revoke",
     "delivery_doc.create", "delivery_doc.update",

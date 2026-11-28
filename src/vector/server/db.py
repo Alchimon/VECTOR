@@ -71,7 +71,7 @@ from vector.core import money
 #         трансмитталы выдачи (document_transmittals, transmittal_items).
 # v31 (этап 4 blueprint 52): группы закупки (procurement_groups), консолидированные пакеты (procurement_batches,
 #         procurement_batch_lines, procurement_allocations), предложения аналогов с решением (item_analogs).
-SCHEMA_VERSION = 44
+SCHEMA_VERSION = 46
 
 # Идентификатор объекта — UUID строкой (36 символов). Его создаёт клиент, поэтому объект, заведённый офлайн,
 # сохраняет свой id после синхронизации, а повторная отправка той же команды распознаётся.
@@ -377,6 +377,76 @@ office_documents = sa.Table("office_documents", metadata,
     sa.Column("created_by", ID, nullable=False),
     sa.Column("created_at", UtcDateTime, nullable=False),
     sa.CheckConstraint("kind IN ('sheet', 'doc')", name="office_kind"))
+
+# ---------------------------------------------------------------- обсуждения объектов (P3-2)
+# Комментарии и @упоминания к проекту, комплекту, документу или задаче: треды (parent_id), мягкое удаление
+# (deleted_at — треды не разваливаются), подтверждённые сервером упоминания (mentions — JSON-список user_id).
+# project_id денормализован из объекта — права и pull считаются по проектам.
+comments = sa.Table("comments", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("object_type", U(16), nullable=False),                # project | kit | document | task
+    sa.Column("object_id", ID, nullable=False, index=True),
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), nullable=False, index=True),
+    sa.Column("parent_id", ID, sa.ForeignKey("comments.id")),
+    sa.Column("author_id", ID, sa.ForeignKey("users.id"), nullable=False),
+    sa.Column("body", T, nullable=False),
+    sa.Column("mentions", T, nullable=False),                       # JSON: ["user_id", …]
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("edited_at", UtcDateTime),
+    sa.Column("deleted_at", UtcDateTime),
+    sa.CheckConstraint("object_type IN ('project', 'kit', 'document', 'task')", name="comment_object_type"))
+
+# ---------------------------------------------------------------- база знаний и справочники компании (P3-3)
+# Статьи базы знаний: стандарты (СТО), инструкции, заметки; привязка к проекту (scope=project) или к компании
+# в целом (scope=company). code человекочитаемый («СТО-01»), уникален в своём scope. Архив — active=false
+# (статья остаётся в выдаче с пометкой). tags — JSON-список строк. Оптимистическая блокировка — version.
+kb_articles = sa.Table("kb_articles", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("scope", U(16), nullable=False),                      # company | project
+    sa.Column("project_id", ID, sa.ForeignKey("projects.id"), index=True),
+    sa.Column("kind", U(16), nullable=False),                       # standard | template_ref | note | howto
+    sa.Column("code", U(64), nullable=False),
+    sa.Column("title", U(300), nullable=False),
+    sa.Column("body_md", T, nullable=False),
+    sa.Column("tags", T, nullable=False),                           # JSON: ["тег", …]
+    sa.Column("active", sa.Boolean, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("scope IN ('company', 'project')", name="kb_scope"),
+    sa.CheckConstraint("kind IN ('standard', 'template_ref', 'note', 'howto')", name="kb_kind"),
+    sa.CheckConstraint("(scope = 'project') = (project_id IS NOT NULL)", name="kb_scope_project"))
+
+# Общая база подрядчиков/поставщиков компании (P3-3): не путать с suppliers закупки (тот — реквизиты для
+# заказов). Здесь — единый справочник с видом (поставщик/подрядчик) и оценочной пометкой.
+vendors = sa.Table("vendors", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("inn", sa.String(12)),                                # 10 или 12 цифр, необязателен
+    sa.Column("name", U(300), nullable=False),
+    sa.Column("contacts", T, nullable=False),                       # JSON: {"phone": …, "email": …, "site": …, "address": …}
+    sa.Column("kind", U(16), nullable=False),                       # supplier | contractor | both
+    sa.Column("rating_note", U(1000)),
+    sa.Column("active", sa.Boolean, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False),
+    sa.CheckConstraint("kind IN ('supplier', 'contractor', 'both')", name="vendor_kind"))
+
+# Справочник оборудования (паспортные характеристики в params — JSON-объект); source_doc_id — документ-источник
+# из РКД (необязательно), ссылка не проверяется внешним ключом сознательно: документ может быть вне видимости.
+equipment_catalog = sa.Table("equipment_catalog", metadata,
+    sa.Column("id", ID, primary_key=True),
+    sa.Column("code", U(64), nullable=False, unique=True),
+    sa.Column("name", U(300), nullable=False),
+    sa.Column("category", U(120), nullable=False),
+    sa.Column("manufacturer", U(300)),
+    sa.Column("params", T, nullable=False),                         # JSON-объект характеристик
+    sa.Column("source_doc_id", ID),
+    sa.Column("active", sa.Boolean, nullable=False),
+    sa.Column("version", sa.Integer, nullable=False),
+    sa.Column("created_by", ID, nullable=False), sa.Column("created_at", UtcDateTime, nullable=False),
+    sa.Column("updated_by", ID, nullable=False), sa.Column("updated_at", UtcDateTime, nullable=False))
 
 # ---------------------------------------------------------------- расчёт комплекта (С3, R-04/R-11/R-12)
 # Правила позиций и итогов — vector.core.calc (общие с клиентом). Количество хранится тем же типом Money:

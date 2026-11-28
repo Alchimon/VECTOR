@@ -18,6 +18,10 @@ Item {
     // Открыть объект уведомления: отметить прочитанным (если есть связь) и перейти в раздел.
     function openItem(n) {
         if (n.unread && page.nv.online === true) backend.markNotificationsRead("notif-read", [n.id])
+        if ((n.link || "") !== "" && page.shell && typeof page.shell.openLink === "function") {
+            page.shell.openLink(n.link)
+            return
+        }
         if (n.page === "procurement") {
             backend.setOrdersFilter(backend.orderFilterFor(n.object_id || ""))
             page.shell.go("procurement", n.object_id || "")

@@ -149,7 +149,7 @@ def main(argv=None) -> int:
     os.environ.setdefault("QT_QUICK_CONTROLS_STYLE", "Basic")
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QGuiApplication(argv or sys.argv)
-    app.setApplicationName("ВЕКТОР ПЛАТФОРМА")
+    app.setApplicationName("ВЕКТОР Платформа")
     app.setOrganizationName("VECTOR")
     # Значок окна и панели задач — эмблема экосистемы из графического пака (D-99, vektor_platform.ico).
     ico = VEKTOR / "app_icons" / "ico" / "vektor_platform.ico"

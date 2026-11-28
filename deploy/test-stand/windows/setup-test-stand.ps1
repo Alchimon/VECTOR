@@ -32,10 +32,17 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-# Кириллица в консоли: вывод PowerShell и Python — в UTF-8.
-[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+# Кириллица в консоли: вывод PowerShell и Python — в UTF-8. При перенаправленном выводе (нас запустил
+# установщик .exe — его nsExec читает канал в OEM-кодировке консоли) переключение на UTF-8 дало бы
+# кракозябры в протоколе установки, поэтому оставляем кодировку консоли по умолчанию и её же просим
+# от Python (PYTHONIOENCODING для stdout/stderr важнее режима PYTHONUTF8).
 $env:PYTHONUTF8 = "1"
-$env:PYTHONIOENCODING = "utf-8"
+if ([Console]::IsOutputRedirected) {
+    $env:PYTHONIOENCODING = [Console]::OutputEncoding.WebName
+} else {
+    [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+    $env:PYTHONIOENCODING = "utf-8"
+}
 
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..")).Path
 $Templates = $PSScriptRoot

@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from importlib import resources
 
-_IMG_LINE = re.compile(r"^\s*!\[([^\]]*)\]\([^)]*\)\s*$")
+_IMG_LINE = re.compile(r"^\s*!\[([^\]]*)\]\(([^)]*)\)\s*$")
 _SECTION = re.compile(r"^##\s+(.+?)\s*$", re.M)
 
 
@@ -19,20 +19,34 @@ def load_guide() -> str:
     return resources.files("vector.client").joinpath("help/user-guide.md").read_text(encoding="utf-8")
 
 
-def _body(md: str) -> str:
-    """Тело раздела для экрана: строки-снимки → курсивные подписи; разделители «---» убраны."""
-    out = []
+def _img_name(target: str) -> str:
+    """Имя файла снимка из ссылки руководства («../screenshots/light-01-login.png» → «light-01-login.png»);
+    None, если снимка нет в упакованной папке справки."""
+    name = target.rsplit("/", 1)[-1].strip()
+    return name if name and SCREENSHOTS.joinpath(name).exists() else ""
+
+
+SCREENSHOTS = resources.files("vector.client").joinpath("help/screenshots")
+
+
+def _body(md: str) -> tuple[str, list[dict]]:
+    """Тело раздела для экрана: строки-снимки собираются в список images [{src, caption}] (папка
+    help/screenshots — упакованная копия курируемых снимков справки), разделители «---» убраны.
+    Снимок, которого нет в упакованной папке, остаётся курсивной подписью."""
+    out, images = [], []
     for ln in md.strip().splitlines():
         m = _IMG_LINE.match(ln)
         if m:
-            cap = m.group(1).strip()
-            if cap:
+            cap, name = m.group(1).strip(), _img_name(m.group(2))
+            if name:
+                images.append({"src": SCREENSHOTS.joinpath(name).as_posix(), "caption": cap})
+            elif cap:
                 out.append(f"*{cap} — снимок экрана, есть в файле руководства.*")
             continue
         if ln.strip() == "---":
             continue
         out.append(ln)
-    return "\n".join(out).strip()
+    return "\n".join(out).strip(), images
 
 
 def guide_sections(text: str) -> list[dict]:
@@ -41,5 +55,6 @@ def guide_sections(text: str) -> list[dict]:
     out = []
     for i, m in enumerate(matches):
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        out.append({"id": f"s{i}", "title": m.group(1), "body": _body(text[m.end():end])})
+        body, images = _body(text[m.end():end])
+        out.append({"id": f"s{i}", "title": m.group(1), "body": body, "images": images})
     return out
