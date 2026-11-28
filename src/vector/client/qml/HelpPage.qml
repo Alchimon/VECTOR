@@ -195,19 +195,49 @@ Item {
                     id: guideBody
                     anchors.fill: parent; anchors.margins: 24
                     contentWidth: width
-                    contentHeight: guideText.implicitHeight
+                    contentHeight: guideCol.implicitHeight
                     clip: true; boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ScrollBar {}
-                    Text {
-                        id: guideText
-                        objectName: "guideBody"
-                        width: guideBody.width
-                        text: page.guide.length > 0 ? page.guide[Math.min(page.guideIdx, page.guide.length - 1)].body : ""
-                        textFormat: Text.MarkdownText
-                        color: Theme.text
-                        font.family: Theme.family; font.pixelSize: Theme.fs
-                        wrapMode: Text.Wrap
-                        lineHeight: 1.25
+                    ColumnLayout {
+                        id: guideCol
+                        width: guideBody.width; spacing: 14
+                        Text {
+                            id: guideText
+                            objectName: "guideBody"
+                            Layout.fillWidth: true
+                            text: page.guide.length > 0 ? page.guide[Math.min(page.guideIdx, page.guide.length - 1)].body : ""
+                            textFormat: Text.MarkdownText
+                            color: Theme.text
+                            font.family: Theme.family; font.pixelSize: Theme.fs
+                            wrapMode: Text.Wrap
+                            lineHeight: 1.25
+                        }
+                        // Иллюстрации раздела (D-134): курируемые снимки экрана из папки справки
+                        // (help/screenshots) — снимок с рамкой и подписью прямо под текстом раздела.
+                        Repeater {
+                            model: page.guide.length > 0 ? (page.guide[Math.min(page.guideIdx, page.guide.length - 1)].images || []) : []
+                            delegate: ColumnLayout {
+                                required property var modelData
+                                Layout.fillWidth: true; spacing: 6
+                                Rectangle {
+                                    Layout.fillWidth: true
+                                    implicitHeight: gimg.implicitHeight > 0 ? Math.min(gimg.implicitHeight, 420) + 2 : 2
+                                    radius: Theme.radiusS; color: Theme.surfaceAlt; border.color: Theme.border; clip: true
+                                    Image {
+                                        id: gimg
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        width: parent.width - 2
+                                        fillMode: Image.PreserveAspectFit
+                                        source: modelData.src ? "file:///" + modelData.src : ""
+                                        smooth: true; mipmap: true
+                                        Accessible.name: modelData.caption || "Снимок экрана"
+                                    }
+                                }
+                                Text { text: modelData.caption || ""; color: Theme.textMuted
+                                       font.family: Theme.family; font.pixelSize: Theme.fsS; font.italic: true
+                                       wrapMode: Text.Wrap; Layout.fillWidth: true }
+                            }
+                        }
                     }
                 }
             }
