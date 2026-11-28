@@ -315,8 +315,8 @@ Item {
                         Image { objectName: "shell2Emblem"; source: Theme2.emblem
                                 anchors.centerIn: parent; width: parent.width - 8; height: width
                                 sourceSize: Qt.size(96, 96); fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true
-                                Accessible.name: "ВЕКТОР ПЛАТФОРМА" }
-                        VTipArea { text: "ВЕКТОР ПЛАТФОРМА — единая платформа для инженеров и бизнеса" } } }
+                                Accessible.name: "ВЕКТОР Платформа" }
+                        VTipArea { text: "ВЕКТОР Платформа — единая платформа для инженеров и бизнеса" } } }
                 // Переключатель модулей экосистемы (D-99): акцентная иконка + название. Сегодня работают ХАБ и
                 // Меркурий (таблицы расчётов в комплектах); МАРС, Юпитер, Венера — в разработке, пункты отключены.
                 RowLayout { spacing: 4

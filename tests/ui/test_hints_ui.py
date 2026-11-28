@@ -136,6 +136,17 @@ def test_help_page_about_tab_license_demo(ui):
     assert "демо" in support.property("v").lower() or "поддержк" in support.property("v").lower()
 
 
+def test_about_tab_orbita_status(ui):
+    """«О программе» (D-131/D-132): статус подключения к серверу экосистемы — ВЕКТОР Орбита — с адресом."""
+    ui.login("k.pavlov")
+    ui.go("help")
+    ui.click(ui.find("tabAbout"))
+    ui.wait_idle()
+    st = _v(ui.backend, "orbitaStatus")
+    assert st["state"] in ("online", "reconnect", "offline") and st["label"]
+    assert st["host"]                                          # адрес Орбиты из настроек стенда
+
+
 def test_license_banner_readonly_and_grace(ui):
     """Полоса состояния лицензии раздела (D-88): подписка модуля истекла (readonly) — видна на страницах модуля,
     скрыта на платформенных страницах и в разделах активных модулей; льготный период (grace) — мягкое

@@ -27,7 +27,7 @@ ManifestDPIAware true
   !define REPO_ROOT "../.."
 !endif
 
-Name "ВЕКТОР — тестовый стенд ${PRODUCT_VERSION}"
+Name "ВЕКТОР Платформа — тестовый стенд ${PRODUCT_VERSION}"
 OutFile "${OUTFILE}"
 InstallDir "$PROFILE\VECTOR-test"
 RequestExecutionLevel user            ; администратор не нужен (кроме -Lan firewall, решает ps1)
@@ -38,15 +38,15 @@ Icon "${REPO_ROOT}/src/vector/client/assets/vektor/app_icons/ico/vektor_platform
 UninstallIcon "${REPO_ROOT}/src/vector/client/assets/vektor/app_icons/ico/vektor_platform.ico"
 
 VIProductVersion "${PRODUCT_VERSION_NUM}"
-VIAddVersionKey "FileDescription" "Установщик тестового стенда ВЕКТОР (сервер + клиент + демо-данные)"
-VIAddVersionKey "ProductName" "ВЕКТОР — тестовый стенд"
+VIAddVersionKey "FileDescription" "Установщик тестового стенда ВЕКТОР (сервер ВЕКТОР Орбита + клиент ВЕКТОР Платформа + демо-данные)"
+VIAddVersionKey "ProductName" "ВЕКТОР Платформа — тестовый стенд"
 VIAddVersionKey "FileVersion" "${PRODUCT_VERSION}"
 VIAddVersionKey "ProductVersion" "${PRODUCT_VERSION}"
 VIAddVersionKey "LegalCopyright" "Вымышленные данные, не для работы в компании"
 
 ; ---------- страницы ----------
 !define MUI_ICON "${REPO_ROOT}/src/vector/client/assets/vektor/app_icons/ico/vektor_platform.ico"
-!define MUI_WELCOMEPAGE_TITLE "ВЕКТОР — тестовый стенд"
+!define MUI_WELCOMEPAGE_TITLE "ВЕКТОР Платформа — тестовый стенд"
 !define MUI_WELCOMEPAGE_TEXT "Будут развёрнуты сервер и клиент ВЕКТОР с вымышленными демо-данными: отдельное окружение Python, база SQLite, тестовый сертификат (30 дней), ярлыки запуска.$\r$\n$\r$\nНужны: Windows 10/11 (64-бит), Python 3.11–3.14 (64-бит) с python.org, интернет для загрузки библиотек (~150 МБ). Права администратора не требуются.$\r$\n$\r$\nТолько для теста — не для работы в компании."
 !insertmacro MUI_PAGE_WELCOME
 !define MUI_PAGE_CUSTOMFUNCTION_LEAVE DirLeave

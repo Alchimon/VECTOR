@@ -826,6 +826,18 @@ class Backend(QObject):
         lic["app_version"] = __version__
         return lic
 
+    @Property("QVariantMap", notify=changed)
+    def orbitaStatus(self):
+        """Состояние связи с сервером экосистемы ВЕКТОР Орбита (D-131): адрес и режим — для блока «О программе»."""
+        url = os.environ.get("VECTOR_SERVER_URL") or self._settings.value("server/url", "")
+        host = url.split("//", 1)[-1].split("/", 1)[0] if url else ""
+        state = ("online" if self._online else
+                 "reconnect" if self._session_mode == "offline" and self._me else "offline")
+        label = {"online": "подключено — изменения отправляются сразу",
+                 "reconnect": "сервер доступен, вход выполнен без связи — очередь ждёт подключения",
+                 "offline": "нет связи — работа в автономном режиме, изменения в очереди"}[state]
+        return qml_safe({"url": url, "host": host, "state": state, "label": label})
+
     @Slot(str, result=bool)
     def moduleOk(self, module_id: str) -> bool:
         """Полный доступ к модулю (active/grace): создание и изменения пройдут. readonly — только чтение.
